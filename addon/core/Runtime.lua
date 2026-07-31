@@ -146,10 +146,7 @@ function RL:ArmRuntimeSystems()
     if self._runtime_armed then return end
     if not self:HasRuntime() then return end
     if UnitName and not UnitName("player") then return end
-    -- World-ready gate (no wall-clock delay): refuse arm until player position
-    -- resolves. Live crash 2026-07-31 15:09 — PEW + om.enable=1 while medium
-    -- bridge had no local GUID bits and ObjectPosition was still cold → AV.
-    -- should_arm retries every 0.5s; do NOT set _runtime_armed until this passes.
+    -- World-ready: player position must resolve. should_arm retries.
     do
         local ready = false
         if self.ObjectPosition then
@@ -161,41 +158,36 @@ function RL:ArmRuntimeSystems()
         end
         if not ready then return end
     end
+    -- Split arm: HW unlock first (safe). OM enable only after a successful
+    -- Ping + LocalGuid-ish existence. Live crash 15:41: PEW om=1 + enum mid-load.
+    -- Runtime now defers EnumVisibleObjects until list-only warm; still keep
+    -- om.enable off until we can read player pos twice (stable world).
+    if not self._runtime_hw_armed then
+        pcall(function()
+            self:RuntimeCall("SetSystemVar", "taint.patch", "0")
+            self:RuntimeCall("ArmUnlock")
+            self:RuntimeCall("Ping")
+        end)
+        if self.Actions and self.Actions.ensure then
+            pcall(function() self.Actions.ensure() end)
+        end
+        self._runtime_hw_armed = true
+        self._arm_pos_ok = 0
+    end
+    -- Require two consecutive ready ticks before OM (awareness, not a sleep).
+    self._arm_pos_ok = (self._arm_pos_ok or 0) + 1
+    if self._arm_pos_ok < 2 then return end
+
     self._runtime_armed = true
-    -- ONE-SHOT arm. No freeze thrash. Native Refresh SEH-settles itself.
-    -- Flipping om.enable 0→1 repeatedly was the suite crash (rising-edge warm).
     pcall(function()
-        self:RuntimeCall("SetSystemVar", "taint.patch", "0")
-        self:RuntimeCall("ArmUnlock")
-        self:RuntimeCall("Ping")
+        -- Soft list discovery works with om.enable 0; enable for full path.
         self:RuntimeCall("SetSystemVar", "om.enable", "1")
     end)
-    if self.Actions and self.Actions.ensure then
-        pcall(function() self.Actions.ensure() end)
-    end
-    -- Lua OM OnUpdate (GetObjectCount fan) is heavy and crash-prone. Rotation
-    -- uses Runtime AuraSearch/NearbyHostiles only — do NOT start the Lua fan
-    -- unless quest tracking actually needs object_list.
-    do
-        local need_lua_om = false
-        local db = RaijinLabDB
-        if db then
-            if db.track_quest_objects then need_lua_om = true end
-            if db.modules and (db.modules.quest or db.modules.gather or db.modules.grind) then
-                need_lua_om = true
-            end
-        end
-        if need_lua_om and self.GetObjManagerFrame and self.InitObjectManager
-            and not self:GetObjManagerFrame() then
-            pcall(function() self:InitObjectManager() end)
-        end
-    end
-    -- Watchdog: cheap 1Hz.
+    -- NEVER InitObjectManager on arm frame (GetObjectCount fan mid-load = crash).
+    -- Watchdog: cheap 1Hz, only after OM arm.
     if self.Watchdog and self.Watchdog.start then
         pcall(self.Watchdog.start)
     end
-    -- No auto-selftest on arm (was delayed 12s and stressed the bridge).
-    -- Run manually: /raijin selftest
     if self._debug_print then
         print("|cff7ec8e3RaijinLab|r: runtime armed (OM on, one-shot)")
     end

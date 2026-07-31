@@ -123,6 +123,19 @@ already inside `IsLinuxClient` → RuntimeCall. Nested VM re-entry → ERROR #13
 - Multi-dot different GUID: native Spell_C(guid), restore via pcall only.
 - FSExec allowed only when not already inside Lua (worker/main non-Lua paths).
 
+## Enum mid-load after medium Register (1.10.32-loadsafe) — FATAL
+
+**Proof:** 2026-07-31 15:41 inject during load → medium Register → PEW
+`armed one-shot om=1` → client dead ~1s later. No new crash dump (hard kill).
+
+**Cause:** `BuildUnitSnapshotLocked` called `EnumVisibleObjects` on the first
+SoftRefresh while the world was still cold (bits=0xE, no localPlayer/guid).
+
+**Rule:** List-only warm first (N successful list walks or ~5s after first
+player GUID). Enum only after warm. PEW arm: HW unlock first; om.enable only
+after two consecutive player-position ready ticks. Never InitObjectManager on
+the arm frame.
+
 ## WorldReadyStrong OR-bug (1.10.27-strong-fix) — FATAL
 
 **Proof:** 2026-07-31 15:00 inject during load. Register `via=strong` with

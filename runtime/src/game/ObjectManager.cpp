@@ -946,6 +946,11 @@ static bool g_omWasOn = false;
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
 static constexpr ULONGLONG kRebindQuietMs = 400ull;   // FrameXML flicker only
 static constexpr ULONGLONG kWalkMinIntervalMs = 80ull; // ~12 Hz max
+// EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
+// List-only until this many successful list walks OR this ms after first player.
+static constexpr int kListWarmWalks = 8;
+static constexpr ULONGLONG kEnumWarmMs = 5000ull;
+static int g_listWarmWalks = 0;
 
 void OnLuaReload() {
     // lua_State changed. Drop snapshot (pointers belong to old VM epoch) and
@@ -953,6 +958,7 @@ void OnLuaReload() {
     // everWalked — that forced 6s+ of empty AuraSearch after every rebind.
     Invalidate();
     g_omWasOn = false;
+    g_listWarmWalks = 0; // re-warm list-only before enum after rebind/load
     g_rebindQuietUntil = GetTickCount64() + kRebindQuietMs;
 }
 
@@ -1240,6 +1246,9 @@ static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
 // MUST hold g_mu. On failure leaves prior g_all intact.
 // Foundation for multi-dot: Ascension unit discovery is primarily EnumVisibleObjects;
 // list walk alone often returns 0 world units (that is why om.enum=0 killed aura_search).
+//
+// COLD / LOAD: NEVER call EnumVisibleObjects until list-only warm completes.
+// Live crash 2026-07-31 15:41 — medium Register + PEW arm → enum mid-load → AV.
 static bool BuildUnitSnapshotLocked() {
     g_podCount = 0;
     int listRc = SoftWalkSeh();
@@ -1249,6 +1258,8 @@ static bool BuildUnitSnapshotLocked() {
         listN = g_podCount;
         if (listN > kMaxEnum) listN = kMaxEnum;
         for (size_t i = 0; i < listN; ++i) s_listPods[i] = g_pods[i];
+        if (g_listWarmWalks < kListWarmWalks)
+            ++g_listWarmWalks;
     }
 
     g_podCount = 0;
@@ -1260,8 +1271,11 @@ static bool BuildUnitSnapshotLocked() {
         g_enumDead = false;
         RL::Log::Info("EnumVisibleObjects retry after cooldown");
     }
-    const bool wantEnum = !g_enumDead
-        && RL::Config::Get("om.enum", "1") != "0";
+    const bool enumCfg = RL::Config::Get("om.enum", "1") != "0";
+    // Warm gate: list-only for kListWarmWalks OR kEnumWarmMs after first player.
+    const bool warmOk = (g_listWarmWalks >= kListWarmWalks)
+        || (g_firstPlayerMs && (nowEnum - g_firstPlayerMs) >= kEnumWarmMs);
+    const bool wantEnum = !g_enumDead && enumCfg && warmOk;
     int enumRc = 1;
     if (wantEnum) {
         enumRc = SafeEnumVisible(); // fills g_pods via callbacks
@@ -1276,6 +1290,13 @@ static bool BuildUnitSnapshotLocked() {
             s_enumRetryAt = nowEnum + 10000ull;
             g_lastEnumRc = enumRc;
             g_podCount = 0;
+        }
+    } else if (!warmOk && enumCfg && !g_enumDead) {
+        static ULONGLONG s_lastWarmLog = 0;
+        if (nowEnum - s_lastWarmLog > 2000ull) {
+            s_lastWarmLog = nowEnum;
+            RL::Log::Info("OM list-only warm walks=%d/%d (enum deferred)",
+                          g_listWarmWalks, kListWarmWalks);
         }
     }
 

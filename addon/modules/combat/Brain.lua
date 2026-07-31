@@ -71,19 +71,23 @@ function Brain.act(state)
     end
 
     if state.recommendation == "engage" then
-        -- Natural target acquisition ONLY for hostiles that are attacking us
-        -- (actively targeting the player / casting damage at us). Never steal
-        -- selection for multi-dot GUID casts or heal/buff-only units.
+        -- Natural target acquisition ONLY for hostiles that are attacking us.
+        -- NEVER touch selection while rotation multi-dot is active (GUID cast
+        -- with acquire off must leave the client's target alone completely).
+        if RaijinLabDB and RaijinLabDB.rotation_enabled then
+            local Ex = RaijinLab.RotationExecutor
+            local multi = Ex and Ex._last_cast and Ex._last_cast.guid
+                and (GetTime and (GetTime() - (Ex._last_cast.t or 0)) < 2.5)
+            if multi then return state end
+            -- Any aura_search-driven cast path: do not auto-TargetNearest.
+            if Ex and Ex._last_action and Ex._last_action.aura_search_hit then
+                return state
+            end
+        end
         -- If we already have a living attackable target, leave it alone.
         if UnitExists and UnitExists("target")
             and UnitCanAttack and UnitCanAttack("player", "target")
             and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
-            return state
-        end
-        local Ex = RaijinLab.RotationExecutor
-        local multi = Ex and Ex._last_cast and Ex._last_cast.guid
-            and (GetTime and (GetTime() - (Ex._last_cast.t or 0)) < 1.5)
-        if multi then
             return state
         end
         local enemies = World and World.collect_nearby_enemies and World.collect_nearby_enemies(40) or {}
@@ -97,12 +101,8 @@ function Brain.act(state)
                 if World.unit_is_attacking_player then
                     attacking = World.unit_is_attacking_player(u.token or u.guid)
                 end
-                -- Without a live token, accept combat hostiles from the pack
-                -- only when the player is in combat (likely being hit).
-                if not attacking and UnitAffectingCombat and UnitAffectingCombat("player") then
-                    -- Prefer units already known hostile in combat range.
-                    attacking = (tonumber(u.dist_center or u.dist) or 999) <= 12
-                end
+                -- Strict: only units actually targeting the player (not "nearby
+                -- in combat"). Heals/buffs on us never count as attacking.
                 if attacking then
                     local d = tonumber(u.dist_center or u.dist) or 999
                     if not bestD or d < bestD then best, bestD = u, d end

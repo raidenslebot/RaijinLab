@@ -1596,35 +1596,50 @@ function Executor.attempt_action(action, ctx)
     local corpse_guid_for_mark = nil
     local probe_marked = false
 
-    -- Multi-dot: cast is ALWAYS Spell_C_CastSpell(id, guid). Never TargetUnit
-    -- unless aura_search "Acquire target" is explicitly true (default off).
+    -- Multi-dot: cast is ALWAYS Spell_C_CastSpell(id, guid).
+    -- Acquire OFF (default): NEVER TargetUnit / never leave selection on victim.
+    -- Acquire ON: may Target the match; Reset after restores previous.
     local search = action.aura_search_hit or (ctx and ctx.aura_search_hit)
     if search and search.guid then
         guid = search.guid
         if ctx then ctx.aura_search_hit = search end
     end
-    -- HARD: no implicit selection change.
-    --   acquire_target (legacy retarget) = true  -> may Target the match
-    --   reset_after = true (only with acquire)   -> restore previous after cast
-    --   acquire off                              -> NEVER Target; restore if
-    --                                               Spell_C selected the victim
-    local want_acquire = search and (
-        search.acquire_target == true or search.acquire_target == 1 or search.acquire_target == "true"
-        or search.retarget == true or search.retarget == 1 or search.retarget == "true"
-    )
-    local want_reset_after = want_acquire and search and (
-        search.reset_after == true or search.reset_after == 1 or search.reset_after == "true"
-    )
+    -- Strict truthy only. Anything else (nil/false/"false"/0) = acquire OFF.
+    local want_acquire = false
+    if search then
+        local a = search.acquire_target
+        local r = search.retarget -- legacy key
+        want_acquire = (a == true or a == 1 or a == "true")
+            or (r == true or r == 1 or r == "true")
+    end
+    local want_reset_after = false
+    if want_acquire and search then
+        local ra = search.reset_after
+        want_reset_after = (ra == true or ra == 1 or ra == "true")
+    end
     -- Snapshot selection BEFORE any Target / Cast that might mutate it.
     local pre_target_guid = nil
     local pre_had_target = UnitExists and UnitExists("target")
     if pre_had_target and UnitGUID then
         pre_target_guid = UnitGUID("target")
     end
+    -- ONLY path that may change selection for multi-dot.
     if want_acquire and search and search.guid and Act and Act.Target then
         pcall(Act.Target, search.guid)
         if W and W.sync_ctx_target and ctx then pcall(W.sync_ctx_target, ctx) end
         if ctx then ctx._aura_search_retargeted = true end
+    end
+    -- HARD ASSERT: acquire off must never have just targeted the search unit.
+    if not want_acquire and search and search.guid and UnitGUID and UnitExists
+        and UnitExists("target") then
+        local cur = UnitGUID("target")
+        -- Do not "fix" by targeting — leave as-is; post-cast restore handles Spell_C.
+        if cur and tostring(cur) == tostring(search.guid)
+            and pre_target_guid and tostring(pre_target_guid) ~= tostring(search.guid) then
+            -- Selection already drifted before cast (shouldn't) — restore now.
+            if Act.TargetLastTarget then pcall(Act.TargetLastTarget)
+            elseif Act.Target then pcall(Act.Target, pre_target_guid) end
+        end
     end
 
     if policy == "corpse" then
@@ -1755,36 +1770,11 @@ function Executor.attempt_action(action, ctx)
         sid = cast_sid, name = name, gap = ctx and ctx.target_distance,
     })
 
-    -- Spell_C_CastSpell(guid) may SELECT that unit on some client builds.
-    -- Restore rules:
-    --   acquire OFF           -> always restore previous (or ClearTarget if none)
-    --   acquire ON + reset    -> restore previous after cast
-    --   acquire ON + no reset -> leave the acquired target
-    local do_restore = false
-    local restore_guid = nil
-    local restore_clear = false
-    if guid then
-        if not want_acquire then
-            do_restore = true
-            if pre_had_target and pre_target_guid then
-                if tostring(pre_target_guid) ~= tostring(guid) then
-                    restore_guid = pre_target_guid
-                else
-                    -- Already on cast victim: leave as-is (no clear).
-                    do_restore = false
-                end
-            else
-                restore_clear = true
-            end
-        elseif want_reset_after then
-            do_restore = true
-            if pre_had_target and pre_target_guid then
-                restore_guid = pre_target_guid
-            else
-                restore_clear = true
-            end
-        end
-    end
+    -- Selection policy for multi-dot / GUID casts:
+    --   acquire OFF           -> cast by GUID; NEVER leave selection on victim
+    --   acquire ON + reset    -> Target match, then restore previous
+    --   acquire ON + no reset -> Target match and keep it
+    local preserve_selection = (guid ~= nil) and (not want_acquire or want_reset_after)
 
     -- Final face/LoS gate on the cast GUID (never trust earlier snapshot alone).
     if guid and needs_enemy and not is_ground_self_aoe(sid, name) then
@@ -1801,35 +1791,44 @@ function Executor.attempt_action(action, ctx)
     end
 
     -- Native cast WITH guid when we have one (multi-dot). Never omit guid.
-    local ok = Act.CastSpell(cast_sid, guid)
+    -- When preserve_selection: use CastSpellPreserveSelection so Spell_C cannot
+    -- stick the client target on the cast victim (acquire off / reset after).
+    local ok
+    if preserve_selection and Act.CastSpellPreserveSelection then
+        ok = Act.CastSpellPreserveSelection(cast_sid, guid)
+    else
+        ok = Act.CastSpell(cast_sid, guid)
+    end
 
     local function restore_selection()
-        if not do_restore or not Act then return end
+        if not preserve_selection or not Act then return end
         local cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
-        if restore_guid then
-            if tostring(cur or "") ~= tostring(restore_guid) then
-                pcall(Act.Target, restore_guid)
-            end
-        elseif restore_clear then
-            -- Had no target; native cast selected the victim — drop it.
-            if cur and tostring(cur) == tostring(guid) and Act.ClearTarget then
-                pcall(Act.ClearTarget)
-            elseif cur and not pre_had_target and Act.ClearTarget then
-                pcall(Act.ClearTarget)
-            end
+        if pre_had_target and pre_target_guid then
+            if tostring(cur or "") == tostring(pre_target_guid) then return end
+            -- 1) TargetLastTarget (client previous-target stack)
+            if Act.TargetLastTarget then pcall(Act.TargetLastTarget) end
+            cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
+            if tostring(cur or "") == tostring(pre_target_guid) then return end
+            -- 2) Direct GUID re-target
+            if Act.Target then pcall(Act.Target, pre_target_guid) end
+            cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
+            if tostring(cur or "") == tostring(pre_target_guid) then return end
+            -- 3) Clear then re-target (break sticky cast victim)
+            if Act.ClearTarget then pcall(Act.ClearTarget) end
+            if Act.Target then pcall(Act.Target, pre_target_guid) end
+        else
+            -- Had no target: must end with no target.
+            if cur and Act.ClearTarget then pcall(Act.ClearTarget) end
         end
     end
 
-    if ok then
+    if ok and preserve_selection then
         restore_selection()
-        -- Deferred restore: Spell_C can select the unit a frame later.
-        if do_restore and C_Timer and C_Timer.After then
-            C_Timer.After(0, function()
-                pcall(restore_selection)
-            end)
-            C_Timer.After(0.05, function()
-                pcall(restore_selection)
-            end)
+        -- Deferred restore: Spell_C / server can select a frame later.
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, function() pcall(restore_selection) end)
+            C_Timer.After(0.05, function() pcall(restore_selection) end)
+            C_Timer.After(0.15, function() pcall(restore_selection) end)
         end
     end
 

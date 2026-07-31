@@ -1056,6 +1056,8 @@ static int Handle(lua_State* L, const char* name) {
     }
     if (!std::strcmp(name, "ClearTarget"))
         return PushBool(L, Actions::ClearTarget());
+    if (!std::strcmp(name, "TargetLastTarget"))
+        return PushBool(L, Actions::TargetLastTarget());
     if (!std::strcmp(name, "Attack") || !std::strcmp(name, "AttackTarget") ||
         !std::strcmp(name, "StartAttack"))
         return PushBool(L, Actions::AttackTarget());

@@ -146,6 +146,45 @@ function A.ClearTarget()
     return not not rt("ClearTarget")
 end
 
+-- Restore previous client selection after a GUID cast (Spell_C often selects
+-- the cast victim). Stock TargetLastTarget is more reliable than TargetUnit(hex).
+function A.TargetLastTarget()
+    if not A.ensure() then return false end
+    if rt("TargetLastTarget") then return true end
+    return not not rt("ExecSecure", "TargetLastTarget()")
+end
+
+-- Snapshot + cast + restore selection when preserveSelection is true.
+-- Used by multi-dot with acquire_target OFF so the client target never sticks
+-- on the cast victim.
+function A.CastSpellPreserveSelection(spellId, unitOrGuid)
+    local had = UnitExists and UnitExists("target")
+    local prev = (had and UnitGUID and UnitGUID("target")) or nil
+    local ok = A.CastSpell(spellId, unitOrGuid)
+    if not ok then return false end
+    -- Immediate restore (Spell_C may select mid-call).
+    if had and prev then
+        local cur = (UnitExists and UnitExists("target") and UnitGUID and UnitGUID("target")) or nil
+        if not cur or tostring(cur) ~= tostring(prev) then
+            -- Prefer last-target (native stack), then GUID, then clear+retarget.
+            if not A.TargetLastTarget() then
+                A.Target(prev)
+            end
+            cur = (UnitExists and UnitExists("target") and UnitGUID and UnitGUID("target")) or nil
+            if cur and tostring(cur) ~= tostring(prev) then
+                A.ClearTarget()
+                A.Target(prev)
+            end
+        end
+    else
+        -- Had no target: never leave a sticky selection from the cast.
+        if UnitExists and UnitExists("target") then
+            A.ClearTarget()
+        end
+    end
+    return true
+end
+
 function A.Attack()
     if not A.ensure() then return false end
     return not not rt("Attack")

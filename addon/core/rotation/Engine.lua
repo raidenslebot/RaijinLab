@@ -361,21 +361,27 @@ function Engine.spell_ready(ctx, spell_id)
     -- state never suppresses a valid cast ("cast as soon as possible, never
     -- try if impossible").
     -- ------------------------------------------------------------------
+    -- Multi-dot: GUID cast does not require client target; IsUsableSpell greys
+    -- without one — never treat that as unusable when aura_search_hit is set.
+    local search_hit = ctx.aura_search_hit and ctx.aura_search_hit.guid
     if ctx.auto_castable then
         -- (1) Usable now: IsUsableSpell (resources / stance / form). Authoritative
         --     client check; false means genuinely not castable this instant.
+        --     Exception: aura_search GUID path (bar greys with no client target).
         local u = ctx.spell_usable
         if type(u) == "table" and (u[spell_id] == false or u[tostring(spell_id)] == false) then
-            return false, "unusable"
+            if not search_hit then
+                return false, "unusable"
+            end
         end
 
         -- Target-directed checks apply only to spells that actually target the
         -- enemy (World.spell_targeted), so self-buffs/cooldowns are never gated
-        -- on LoS or immunity.
+        -- on LoS or immunity. Skip when casting on a search GUID (not client target).
         local tt = ctx.spell_targeted
         local is_targeted = type(tt) == "table"
             and (tt[spell_id] == true or tt[tostring(spell_id)] == true)
-        if is_targeted and ctx.target_exists then
+        if is_targeted and ctx.target_exists and not search_hit then
             -- (2) Line of sight: block only on an explicit false.
             if ctx.target_in_los == false then
                 return false, "los"
@@ -390,7 +396,7 @@ function Engine.spell_ready(ctx, spell_id)
     elseif ctx.strict_usable then
         -- Back-compat: honor the old explicit flag when auto_castable is off.
         local u = ctx.spell_usable or {}
-        if u[spell_id] == false or u[tostring(spell_id)] == false then
+        if (u[spell_id] == false or u[tostring(spell_id)] == false) and not search_hit then
             return false, "unusable"
         end
     end

@@ -1102,8 +1102,16 @@ Conditions.register("aura_search", {
         end
 
         -- Default OFF: cast by GUID, leave client target alone.
+        -- Force-clear stale saved keys: prefer_current must never affect cast.
+        if args.prefer_current ~= nil then args.prefer_current = nil end
         local acquire = aura_search_acquire_on(args)
         local reset_after = aura_search_reset_after_on(args)
+        -- Belt-and-suspenders: if acquire is off, retarget cannot be true.
+        if not acquire then
+            args.retarget = false
+            args.acquire_target = false
+            args.reset_after = false
+        end
         local hostile = args.hostile_only
         if hostile == nil then hostile = true end
         hostile = hostile == true or hostile == 1 or hostile == "true"

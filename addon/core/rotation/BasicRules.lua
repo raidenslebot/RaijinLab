@@ -156,9 +156,28 @@ local function check_gcd_cd(ctx, sid, slot)
     return true
 end
 
-local function check_resources(ctx, sid, name)
-    -- IsUsableSpell: definitive false = not castable (resource/stance/form).
-    -- With aura_search_hit.guid the bar may grey from "no target"; ignore that.
+local function slot_has_aura_search(slot)
+    if not slot then return false end
+    for _, c in ipairs(slot.conditions or {}) do
+        if c and c.id == "aura_search" then return true end
+    end
+    return false
+end
+
+local function check_resources(ctx, sid, name, slot)
+    -- IsUsableSpell greys unit-targeted spells when the client has NO current
+    -- target — even when we will CastSpell(id, guid). BasicRules runs BEFORE
+    -- aura_search, so aura_search_hit is still nil. Blocking on "unusable"
+    -- here made multi-dot dead until the player manually selected something.
+    if slot_has_aura_search(slot) then
+        -- Only hard-fail on real resource starve (nomana), never on grey bar.
+        if IsUsableSpell then
+            local usable, nomana = IsUsableSpell(name)
+            if usable == nil and sid then usable, nomana = IsUsableSpell(sid) end
+            if nomana then return false, "no_resource" end
+        end
+        return true
+    end
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
     local u = ctx and ctx.spell_usable
     if type(u) == "table" and (u[sid] == false or u[tostring(sid)] == false) then
@@ -175,14 +194,6 @@ local function check_resources(ctx, sid, name)
         end
     end
     return true
-end
-
-local function slot_has_aura_search(slot)
-    if not slot then return false end
-    for _, c in ipairs(slot.conditions or {}) do
-        if c and c.id == "aura_search" then return true end
-    end
-    return false
 end
 
 local function check_target_relationship(ctx, sid, slot, name)
@@ -227,8 +238,9 @@ local function check_range(ctx, sid, slot, name)
     if is_ground_self_aoe(sid, name) then
         return true
     end
-    -- Multi-dot search already validated range in the condition / live_castable.
-    -- Here only honor spell_in_range false when no search hit (client target path).
+    -- Multi-dot: range is validated vs the discovered GUID later — never vs
+    -- client target. spell_in_range is often false with no target selected.
+    if slot_has_aura_search(slot) then return true end
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
     if search then return true end
     local ir = ctx and ctx.spell_in_range
@@ -320,7 +332,7 @@ function BasicRules.check(ctx, spell_id, slot, opts)
     ok, why = check_gcd_cd(ctx, sid, slot)
     if not ok then return false, why end
 
-    ok, why = check_resources(ctx, sid, name)
+    ok, why = check_resources(ctx, sid, name, slot)
     if not ok then return false, why end
 
     ok, why = check_target_relationship(ctx, sid, slot, name)
@@ -330,17 +342,21 @@ function BasicRules.check(ctx, spell_id, slot, opts)
     if not ok then return false, why end
 
     -- Facing / LoS after relationship so we do not TraceLine/face-check no-target.
-    if not opts.skip_facing then
+    -- aura_search slots: face/LoS are re-checked against the discovered GUID later.
+    if not opts.skip_facing and not slot_has_aura_search(slot) then
         ok, why = check_facing(ctx, sid, slot, name)
         if not ok then return false, why end
     end
-    if not opts.skip_los then
+    if not opts.skip_los and not slot_has_aura_search(slot) then
         ok, why = check_los(ctx, sid, slot, name)
         if not ok then return false, why end
     end
 
-    ok, why = check_immunity(ctx, sid)
-    if not ok then return false, why end
+    -- Immunity map is for current client target — skip until search resolves.
+    if not slot_has_aura_search(slot) then
+        ok, why = check_immunity(ctx, sid)
+        if not ok then return false, why end
+    end
 
     return true, nil
 end

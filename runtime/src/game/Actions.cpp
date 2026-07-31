@@ -609,6 +609,13 @@ bool ClearTarget() {
     return SafeFSExec("ClearTarget()") > 0;
 }
 
+bool TargetLastTarget() {
+    SoftHardwareUnlock();
+    // Stock client API: restore previous selection after a cast/swap.
+    // More reliable than TargetUnit("0xGUID") for post-Spell_C restore.
+    return SafeFSExec("TargetLastTarget()") > 0;
+}
+
 bool AttackTarget() {
     SoftHardwareUnlock();
     if (SafeFSExec("StartAttack()") > 0) return true;

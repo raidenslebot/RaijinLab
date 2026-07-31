@@ -45,6 +45,8 @@ bool TargetByName(const char* name);
 // TargetUnit is not reliably accepted on all private-server builds.
 bool TargetToken(const char* unitToken);
 bool ClearTarget();
+// Restore previous selection (stock TargetLastTarget) after GUID cast.
+bool TargetLastTarget();
 bool AttackTarget();
 bool InteractGuid(uint64_t guid);
 bool InteractTarget();

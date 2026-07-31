@@ -136,9 +136,10 @@ static DWORD WINAPI MainThread(LPVOID param) {
             RL::Bridge::ResetRegistrationState();
         }
 
-        // Pure memory only — never call client functions from this worker.
-        int flag = RL::Game::Addr::InWorldFlag(); // 1=in world, 0=not, -1=unreadable
-        if (flag == 1)
+        // Multi-signal world ready (NOT g_InWorld alone — stuck at 0 on Ascension).
+        uint32_t wbits = 0;
+        const bool worldNow = RL::Game::Addr::WorldReady(&wbits);
+        if (worldNow)
             ++inWorldStreak;
         else
             inWorldStreak = 0;
@@ -150,19 +151,18 @@ static DWORD WINAPI MainThread(LPVOID param) {
             ++settle;
             const int needSettle = everRegistered ? kMinSettleRebind : kMinSettleFirst;
             const int needWorld  = everRegistered ? kInWorldStreakRebind : kInWorldStreakFirst;
-            // STRICT: in-world byte non-zero for needWorld consecutive ticks.
-            // Never register on glue / load screen (flag!=1).
-            const bool worldReady = (flag == 1) && (inWorldStreak >= needWorld);
+            // Require sustained WorldReady (player/OM/frame), not just flag byte.
+            // Never register on glue with null L; L already required.
+            const bool worldReady = worldNow && (inWorldStreak >= needWorld);
             if (settle >= needSettle && worldReady && failBackoff == 0) {
                 if (RL::Bridge::Register()) {
                     registered = true;
                     everRegistered = true;
-                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d inWorldStreak=%d rebind=%d",
-                                  RL::Bridge::Version(), L, flag, settle, inWorldStreak,
-                                  everRegistered ? 1 : 0);
+                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d streak=%d",
+                                  RL::Bridge::Version(), L, (unsigned)wbits, settle, inWorldStreak);
                 } else {
-                    RL::Log::Warn("Register failed - backoff %d ticks (flag=%d)",
-                                  kFailBackoff, flag);
+                    RL::Log::Warn("Register failed - backoff %d ticks bits=0x%X",
+                                  kFailBackoff, (unsigned)wbits);
                     failBackoff = kFailBackoff;
                     inWorldStreak = 0;
                 }
@@ -170,10 +170,11 @@ static DWORD WINAPI MainThread(LPVOID param) {
         }
 
         ++tick;
-        // WRN so it always appears in the inject tail (Info was easy to miss).
+        // WRN so it always appears in the inject tail.
+        // bits: flag|wf|conn|mgr|localPly|guid
         if ((tick % 40) == 0) {
-            RL::Log::Warn("heartbeat reg=%d ever=%d flag=%d settle=%d inWorld=%d L=%p waiting=%d",
-                          (int)registered, (int)everRegistered, flag, settle,
+            RL::Log::Warn("heartbeat reg=%d ever=%d bits=0x%X settle=%d streak=%d L=%p waiting=%d",
+                          (int)registered, (int)everRegistered, (unsigned)wbits, settle,
                           inWorldStreak, L,
                           (!registered && L) ? 1 : 0);
         }

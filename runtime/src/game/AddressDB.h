@@ -97,13 +97,21 @@ constexpr uintptr_t Obj_Position   = 0x798;   // C3Vector: x@0x798 y@0x79C z@0x7
 constexpr uintptr_t Obj_Facing     = 0x7A4;
 
 // Implemented in AddressDB.cpp (SEH-safe)
-bool InWorld();              // GUID proxy first, then g_InWorld flag
+bool InWorld();              // multi-signal (see WorldReady)
 void* LuaState();
 uint64_t ActivePlayerGuid(); // ClntObjMgrGetActivePlayer
 // PURE memory read of the g_InWorld flag (NO client-function call). Safe to
 // poll from the worker thread. The flag is a BYTE (bool) at g_InWorld — do not
 // read as int. Returns 1 = in world (byte != 0), 0 = not, -1 = unreadable.
+// NOTE: On Ascension this byte is often STUCK at 0 while fully in-world.
+// Prefer WorldReady() for bridge registration.
 int InWorldFlag();
+
+// Multi-signal "safe to FrameScript_RegisterFunction" for the worker.
+// Does NOT rely solely on g_InWorld (proven unreliable on Ascension live).
+// outBits optional diagnostic bitfield (for heartbeats):
+//   bit0 flag  bit1 worldFrame  bit2 clientConn  bit3 objMgr  bit4 localPlayer  bit5 activeGuid
+bool WorldReady(uint32_t* outBits = nullptr);
 
 } // namespace RL::Game::Addr
 

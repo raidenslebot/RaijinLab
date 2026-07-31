@@ -13,6 +13,13 @@ local log_cast
 -- Same forward-declaration reason as log_cast: gate() is called at ~line 147
 -- but declared far below, so the name resolved to a nil GLOBAL at that point.
 local gate
+-- LIVE BUG 2026-07-31: net_grace() was defined AFTER attempt_action as a
+-- `local function`, so every successful cast threw
+-- "attempt to call global 'net_grace' (a nil value)" mid-path. That aborted
+-- GCD/_recent/aura notes → Plague Strike multi-dot spam (400+ wires/sec) and
+-- Consecration "not ready" spam. Forward-declare + define early below.
+local net_grace
+local micro_lock
 
 local Executor = {}
 Executor._last_cast = nil
@@ -50,6 +57,19 @@ local function latency_sec()
     if s < 0.05 then s = 0.05 end
     if s > 0.40 then s = 0.40 end
     return s
+end
+
+-- Defined early (assigns the forward-declared locals). Used by attempt_action.
+net_grace = function()
+    local lag = latency_sec()
+    local g = lag * 1.2 + 0.06
+    if g < 0.10 then g = 0.10 end
+    if g > 0.18 then g = 0.18 end
+    return g
+end
+
+micro_lock = function()
+    return 0.016
 end
 
 -- Authoritative remaining GCD/CD for a spell (seconds). Prefer live GetSpellCooldown;
@@ -2064,12 +2084,20 @@ function Executor.attempt_action(action, ctx)
             Executor._gcd_until = tnow + dur
             Executor._gcd_src = "evidence"
         elseif is_multidot then
-            -- Multi-dot: DO NOT set global _gcd_until (that clobbered every
-            -- lower-priority ability). Track pending without list lock.
+            -- Multi-dot: do not lock the whole list on global GCD, but MUST
+            -- floor THIS spell for a full GCD. 50ms floor caused 400+ PS
+            -- wires/sec when aura notes lagged.
+            local gdur = 1.0
+            if Executor.gcd_fallback then
+                local d = select(1, Executor.gcd_fallback())
+                if d and d > 0.75 then gdur = d end
+            end
+            if gdur < 0.75 then gdur = 0.75 end
+            if gdur > 1.5 then gdur = 1.5 end
             Executor._gcd_until = 0
             Executor._gcd_provisional = false
             Executor._gcd_src = "multidot_wire"
-            local g = 0.10
+            local g = math.min(grace, 0.15)
             Executor._pending = {
                 sid = sid, cast_t = tnow, deadline = tnow + g, grace = g,
                 before_cd = before and before.cd_start or 0,
@@ -2077,10 +2105,31 @@ function Executor.attempt_action(action, ctx)
                 off_gcd = false,
                 guid = guid,
                 multidot = true,
-                no_gcd = true, -- critical: does not freeze other slots
+                no_gcd = true, -- does not freeze other slots
             }
             Executor._recent = Executor._recent or {}
-            Executor._recent[sid] = tnow + 0.05 -- anti-spam THIS spell only
+            Executor._recent[sid] = tnow + gdur
+            if cast_sid and cast_sid ~= sid then
+                Executor._recent[cast_sid] = tnow + gdur
+            end
+            -- Dual-slot same ability (PS 45462 + 45513): floor every known id
+            -- with the same display name so target-only + multi-dot don't both fire.
+            if name and name ~= "" and ctx and type(ctx.known_spells) == "table" then
+                local want = string.lower(name)
+                local seen = { [sid] = true, [cast_sid or 0] = true }
+                for k, v in pairs(ctx.known_spells) do
+                    if v then
+                        local id = tonumber(k) or 0
+                        if id > 0 and not seen[id] then
+                            local sn = spell_name(id)
+                            if sn and string.lower(sn) == want then
+                                Executor._recent[id] = tnow + gdur
+                                seen[id] = true
+                            end
+                        end
+                    end
+                end
+            end
         else
             -- Wire accepted: provisional GCD = real GCD length (awareness of
             -- client state), not a 120ms hope. Refuse events free early;
@@ -2093,21 +2142,36 @@ function Executor.attempt_action(action, ctx)
             if gdur < 0.75 then gdur = 0.75 end
             if gdur > 1.5 then gdur = 1.5 end
             -- If client already shows ability CD, floor THIS spell only.
-            local arem = spell_ready_remaining(cast_sid, action._cast_name or name)
+            -- Re-sample AFTER wire: bar may still show 0 while server is on GCD
+            -- (Consecration "not ready yet" spam when client looks ready).
+            local after2 = cast_snapshot(cast_sid)
+            local arem = 0
+            if after2 and after2.cd_dur and after2.cd_dur > 0 then
+                arem = (tonumber(after2.cd_start) or tnow) + after2.cd_dur - tnow
+                if arem < 0 then arem = 0 end
+            end
+            if arem < gdur then
+                arem = spell_ready_remaining(cast_sid, action._cast_name or name)
+            end
+            if arem < gdur then arem = gdur end
+            -- Long ability CDs (Consecration ~8s): trust full rem when reported.
+            if arem > 10 then arem = 10 end
             Executor._gcd_until = tnow + gdur
             Executor._gcd_src = "wire_pending"
             Executor._gcd_provisional = true
             Executor._recent = Executor._recent or {}
-            if arem > gdur then
-                Executor._recent[sid] = tnow + math.min(arem, 10.0)
-            else
-                Executor._recent[sid] = tnow + gdur
+            Executor._recent[sid] = tnow + arem
+            if cast_sid and cast_sid ~= sid then
+                Executor._recent[cast_sid] = tnow + arem
             end
         end
     end
 
-    -- Optimistic multi-dot mark ONLY with evidence (facing refuse must not mark).
-    if evidence and guid and W and W.note_aura_on_guid and search and search.guid
+    -- Optimistic multi-dot aura mark on wire success (not only evidence).
+    -- Search keys Blood Plague 55078; noting cast-spell id (45513) does nothing.
+    -- Without this, single-target PS double-casted every GCD (search still
+    -- "missing" until CLEU AURA_APPLIED arrived — often after the next tick).
+    if ok and guid and W and W.note_aura_on_guid and search and search.guid
         and tostring(guid) == tostring(search.guid) then
         local aura_sid = 0
         local aura_nm = nil
@@ -2122,7 +2186,7 @@ function Executor.attempt_action(action, ctx)
         end
         if aura_sid > 0 or (aura_nm and aura_nm ~= "") then
             pcall(W.note_aura_on_guid, guid, aura_sid, aura_nm or name, 1, 21)
-        else
+        elseif evidence then
             pcall(W.note_aura_on_guid, guid, cast_sid, name, 1, 21)
         end
     end
@@ -2159,28 +2223,7 @@ function Executor.attempt_action(action, ctx)
     return true, "ok:" .. tag, before, evidence and true or false
 end
 
--- Pending confirmation window after wire-ok.
--- Too long freezes the priority list (facing refuse that never fires events).
--- FAIL / UI_ERROR still free the same frame (apply_pending_refuse).
-local function net_grace()
-    local lag = 0.08
-    if GetNetStats then
-        local ok, _, _, latHome, latWorld = pcall(GetNetStats)
-        if ok then
-            local ms = math.max(tonumber(latHome) or 0, tonumber(latWorld) or 0)
-            if ms > 0 then lag = ms / 1000 end
-        end
-    end
-    -- Cap 180ms: longer provisional GCD was the "freeze after fail" feel.
-    local g = lag * 1.2 + 0.06
-    if g < 0.10 then g = 0.10 end
-    if g > 0.18 then g = 0.18 end
-    return g
-end
-
-local function micro_lock()
-    return 0.016
-end
+-- net_grace / micro_lock: defined early (forward-decl block). Do not redeclare.
 
 -- Real cast start: cast bar, channel, or THIS ability's CD (not bare GCD).
 local function cast_confirmed(sid, before_cd)

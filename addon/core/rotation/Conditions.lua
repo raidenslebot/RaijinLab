@@ -1184,6 +1184,31 @@ Conditions.register("aura_search", {
             return false
         end
 
+        -- Second pass: drop units that client UnitDebuff / notes already show
+        -- as having the aura. Runtime notes alone lag CLEU; UnitAura on the
+        -- current target is instant. Without this, single-target multi-dot
+        -- re-cast PS while Blood Plague was already present.
+        if state == "missing" or state == "absent" or state == "lacks" then
+            local filtered = {}
+            for i = 1, #list do
+                local c = list[i]
+                if c and c.guid then
+                    local has = false
+                    if W.guid_aura_state then
+                        has = select(1, W.guid_aura_state(c.guid, id, nm))
+                    end
+                    if not has then
+                        filtered[#filtered + 1] = c
+                    end
+                end
+            end
+            list = filtered
+        end
+        if not list or #list == 0 then
+            ctx.aura_search_hit = nil
+            return false
+        end
+
         -- list is already ranked by runtime: closest first, FOV centre on ties.
         local best = list[1]
         ctx.aura_search_hit = {

@@ -1083,10 +1083,40 @@ function World.clear_aura_on_guid(guid, spellId, spellName)
     if sid > 0 then bag["id:" .. tostring(sid)] = nil end
 end
 
--- has, stacks, remaining — RUNTIME HasUnitAura first, Lua cache fallback.
+-- has, stacks, remaining — client UnitAura (when visible) + RUNTIME notes + cache.
 function World.guid_aura_state(guid, spell_id, aura_name)
     if not guid then return false, 0, 0 end
     local sid = tonumber(spell_id) or 0
+    local nm = tostring(aura_name or "")
+    -- Client-visible: if this GUID is "target"/"focus"/nameplate, UnitDebuff
+    -- is authoritative. Fixes single-target PS double-cast when CLEU notes lag
+    -- but the debuff is already on the bar.
+    if UnitDebuff and UnitGUID then
+        local tokens = { "target", "focus", "mouseover" }
+        for i = 1, 40 do tokens[#tokens + 1] = "nameplate" .. i end
+        for ti = 1, #tokens do
+            local tok = tokens[ti]
+            if UnitExists and UnitExists(tok) and tostring(UnitGUID(tok) or "") == tostring(guid) then
+                for i = 1, 40 do
+                    local name, _, _, count, _, _, expirationTime, _, _, _, spellId = UnitDebuff(tok, i)
+                    if not name then break end
+                    local match = false
+                    if sid > 0 and tonumber(spellId) == sid then match = true end
+                    if not match and nm ~= "" and string.lower(name) == string.lower(nm) then
+                        match = true
+                    end
+                    if match then
+                        local rem = 0
+                        if expirationTime and GetTime then
+                            rem = math.max(0, (tonumber(expirationTime) or 0) - GetTime())
+                        end
+                        return true, math.max(1, tonumber(count) or 1), rem
+                    end
+                end
+                break -- only check the matching token
+            end
+        end
+    end
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
         local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", guid, sid)
@@ -1094,15 +1124,13 @@ function World.guid_aura_state(guid, spell_id, aura_name)
         if stacks and stacks > 0 then
             return true, stacks, 0
         end
-        -- Runtime says missing; do not invent present from stale Lua cache.
-        return false, 0, 0
+        -- Runtime missing: fall through to Lua cache (optimistic notes).
     end
     local bag = World._aura_by_guid[guid]
     if not bag then return false, 0, 0 end
     local now = (GetTime and GetTime()) or 0
     local keys = {}
     if sid > 0 then keys[#keys + 1] = "id:" .. tostring(sid) end
-    local nm = tostring(aura_name or "")
     if nm ~= "" then keys[#keys + 1] = "nm:" .. string.lower(nm) end
     for i = 1, #keys do
         local e = bag[keys[i]]
@@ -1198,11 +1226,11 @@ function World.on_combat_log()
                 end
             end
         end
-        -- Optimistic: our DoT/application cast success marks aura present.
-        if subevent == "SPELL_CAST_SUCCESS" and playerGuid and sourceGUID == playerGuid
-            and destGUID and destGUID ~= playerGuid then
-            World.note_aura_on_guid(destGUID, spellId, spellName, 1, 21)
-        end
+        -- Do NOT note SPELL_CAST_SUCCESS with the cast spell id as an "aura".
+        -- Plague Strike id 45513 ≠ Blood Plague 55078 — that polluted search
+        -- (wrong key) and never stopped multi-dot from re-casting.
+        -- Optimistic apply is done in Executor with the aura_search spell_id,
+        -- and confirmed by SPELL_AURA_APPLIED above.
         if subevent ~= "SPELL_MISSED" then return end
     end
 

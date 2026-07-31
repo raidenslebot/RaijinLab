@@ -107,11 +107,16 @@ uint64_t ActivePlayerGuid(); // ClntObjMgrGetActivePlayer
 // Prefer WorldReady() for bridge registration.
 int InWorldFlag();
 
-// Multi-signal "safe to FrameScript_RegisterFunction" for the worker.
-// Does NOT rely solely on g_InWorld (proven unreliable on Ascension live).
-// outBits optional diagnostic bitfield (for heartbeats):
-//   bit0 flag  bit1 worldFrame  bit2 clientConn  bit3 objMgr  bit4 localPlayer  bit5 activeGuid
+// Multi-signal probe for FrameScript_RegisterFunction / diagnostics.
+// outBits optional: bit0 flag bit1 worldFrame bit2 clientConn bit3 objMgr
+//                   bit4 localPlayer bit5 activeGuid
+// Returns true if STRONG ready (flag|localPlayer|guid). Medium 0xE alone is
+// false here — main.cpp may still register on long medium streak (Ascension).
 bool WorldReady(uint32_t* outBits = nullptr);
+// Fill bits only (always). Medium = (bits & 0xE) == 0xE. Strong = bits & 0x31.
+uint32_t WorldReadyBits();
+bool WorldReadyStrong(uint32_t bits);
+bool WorldReadyMedium(uint32_t bits);
 
 } // namespace RL::Game::Addr
 

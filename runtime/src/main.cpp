@@ -103,18 +103,23 @@ static DWORD WINAPI MainThread(LPVOID param) {
     bool everRegistered = false; // after first success, /reload can rebind faster
     void* lastL = nullptr;
     int settle = 0;          // ticks since this lua_State went stable
-    int inWorldStreak = 0;   // consecutive ticks with flag==1
+    int strongStreak = 0;    // consecutive strong (flag|local|guid)
+    int mediumStreak = 0;    // consecutive medium (wf|conn|mgr) — Ascension normal
     int failBackoff = 0;     // ticks to wait after a failed Register
     int tick = 0;
-    // First bind of the session: conservative (crash lesson #132).
-    // After Register AV on load (bits=0xE, settle~4s) — require longer settle
-    // so ADDON_LOADED / world entry has finished before FrameScript_Register.
-    constexpr int kMinSettleFirst    = 100; // ~5 s after L stable
-    constexpr int kInWorldStreakFirst = 60; // ~3 s strong WorldReady
-    // Rebind after /reload: world already live; still wait past ADDON_LOADED.
-    constexpr int kMinSettleRebind    = 40; // ~2 s
-    constexpr int kInWorldStreakRebind = 24; // ~1.2 s
-    constexpr int kFailBackoff       = 120; // ~6 s after failed Register (AV)
+    // Registration policy (crash #132 + bridge-never-online balance):
+    //   STRONG path (flag/local/guid): modest settle — safe when signals work.
+    //   MEDIUM path (0xE only): LONG continuous streak + long settle. Ascension
+    //     often sits at 0xE forever with flag stuck 0; strong-only left users
+    //     with stock IsLinuxClient. Crash at settle~4s medium → require ~7s+.
+    constexpr int kSettleFirst       = 80;  // ~4 s L stable (both paths min)
+    constexpr int kStrongFirst       = 30;  // ~1.5 s strong
+    constexpr int kMediumFirst       = 100; // ~5 s continuous medium
+    constexpr int kSettleMediumFirst = 140; // ~7 s before medium-only Register
+    constexpr int kSettleRebind      = 30;  // ~1.5 s
+    constexpr int kStrongRebind      = 16;  // ~0.8 s
+    constexpr int kMediumRebind      = 40;  // ~2 s
+    constexpr int kFailBackoff       = 120; // ~6 s after Register AV
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {
@@ -129,53 +134,64 @@ static DWORD WINAPI MainThread(LPVOID param) {
             lastL = L;
             registered = false;
             settle = 0;
-            inWorldStreak = 0;
+            strongStreak = 0;
+            mediumStreak = 0;
             failBackoff = 0;
-            // /reload wiped _G — latch must clear so Register truly rebinds.
             RL::Bridge::ResetRegistrationState();
         }
 
-        // Multi-signal world ready (NOT g_InWorld alone — stuck at 0 on Ascension).
-        uint32_t wbits = 0;
-        const bool worldNow = RL::Game::Addr::WorldReady(&wbits);
-        if (worldNow)
-            ++inWorldStreak;
-        else
-            inWorldStreak = 0;
+        uint32_t wbits = RL::Game::Addr::WorldReadyBits();
+        const bool strong = RL::Game::Addr::WorldReadyStrong(wbits);
+        const bool medium = RL::Game::Addr::WorldReadyMedium(wbits);
+        if (strong) ++strongStreak; else strongStreak = 0;
+        if (medium) ++mediumStreak; else mediumStreak = 0;
 
         if (failBackoff > 0)
             --failBackoff;
 
         if (!secondary && L && !registered) {
             ++settle;
-            const int needSettle = everRegistered ? kMinSettleRebind : kMinSettleFirst;
-            const int needWorld  = everRegistered ? kInWorldStreakRebind : kInWorldStreakFirst;
-            // Require sustained WorldReady (player/OM/frame), not just flag byte.
-            // Never register on glue with null L; L already required.
-            const bool worldReady = worldNow && (inWorldStreak >= needWorld);
-            if (settle >= needSettle && worldReady && failBackoff == 0) {
+            const bool first = !everRegistered;
+            const int needSettle = first ? kSettleFirst : kSettleRebind;
+            const int needStrong = first ? kStrongFirst : kStrongRebind;
+            const int needMedStr = first ? kMediumFirst : kMediumRebind;
+            const int needMedSet = first ? kSettleMediumFirst : kSettleRebind;
+
+            // Path A: strong signal held — fast, preferred.
+            const bool pathStrong = strong && strongStreak >= needStrong
+                                    && settle >= needSettle;
+            // Path B: medium 0xE held a long time — Ascension when flag/local stuck.
+            // Must be longer than the crash window (~4s medium Register AV).
+            const bool pathMedium = medium && mediumStreak >= needMedStr
+                                    && settle >= needMedSet;
+
+            if ((pathStrong || pathMedium) && failBackoff == 0) {
                 if (RL::Bridge::Register()) {
                     registered = true;
                     everRegistered = true;
-                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d streak=%d",
-                                  RL::Bridge::Version(), L, (unsigned)wbits, settle, inWorldStreak);
+                    RL::Log::Warn(
+                        "BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d strong=%d medium=%d via=%s",
+                        RL::Bridge::Version(), L, (unsigned)wbits, settle,
+                        strongStreak, mediumStreak,
+                        pathStrong ? "strong" : "medium");
                 } else {
-                    RL::Log::Warn("Register failed - backoff %d ticks bits=0x%X",
-                                  kFailBackoff, (unsigned)wbits);
+                    RL::Log::Warn("Register failed - backoff %d ticks bits=0x%X settle=%d",
+                                  kFailBackoff, (unsigned)wbits, settle);
                     failBackoff = kFailBackoff;
-                    inWorldStreak = 0;
+                    strongStreak = 0;
+                    mediumStreak = 0;
                 }
             }
         }
 
         ++tick;
-        // WRN so it always appears in the inject tail.
         // bits: flag|wf|conn|mgr|localPly|guid
         if ((tick % 40) == 0) {
-            RL::Log::Warn("heartbeat reg=%d ever=%d bits=0x%X settle=%d streak=%d L=%p waiting=%d",
-                          (int)registered, (int)everRegistered, (unsigned)wbits, settle,
-                          inWorldStreak, L,
-                          (!registered && L) ? 1 : 0);
+            RL::Log::Warn(
+                "heartbeat reg=%d ever=%d bits=0x%X settle=%d str=%d med=%d L=%p waiting=%d",
+                (int)registered, (int)everRegistered, (unsigned)wbits, settle,
+                strongStreak, mediumStreak, L,
+                (!registered && L) ? 1 : 0);
         }
 
         Sleep(50);

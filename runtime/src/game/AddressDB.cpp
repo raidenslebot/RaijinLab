@@ -99,15 +99,7 @@ int InWorldFlag() {
     return ReadInWorldFlag();
 }
 
-bool WorldReady(uint32_t* outBits) {
-    // Multi-signal world readiness for FrameScript_RegisterFunction.
-    //
-    // CRASH PROOF 2026-07-31 13:28:45 — Register failed rc=1073741819 (0xC0000005)
-    // with bits=0xE (worldFrame|conn|objMgr ONLY). Medium-only readiness fired
-    // during world load / ADDON_LOADED; SEH "caught" the worker AV but corrupted
-    // the Lua VM → client crash on load (classic ERROR #132 pattern).
-    //
-    // Rule: STRONG signals only for register. Medium 0xE is diagnostic, not a gate.
+uint32_t WorldReadyBits() {
     uint32_t bits = 0;
     int flag = ReadInWorldFlag();
     if (flag == 1) bits |= 1u;
@@ -115,22 +107,28 @@ bool WorldReady(uint32_t* outBits) {
     if (ReadClientConnOk()) bits |= 4u;
     if (ReadObjMgrOk()) bits |= 8u;
     if (ReadLocalPlayerOk()) bits |= 16u;
-
-    // Active player GUID: SEH-isolated. May return 0 from worker (no TLS) — OK.
+    // Worker TLS often empty → GUID 0 even in-world. Pure memory preferred.
     uint64_t guid = SafeGetActivePlayerGuid();
     if (guid != 0) bits |= 32u;
+    return bits;
+}
 
+bool WorldReadyStrong(uint32_t bits) {
+    // flag | localPlayer | activeGuid
+    return (bits & (1u | 16u | 32u)) != 0;
+}
+
+bool WorldReadyMedium(uint32_t bits) {
+    // worldFrame + clientConn + objMgr (Ascension often stuck here for minutes)
+    return (bits & (2u | 4u | 8u)) == (2u | 4u | 8u);
+}
+
+bool WorldReady(uint32_t* outBits) {
+    // Strong-only default. main.cpp may use medium via WorldReadyMedium after
+    // a long continuous streak (Ascension: flag flickers, localPlayer often 0).
+    uint32_t bits = WorldReadyBits();
     if (outBits) *outBits = bits;
-
-    // STRONG ONLY — any one of these means the player is actually in world:
-    //   bit0  g_InWorld flag (when Ascension sets it)
-    //   bit4  local player pointer readable
-    //   bit5  active player GUID non-zero
-    // Medium (wf|conn|mgr) alone is NOT enough — present during load screens.
-    if (bits & (1u | 16u | 32u))
-        return true;
-
-    return false;
+    return WorldReadyStrong(bits);
 }
 
 } // namespace RL::Game::Addr

@@ -26,6 +26,8 @@ struct Object {
 
 // Thread-safe snapshot with TTL cache
 void Invalidate();
+// /reload: freeze walks and reset settle/warm so we do not enum during FrameXML.
+void OnLuaReload();
 void Refresh(bool force = false);
 // True after EnumVisibleObjects AVed once this inject — enumvis stays off;
 // linked-list walk continues (list-only mode). Full OM is NOT killed.

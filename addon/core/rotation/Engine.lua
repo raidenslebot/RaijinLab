@@ -335,12 +335,14 @@ function Engine.spell_ready(ctx, spell_id)
         return false, "cooldown"
     end
 
-    -- Global cooldown gate. off_gcd slots bypass. Pending cast also blocks.
+    -- Global cooldown gate. off_gcd slots bypass.
     if ctx.gcd_active and not ctx.slot_off_gcd then
         return false, "gcd"
     end
-    if ctx.pending_sid and not ctx.slot_off_gcd then
-        -- Any non-offGCD ability waits while a cast is in flight (not just same sid).
+    -- Pending only blocks OTHER spells when the in-flight cast is a confirmed
+    -- list-lock (not no_gcd / provisional). Unconfirmed wires and multi-dot
+    -- must never freeze the whole rotation on fail.
+    if ctx.pending_sid and not ctx.slot_off_gcd and not ctx.pending_no_gcd then
         if tonumber(ctx.pending_sid) ~= spell_id then
             return false, "pending_other"
         end

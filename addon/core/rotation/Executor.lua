@@ -976,12 +976,21 @@ local function fill_live_spell_state(ctx, spell_ids)
             end
             ctx.spell_instant[id] = instant
             ctx.spell_instant[tostring(id)] = instant
-            -- Known
+            -- Known: Ascension custom IDs often fail IsSpellKnown while still
+            -- castable. If GetSpellInfo resolves a name, treat as known.
+            local k = true
             if IsSpellKnown then
-                local k = not not IsSpellKnown(id)
-                ctx.known_spells[id] = k
-                ctx.known_spells[tostring(id)] = k
+                local okk, known = pcall(IsSpellKnown, id)
+                if okk and known == false then
+                    k = false
+                    if GetSpellInfo then
+                        local okn, sn = pcall(GetSpellInfo, id)
+                        if okn and sn and sn ~= "" then k = true end
+                    end
+                end
             end
+            ctx.known_spells[id] = k
+            ctx.known_spells[tostring(id)] = k
         end
     end
     ctx.live_gcd_remaining = gcd_rem

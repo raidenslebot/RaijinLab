@@ -37,35 +37,28 @@ run on the same frames as:
 2. Suite master ON
 3. Inject / re-register
 
-## Suite-on force-enable (2026-07-31, CRITICAL)
+## Suite-on / delays are NOT safety (2026-07-31, CRITICAL)
 
-**Cause:** `Master.start_all` correctly set `om.enable=0` and scheduled arm, then
-`start_module("quest")` → `Suite.start()` **immediately** called
-`SetSystemVar("om.enable","1")` on the same frame. PEW `ArmRuntimeSystems`
-delayed timers could also re-enable mid-warm. Client hard-crashed.
+**Wrong approach:** freeze OM → wait 5–8s → re-enable → "warm-up". Every crash
+after suite ON landed on those delayed edges (`OM enable edge` +4–6s).
 
-**Proof (rotation-only thrash):** 2026-07-31 13:43 master ON
-`modules=rotation` only still froze OM + re-armed at +6s/+8s while stuck on
-`no_candidate:Consecration` mid-combat → hard crash ~4s later. Freezing OM is
-for **heavy** modules (quest/grind/gather), not rotation alone.
+**Proof:** 13:43 / 13:47 sessions — master ON, then hard crash ~5s later when
+PEW/Arm timers flipped `om.enable` and restarted list-only warm-up.
 
-**Rule:** Only `Master.start_all` timers may re-enable OM after **heavy** suite-on.
-- Rotation-only / combat-only: **never** DestroyObjectManager or force om.enable=0
-- `Suite.start` must NEVER set `om.enable` or `InitObjectManager`
-- `Suite.ensure_om` / `tick` fail-closed while `Master.in_suite_warm()`
-- PEW `enable_om` timers must check `in_suite_warm` / `_om_gen`
-- Runtime rising-edge `om.enable` always restarts list-only warm-up
+**Correct approach:**
+- `Master.start_all` **never** touches OM (no enable=0, no Destroy, no timers)
+- `ArmRuntimeSystems` is **one-shot**: HW gates + `om.enable=1` + Lua OM if needed
+- Rising edge warm-up runs **once per inject**, not on every 0→1
+- Gates = player exists + bridge online, not multi-second wall clocks
+- `Suite.start` never sets om.enable / InitObjectManager as a thrash
 
 ## Ground AoE cast path (Consecration) — freeze → crash
 
-**Proof:** `Consecration=CAST` then `wait no_candidate:Consecration x238` with
-target present. Policy becomes `optional` (target_exists any + ground-AoE rule),
-so `needs_enemy=false` → no GUID in try_list → empty wire loop → infinite
-no_candidate. Higher slots (PS/IT) denied; list stuck; OM re-arm kills client.
+**Proof:** `Consecration=CAST` then `wait no_candidate:Consecration x238`.
+Policy optional → empty GUID try_list → infinite no_candidate.
 
 **Rule:** Ground/self optional casts MUST `CastSpell(id)` with no unit when
-try_list is empty. Soft-lock failed no_candidate slots (~0.35s) so they cannot
-monopolize every tick.
+try_list is empty. Soft-lock failed no_candidate slots so they cannot monopolize.
 
 ## Mandatory stagger (current policy)
 

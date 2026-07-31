@@ -266,20 +266,11 @@ function RaijinLab:CoreOnEvent(event, ...)
         if RaijinLab.MinimapIcon and RaijinLab.MinimapIcon.Init then
             pcall(RaijinLab.MinimapIcon.Init, RaijinLab.MinimapIcon)
         end
-        -- Defer heavy OM arm until the world is stable (avoids load-screen crashes
-        -- when the DLL was injected at character select / suite-on after login).
+        -- Arm once when bridge+player exist. No multi-second PEW delay — those
+        -- just moved the crash to "suite ON + 5s". Runtime OnUpdate also retries
+        -- until armed. ArmRuntimeSystems is idempotent.
         if RaijinLab:HasRuntime() and RaijinLab.ArmRuntimeSystems then
-            if C_Timer and C_Timer.After then
-                -- 6s settle after PEW: soft-arm only (OM itself delayed further
-                -- inside ArmRuntimeSystems). Never arm on the PEW frame.
-                C_Timer.After(6.0, function()
-                    if RaijinLab and RaijinLab.ArmRuntimeSystems then
-                        pcall(function() RaijinLab:ArmRuntimeSystems() end)
-                    end
-                end)
-            else
-                RaijinLab:ArmRuntimeSystems()
-            end
+            pcall(function() RaijinLab:ArmRuntimeSystems() end)
         end
         if RaijinLab:HasRuntime() and RaijinLabDB.track_quest_objects then
             RaijinLab:EnableQuestTracker()

@@ -1601,33 +1601,40 @@ void Refresh(bool force) {
         return;
     }
 
-    // om.enable=0: freeze walks entirely (suite-on holds this for several seconds).
-    // Rising edge 0->1 ALWAYS restarts list-only warm-up (suite freeze re-enable).
+    // om.enable=0: no walk this call (caller may soft-refresh instead).
+    // CRITICAL: do NOT restart warm-up on every 0→1 edge. Suite thrash used to
+    // flip enable off then on after "delays" — each rising edge re-walked and
+    // hard-crashed ~4–6s after master ON. Warm once per inject after settle.
     static bool s_wasOmOn = false;
-    static int s_listOnlyLeft = 24;
+    static bool s_warmDone = false;
+    static int s_listOnlyLeft = 12;
     static ULONGLONG s_omEnableAt = 0;
-    constexpr int kListOnlyFrames = 24;
-    constexpr ULONGLONG kListOnlyMs = 6000ull;
+    constexpr int kListOnlyFrames = 12;
+    constexpr ULONGLONG kListOnlyMs = 1500ull; // brief list-only before first enum try
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
     if (!omOn) {
         s_wasOmOn = false;
-        s_omEnableAt = 0;
-        s_listOnlyLeft = kListOnlyFrames;
+        // Keep s_warmDone / s_listOnlyLeft — re-enable must not re-warm from zero.
         g_lastRefresh = now;
         return;
     }
     if (!s_wasOmOn) {
-        s_omEnableAt = now;
-        s_listOnlyLeft = kListOnlyFrames;
-        RL::Log::Warn("OM enable edge -> list-only warm-up (%d frames / %llums)",
-                      kListOnlyFrames, (unsigned long long)kListOnlyMs);
+        if (!s_warmDone) {
+            s_omEnableAt = now;
+            s_listOnlyLeft = kListOnlyFrames;
+            RL::Log::Warn("OM first enable -> list-only warm-up (%d frames / %llums)",
+                          kListOnlyFrames, (unsigned long long)kListOnlyMs);
+        } else {
+            RL::Log::Info("OM re-enable (warm already done, no restart)");
+        }
     }
     s_wasOmOn = true;
 
-    // Wall-clock: at least 6s list-only after enable, regardless of refresh rate.
-    const bool listOnlyClock = omOn && s_omEnableAt
+    const bool listOnlyClock = omOn && !s_warmDone && s_omEnableAt
         && (now - s_omEnableAt) < kListOnlyMs;
     const bool allowEnum = !g_enumDead && s_listOnlyLeft <= 0 && !listOnlyClock;
+    if (allowEnum || g_enumDead)
+        s_warmDone = true;
 
     // MERGE: list walk always (after settle); enum only after warm-up.
     g_podCount = 0;

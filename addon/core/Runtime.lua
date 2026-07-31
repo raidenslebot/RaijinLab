@@ -129,9 +129,12 @@ function RL.should_arm(has_runtime, armed, online_t, now, player_ready, settle)
     if not has_runtime then return false end
     if armed then return false end            -- idempotent: nothing to do
     if not player_ready then return false end -- in-world gate, #132
-    -- Default settle 5s: arming OM mid-load-screen hard-crashed (#132 + suite-on).
-    settle = settle or 5.0
-    if type(now) ~= "number" or type(online_t) ~= "number" then return false end
+    -- Gate is player+bridge, NOT multi-second wall clocks. Delays only postponed
+    -- crashes (suite ON → crash at +5s when PEW timer flipped om.enable).
+    settle = settle or 0
+    if type(now) ~= "number" or type(online_t) ~= "number" then
+        return true -- player_ready already proven
+    end
     return (now - online_t) >= settle
 end
 
@@ -140,96 +143,33 @@ function RL:ArmRuntimeSystems()
     if not self:HasRuntime() then return end
     if UnitName and not UnitName("player") then return end
     self._runtime_armed = true
-    -- Soft arm only: HW gates + ping. OM enable + Lua OM frame are DELAYED.
-    -- Enabling om + InitObjectManager on the PEW arm frame (or suite-on frame)
-    -- was a top crash path after login.
+    -- ONE-SHOT arm. No delayed OM enable. No freeze. No thrash.
+    -- Native Refresh is SEH-guarded and settles itself after first local GUID.
+    -- Flipping om.enable 0→1 repeatedly was the suite crash (rising-edge warm).
     pcall(function()
         self:RuntimeCall("SetSystemVar", "taint.patch", "0")
         self:RuntimeCall("ArmUnlock")
         self:RuntimeCall("Ping")
-        -- Keep om.enable off for a few more seconds after "armed".
-        self:RuntimeCall("SetSystemVar", "om.enable", "0")
+        self:RuntimeCall("SetSystemVar", "om.enable", "1")
     end)
     if self.Actions and self.Actions.ensure then
         pcall(function() self.Actions.ensure() end)
     end
-    -- Stagger: enable native OM pack, then Lua object_list OnUpdate.
-    local arm_gen = (self.Master and self.Master._om_gen) or 0
-    local function suite_owns_om()
-        -- Master.start_all freezes OM and schedules its own arm. Any PEW-arm
-        -- timer that fires during that window must NOT re-enable om.enable —
-        -- that race hard-crashed suite enable (2026-07-31).
-        local M = self.Master
-        if not M then return false end
-        if M.in_suite_warm and M.in_suite_warm() then return true end
-        -- Generation bumped on each start_all; stale PEW timers see mismatch.
-        if M._om_gen and arm_gen ~= 0 and M._om_gen ~= arm_gen then
-            return true
-        end
-        return false
+    if self.GetObjManagerFrame and self.InitObjectManager
+        and not self:GetObjManagerFrame() then
+        pcall(function() self:InitObjectManager() end)
     end
-    local function enable_om()
-        if not self:HasRuntime() then return end
-        if suite_owns_om() then return end
-        pcall(function()
-            self:RuntimeCall("SetSystemVar", "om.enable", "1")
-        end)
-    end
-    local function start_lua_om()
-        if not self:HasRuntime() then return end
-        if suite_owns_om() then return end
-        local M = self.Master
-        if M and M.enabled and M.enabled() and M.suite_om_safe
-            and not M.suite_om_safe() then
-            return
-        end
-        if self.GetObjManagerFrame and self.InitObjectManager
-            and not self:GetObjManagerFrame() then
-            pcall(function() self:InitObjectManager() end)
-        end
-    end
-    if C_Timer and C_Timer.After then
-        -- Longer PEW delays so a quick suite-on after inject never races.
-        C_Timer.After(5.0, enable_om)
-        C_Timer.After(7.0, start_lua_om)
-    else
-        -- No timer: leave OM off (single-GUID still works). Safer than crash.
-    end
-    -- Watchdog: cheap 1Hz; OK after soft arm.
+    -- Watchdog: cheap 1Hz.
     if self.Watchdog and self.Watchdog.start then
         pcall(self.Watchdog.start)
     end
-    -- Selftest: long delay, never on the arm frame (bridge stress = crash co-factor).
-    if self.SelfTest and self.SelfTest.evaluate and self.SelfTest.log_rows then
-        local delay = 12.0
-        local function run_it()
-            if not self:HasRuntime() then return end
-            local ST = self.SelfTest
-            local function call(name, ...)
-                if not self:HasRuntime() then return nil end
-                local okc, a, b, c = pcall(self.RuntimeCall, self, name, ...)
-                if not okc then return nil end
-                return a, b, c
-            end
-            local function resolve(tok)
-                local g = UnitGUID and UnitGUID(tok)
-                if type(g) ~= "string" or g == "" then return nil end
-                if string.find(g, "^0x0+$") then return nil end
-                return g
-            end
-            local o = {}
-            if UnitExists and UnitExists("player") then o.player_guid = resolve("player") end
-            if UnitExists and UnitExists("target") then o.target_guid = resolve("target") end
-            local rows, pass, fail, skip = ST.evaluate(call, o)
-            ST.log_rows(rows, pass, fail, skip, "auto-on-arm")
-        end
-        if C_Timer and C_Timer.After then
-            C_Timer.After(delay, function() pcall(run_it) end)
-        end
-    end
+    -- No auto-selftest on arm (was delayed 12s and stressed the bridge).
+    -- Run manually: /raijin selftest
     if self._debug_print then
-        print("|cff7ec8e3RaijinLab|r: runtime soft-armed (OM delayed)")
+        print("|cff7ec8e3RaijinLab|r: runtime armed (OM on, one-shot)")
     end
+    local DL = self.DevLog
+    if DL and DL.log then DL.log("runtime", "armed one-shot om=1") end
 end
 
 -- Detect inject after addon load without /reload. If we are already in-world

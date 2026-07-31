@@ -175,17 +175,13 @@ local function set_state(s)
     return s
 end
 
--- ---- object manager: make sure it is enumerating -------------------------
--- CRASH LESSON (suite-on, permanent): never force om.enable / InitObjectManager
--- while Master is still in the suite-on warm window. Suite.start used to call
--- SetSystemVar("om.enable","1") on the same frame Master froze OM — that was
--- the hard-crash after enabling the suite. Master owns staggered arm only.
+-- ---- object manager: ensure on if master is running -----------------------
+-- Never thrash (no enable=0). Only set om=1 / Init if missing. Arm is owned by
+-- ArmRuntimeSystems one-shot; this is a soft ensure for long quest sessions.
 local function ensure_om()
     if not RaijinLab then return end
     local M = RaijinLab.Master
-    -- Fail-closed during suite-on warm: Master owns staggered arm only.
-    if M and M.in_suite_warm and M.in_suite_warm() then return end
-    if M and M.suite_om_safe and not M.suite_om_safe() then return end
+    if M and M.enabled and not M.enabled() then return end
     if RaijinLab.RuntimeCall then
         pcall(function() RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1") end)
     end

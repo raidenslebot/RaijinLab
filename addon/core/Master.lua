@@ -255,141 +255,32 @@ function M.start_all(reason)
     M.clear_ui_focus()
 
     local R = RaijinLab
-    -- Heavy modules (quest/grind/gather) walk the world hard. Rotation alone
-    -- does not. Live proof 2026-07-31 13:43: master ON modules=rotation only
-    -- still froze OM, then re-armed at +6s/+8s mid-combat after rotation stuck
-    -- on no_candidate:Consecration → client hard-crash ~4s later.
-    -- Rule: OM freeze/rearm ONLY when a heavy module is armed.
-    local heavy = false
-    for _, k in ipairs({ "quest", "grind", "gather" }) do
-        if d.modules[k] then heavy = true; break end
-    end
-
+    -- ================================================================
+    -- NO DELAYS. NO OM FREEZE/REARM. Suite toggle must not thrash native
+    -- state. Live crash 2026-07-31: every "wait N seconds then om.enable=1"
+    -- just postponed the AV to +4–8s after master ON. Delays are not safety.
+    --
+    -- OM lifecycle is owned by ArmRuntimeSystems (once, when player+bridge
+    -- are real). start_all only starts modules.
+    -- ================================================================
+    M._suite_on_t = nil -- never open a "warm" fail-closed window on suite ON
     M._om_gen = (M._om_gen or 0) + 1
-    local om_gen = M._om_gen
 
-    local function still_this_arm()
-        return RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
-            and RaijinLab.Master.enabled()
-            and RaijinLab.Master._om_gen == om_gen
-    end
+    -- Ensure runtime is armed if PEW already ran and bridge is up. Idempotent.
+    -- Does not destroy OM, does not flip om.enable 1→0→1.
+    pcall(function()
+        if not (RaijinLab.HasRuntime and RaijinLab:HasRuntime()) then return end
+        if RaijinLab.ArmRuntimeSystems and not RaijinLab._runtime_armed then
+            RaijinLab:ArmRuntimeSystems()
+        end
+    end)
 
-    local function bridge_ready()
-        return RaijinLab and RaijinLab.HasRuntime and RaijinLab:HasRuntime()
-    end
-
-    if heavy then
-        -- Crash-hardening clock: fail-closed on heavy OM until warm ends.
-        M._suite_on_t = (GetTime and GetTime()) or 0
-        -- ================================================================
-        -- CRASH LESSON: suite-on same frame as OM walk/enum hard-crashes.
-        --   0.0s  freeze OM, kill Lua OM frame, start modules
-        --   6.0s  re-enable om.enable (list-only warm-up)
-        --   8.0s  Lua OM OnUpdate
-        --  12.0s  Surveyor
-        -- ================================================================
-        pcall(function()
-            if RaijinLab.RuntimeCall then
-                RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "0")
-            end
-            if RaijinLab.DestroyObjectManager then
-                pcall(RaijinLab.DestroyObjectManager, RaijinLab)
-            end
-        end)
-
-        local function arm_om_native()
-            if not still_this_arm() then return end
-            if not bridge_ready() then
-                local t0 = M._suite_on_t or 0
-                local now = (GetTime and GetTime()) or 0
-                if C_Timer and C_Timer.After and (now - t0) < 45.0 then
-                    C_Timer.After(2.0, arm_om_native)
-                end
-                local DL = RaijinLab and RaijinLab.DevLog
-                if DL and DL.log then DL.log("master", "OM native defer: bridge not ready") end
-                return
-            end
-            pcall(function()
-                if RaijinLab.ArmRuntimeSystems and not RaijinLab._runtime_armed then
-                    RaijinLab:ArmRuntimeSystems()
-                end
-                if RaijinLab.RuntimeCall then
-                    RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
-                end
-                local DL = RaijinLab.DevLog
-                if DL and DL.log then DL.log("master", "OM native enable (heavy suite warm)") end
-            end)
-        end
-        local function arm_om_lua_frame()
-            if not still_this_arm() then return end
-            if not bridge_ready() then
-                local t0 = M._suite_on_t or 0
-                local now = (GetTime and GetTime()) or 0
-                if C_Timer and C_Timer.After and (now - t0) < 45.0 then
-                    C_Timer.After(2.0, arm_om_lua_frame)
-                end
-                return
-            end
-            pcall(function()
-                if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
-                    and not RaijinLab:GetObjManagerFrame() then
-                    RaijinLab:InitObjectManager()
-                end
-                local DL = RaijinLab.DevLog
-                if DL and DL.log then DL.log("master", "OM lua frame (heavy suite warm)") end
-            end)
-        end
-        if C_Timer and C_Timer.After then
-            C_Timer.After(6.0, arm_om_native)
-            C_Timer.After(8.0, arm_om_lua_frame)
-        else
-            print("|cffffd200RaijinLab|r no C_Timer — OM stays off until you /raijin om on")
-        end
-        if R and R.Surveyor and R.Surveyor.start
-            and (not R.Surveyor.needed or R.Surveyor.needed()) then
-            if C_Timer and C_Timer.After then
-                C_Timer.After(12.0, function()
-                    if still_this_arm()
-                        and RaijinLab.Surveyor and RaijinLab.Surveyor.start then
-                        pcall(RaijinLab.Surveyor.start)
-                    end
-                end)
-            end
-        end
-    else
-        -- Rotation / combat only: DO NOT kill OM mid-fight. Leave PEW arm alone.
-        -- Clear warm clock so enemies_in_range / hostiles are not fail-closed.
-        M._suite_on_t = nil
-        pcall(function()
-            if not bridge_ready() then return end
-            if RaijinLab.ArmRuntimeSystems and not RaijinLab._runtime_armed then
-                RaijinLab:ArmRuntimeSystems()
-            end
-            -- Soft-ensure OM is on without tear-down.
-            if RaijinLab.RuntimeCall then
-                RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
-            end
-            if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
-                and not RaijinLab:GetObjManagerFrame() then
-                if C_Timer and C_Timer.After then
-                    C_Timer.After(2.0, function()
-                        if not still_this_arm() or not bridge_ready() then return end
-                        if RaijinLab.GetObjManagerFrame
-                            and not RaijinLab:GetObjManagerFrame()
-                            and RaijinLab.InitObjectManager then
-                            pcall(function() RaijinLab:InitObjectManager() end)
-                        end
-                    end)
-                end
-            end
-            local DL = RaijinLab.DevLog
-            if DL and DL.log then
-                DL.log("master", "OM left running (rotation-only, no freeze)")
-            end
-        end)
-    end
-    -- Pathfinder jobs run on the Scheduler OnUpdate (cheap when idle).
     if R and R.Scheduler and R.Scheduler.start then pcall(R.Scheduler.start) end
+
+    local DL = RaijinLab and RaijinLab.DevLog
+    if DL and DL.log then
+        DL.log("master", "start_all no-OM-thrash reason=%s", tostring(reason or "user"))
+    end
 
     -- The one exception, by explicit user rule: the main button turns the
     -- rotation on too. It is the part of the suite you almost always want, and

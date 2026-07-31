@@ -234,15 +234,41 @@ end
 World.CAST_FACE_HALF_ARC = math.pi / 2   -- half-angle radians
 World.CAST_FACE_FULL_ARC = math.pi       -- full cone (documentation / Trinity M_PI)
 
+local function _live_player_facing()
+    -- Prefer runtime live facing (player+0x7AC). ObjectFacing@0x7A4 is stale
+    -- on this client and FaceDirection writes only the stale field.
+    local A = RaijinLab and RaijinLab.Actions
+    if A and A.PlayerFacing then
+        local ok, f = pcall(A.PlayerFacing)
+        if ok and type(f) == "number" and f == f and f > -0.01 and f < 6.30 then
+            return f
+        end
+    end
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        local ok, f = pcall(RaijinLab.RuntimeCall, RaijinLab, "PlayerFacing")
+        if ok and type(f) == "number" and f == f and f > -0.01 and f < 6.30 then
+            return f
+        end
+    end
+    if GetPlayerFacing then
+        local f = GetPlayerFacing()
+        if type(f) == "number" then return f end
+    end
+    if RaijinLab and RaijinLab.ObjectFacing then
+        return RaijinLab:ObjectFacing("player")
+    end
+    return nil
+end
+
 -- Heading error (signed rad) from player facing to GUID. nil if unmeasurable.
+-- Positive ≈ target is to the left (CCW from facing) — matches TurnByDelta +.
 function World.heading_error_to_guid(guid)
     if not guid or not (RaijinLab and RaijinLab.ObjectPosition) then return nil end
     local px, py = RaijinLab:ObjectPosition("player")
     local tx, ty = RaijinLab:ObjectPosition(guid)
     if not px or not tx then return nil end
-    local face = nil
-    if RaijinLab.ObjectFacing then face = RaijinLab:ObjectFacing("player") end
-    if not face and GetPlayerFacing then face = GetPlayerFacing() end
+    local face = _live_player_facing()
     if not face then return nil end
     local ang = math.atan2(ty - py, tx - px)
     local diff = ang - face
@@ -260,20 +286,32 @@ function World.heading_to_guid(guid)
     return math.atan2(ty - py, tx - px)
 end
 
--- Instant face toward GUID (does NOT change unit selection). Returns true if
--- Face was issued. Acquire-off multi-dot uses this before CastSpell(guid).
+-- Face toward GUID without changing unit selection.
+-- Uses TurnByDelta (real client turn) — raw FaceDirection memory write is
+-- ignored for movement/cast on this Ascension build.
 function World.face_guid(guid)
-    local yaw = World.heading_to_guid(guid)
-    if yaw == nil then return false end
+    local err = World.heading_error_to_guid(guid)
+    if err == nil then return false end
+    if math.abs(err) <= 0.12 then return true end -- already close enough
+    -- Cap one-shot step to avoid wild spin; recheck next tick if still off.
+    local step = err
+    if step > 1.4 then step = 1.4 end
+    if step < -1.4 then step = -1.4 end
     local A = RaijinLab and RaijinLab.Actions
-    if A and A.Face then
-        local ok = pcall(A.Face, yaw)
+    if A and A.TurnByDelta then
+        local ok = pcall(A.TurnByDelta, step)
         return ok and true or false
     end
     if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
-        local ok = pcall(RaijinLab.RuntimeCall, RaijinLab, "FaceDirection", yaw)
+        local ok = pcall(RaijinLab.RuntimeCall, RaijinLab, "TurnByDelta", step)
         return ok and true or false
+    end
+    -- Last resort: memory write (may not affect cast face on this client).
+    local yaw = World.heading_to_guid(guid)
+    if yaw and A and A.Face then
+        pcall(A.Face, yaw)
+        return true
     end
     return false
 end

@@ -379,20 +379,10 @@ static bool WriteClientTargetGuid(uint64_t guid) {
     }
 }
 
-// Restore selection after Spell_C (which often sticks the cast victim as target).
-// Minimal: descriptor write + at most one TargetGuid/ClearTarget. No cascade.
+// Restore selection field after Spell_C. Descriptor only — never TargetUnit
+// from the cast wire (mid-combat nested pcall crash).
 static void RestoreSelectionAfterCast(uint64_t prevTarget, uint64_t castVictim) {
     WriteClientTargetGuid(prevTarget);
-    uint64_t now = ReadClientTargetGuid();
-    if (prevTarget == 0) {
-        if (now != 0)
-            ClearTarget();
-        (void)castVictim;
-        return;
-    }
-    if (now == prevTarget)
-        return;
-    TargetGuid(prevTarget);
     (void)castVictim;
 }
 
@@ -414,41 +404,32 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
 
     uint64_t prev = ReadClientTargetGuid();
 
-    // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) + restore.
+    // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) + descriptor pin.
     // Never demote multi-dot / GUID casts to stock CastSpellByID (client target).
     //
-    // Melee needs real selection for the wire (descriptor pin alone is not
-    // enough). Use AT MOST one TargetGuid to select and one to restore —
-    // never the old RestoreSelectionAfterCast cascade (TargetLastTarget +
-    // ClearTarget + TargetGuid x2) which re-entered Lua too hard.
+    // CRASH FIX (mid-combat): do NOT call TargetUnit / TargetLastTarget / ClearTarget
+    // from inside CastSpell. Nested Lua pcalls while already in IsLinuxClient
+    // re-entry are the ERROR #132 null-EIP pattern under combat load. Selection
+    // changes for multi-dot belong in Lua acquire_on only; acquire-off uses
+    // UNIT_FIELD_TARGET pin + Spell_C(guid) only, then descriptor restore.
     // Only guid==0 is self / ground / current-target (still prefer nested pcall).
     if (targetGuid != 0) {
-        bool retargeted = false;
         bool pinned = false;
         if (prev != targetGuid) {
-            retargeted = TargetGuid(targetGuid);
             pinned = WriteClientTargetGuid(targetGuid);
-            if (!retargeted && !pinned)
-                RL::Log::Warn("CastSpell select/pin failed id=%d guid=0x%llX",
+            if (!pinned)
+                RL::Log::Warn("CastSpell pin failed id=%d guid=0x%llX",
                               spellId, (unsigned long long)targetGuid);
         }
         int nrc = SafeNativeCast(spellId, targetGuid);
-        // Minimal restore: descriptor always, at most one TargetGuid/ClearTarget.
-        if (prev != targetGuid || retargeted || pinned) {
+        // Descriptor-only restore — never nested TargetUnit here.
+        if (prev != targetGuid || pinned)
             WriteClientTargetGuid(prev);
-            uint64_t now = ReadClientTargetGuid();
-            if (prev == 0) {
-                if (now != 0) ClearTarget();
-            } else if (now != prev) {
-                TargetGuid(prev);
-            }
-        }
         if (nrc > 0) {
             g_cast_ok++;
-            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX retgt=%d pin=%d ok=%d",
+            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX pin=%d ok=%d",
                           spellId, (unsigned long long)targetGuid,
-                          (unsigned long long)prev, retargeted ? 1 : 0,
-                          pinned ? 1 : 0, g_cast_ok);
+                          (unsigned long long)prev, pinned ? 1 : 0, g_cast_ok);
             return true;
         }
         if (nrc < 0)

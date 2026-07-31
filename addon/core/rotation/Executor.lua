@@ -1044,13 +1044,16 @@ local function apply_slot_policy_overrides(ctx, rotation)
                 ctx.spell_targeted[sid] = false
                 ctx.spell_targeted[tostring(sid)] = false
             end
-            -- Ground self-AoE always in range regardless of target (Consecration).
+            -- Ground self-AoE always in range / usable regardless of target.
             local sname = spell_name(sid, slot.name)
             if is_ground_self_aoe(sid, sname) then
                 ctx.spell_in_range[sid] = true
                 ctx.spell_in_range[tostring(sid)] = true
                 ctx.spell_targeted[sid] = false
                 ctx.spell_targeted[tostring(sid)] = false
+                -- Bar greys with no target on some ranks — never unusable here.
+                ctx.spell_usable[sid] = true
+                ctx.spell_usable[tostring(sid)] = true
             end
             if policy == "corpse" and W and W.nearest_available_corpse then
                 local cr = slot_corpse_range(slot) or 30
@@ -1905,28 +1908,14 @@ function Executor.attempt_action(action, ctx)
         or policy == "optional" or policy == "forbid"
         or (not needs_enemy and not search)
 
-    local function restore_selection()
-        if not preserve_selection or not Act then return end
-        local cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
-        if pre_had_target and pre_target_guid then
-            if tostring(cur or "") == tostring(pre_target_guid) then return end
-            if Act.TargetLastTarget then pcall(Act.TargetLastTarget) end
-            cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
-            if tostring(cur or "") == tostring(pre_target_guid) then return end
-            if Act.Target then pcall(Act.Target, pre_target_guid) end
-            cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
-            if tostring(cur or "") == tostring(pre_target_guid) then return end
-            if Act.ClearTarget then pcall(Act.ClearTarget) end
-            if Act.Target then pcall(Act.Target, pre_target_guid) end
-        else
-            if cur and Act.ClearTarget then pcall(Act.ClearTarget) end
-        end
+    -- Ground feet AoE: NEVER walk try_list / GUID cast. Always CastSpell(id).
+    if ground_self then
+        try_list = {}
+        guid = nil
     end
 
-    -- Multi-dot GUID wire: plain Spell_C only.
-    -- NEVER CastSpellPreserveSelection here — its C_Timer TargetLastTarget spam
-    -- clobbered selection and stalled the client after every Icy Touch.
-    -- Runtime CastSpell already restores selection for GUID casts.
+    -- Multi-dot GUID wire: Spell_C only. Runtime pins UNIT_FIELD_TARGET and
+    -- restores descriptor — no TargetUnit from Lua after wire (crash surface).
     local ok, wire_guid = false, nil
     local last_why = "no_candidate"
     local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
@@ -2027,10 +2016,8 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Acquire-off: one immediate restore only (no timer spam).
-    if ok and preserve_selection and not want_acquire then
-        restore_selection()
-    end
+    -- Selection restore is runtime descriptor-only for GUID casts. No Lua
+    -- TargetLastTarget cascade after wire (mid-combat crash surface).
 
     if not ok then
         if Ou and oid then Ou.settle(oid, -1.0, last_why or "cast_failed") end

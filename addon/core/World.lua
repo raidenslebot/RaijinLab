@@ -1088,23 +1088,19 @@ function World.guid_aura_state(guid, spell_id, aura_name)
     if not guid then return false, 0, 0 end
     local sid = tonumber(spell_id) or 0
     local nm = tostring(aura_name or "")
-    -- Client-visible: if this GUID is "target"/"focus"/nameplate, UnitDebuff
-    -- is authoritative. Fixes single-target PS double-cast when CLEU notes lag
-    -- but the debuff is already on the bar.
+    -- Client-visible: target/focus/mouseover only (NOT nameplate1..40 — that
+    -- fan at 50Hz mid-combat was a crash surface). UnitDebuff is authoritative
+    -- when the unit is the current selection.
     if UnitDebuff and UnitGUID then
         local tokens = { "target", "focus", "mouseover" }
-        for i = 1, 40 do tokens[#tokens + 1] = "nameplate" .. i end
         for ti = 1, #tokens do
             local tok = tokens[ti]
             if UnitExists and UnitExists(tok) and tostring(UnitGUID(tok) or "") == tostring(guid) then
                 for i = 1, 40 do
-                    local name, _, _, count, _, _, expirationTime, _, _, _, spellId = UnitDebuff(tok, i)
-                    if not name then break end
-                    local match = false
-                    if sid > 0 and tonumber(spellId) == sid then match = true end
-                    if not match and nm ~= "" and string.lower(name) == string.lower(nm) then
-                        match = true
-                    end
+                    -- 3.3.5: name, rank, icon, count, debuffType, duration, expirationTime
+                    local okd, name, _, _, count, _, _, expirationTime = pcall(UnitDebuff, tok, i)
+                    if not okd or not name then break end
+                    local match = (nm ~= "" and string.lower(name) == string.lower(nm))
                     if match then
                         local rem = 0
                         if expirationTime and GetTime then
@@ -1113,7 +1109,7 @@ function World.guid_aura_state(guid, spell_id, aura_name)
                         return true, math.max(1, tonumber(count) or 1), rem
                     end
                 end
-                break -- only check the matching token
+                break
             end
         end
     end

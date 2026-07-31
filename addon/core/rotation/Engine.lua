@@ -376,16 +376,32 @@ function Engine.spell_ready(ctx, spell_id)
     -- state never suppresses a valid cast ("cast as soon as possible, never
     -- try if impossible").
     -- ------------------------------------------------------------------
-    -- Multi-dot: GUID cast does not require client target; IsUsableSpell greys
-    -- without one — never treat that as unusable when aura_search_hit is set.
+    -- Multi-dot / optional / ground AoE: GUID or feet cast does not require
+    -- client target; IsUsableSpell greys without one — never unusable then.
     local search_hit = ctx.aura_search_hit and ctx.aura_search_hit.guid
+    local policy = ctx.slot_target_policy
+    if not policy then
+        if ctx.slot_requires_corpse then policy = "corpse"
+        elseif ctx.slot_allows_no_target then policy = "optional"
+        else policy = "require" end
+    end
+    local skip_usable_grey = search_hit
+        or policy == "optional" or policy == "forbid" or policy == "corpse"
+    if not skip_usable_grey then
+        local sn = tostring(ctx.slot_name or "")
+        local low = string.lower(sn)
+        if low:find("consecration", 1, true) or low:find("death and decay", 1, true)
+            or low:find("blizzard", 1, true) or low:find("rain of fire", 1, true) then
+            skip_usable_grey = true
+        end
+    end
     if ctx.auto_castable then
         -- (1) Usable now: IsUsableSpell (resources / stance / form). Authoritative
         --     client check; false means genuinely not castable this instant.
-        --     Exception: aura_search GUID path (bar greys with no client target).
+        --     Exception: multi-dot / optional / ground feet casts (bar greys).
         local u = ctx.spell_usable
         if type(u) == "table" and (u[spell_id] == false or u[tostring(spell_id)] == false) then
-            if not search_hit then
+            if not skip_usable_grey then
                 return false, "unusable"
             end
         end

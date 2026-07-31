@@ -173,7 +173,11 @@ local function check_resources(ctx, sid, name, slot)
     -- target — even when we will CastSpell(id, guid). BasicRules runs BEFORE
     -- aura_search, so aura_search_hit is still nil. Blocking on "unusable"
     -- here made multi-dot dead until the player manually selected something.
-    if slot_has_aura_search(slot) then
+    -- Ground self-AoE (Consecration) and optional-policy slots also grey with
+    -- no target on some Ascension ranks — never treat that as unusable.
+    local policy = policy_of(slot, ctx)
+    if slot_has_aura_search(slot) or policy == "optional" or policy == "forbid"
+        or is_ground_self_aoe(sid, name) then
         -- Only hard-fail on real resource starve (nomana), never on grey bar.
         if IsUsableSpell then
             local usable, nomana = IsUsableSpell(name)

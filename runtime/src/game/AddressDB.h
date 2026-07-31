@@ -110,8 +110,9 @@ int InWorldFlag();
 // Multi-signal probe for FrameScript_RegisterFunction / diagnostics.
 // outBits optional: bit0 flag bit1 worldFrame bit2 clientConn bit3 objMgr
 //                   bit4 localPlayer bit5 activeGuid
-// Returns true if STRONG ready (flag|localPlayer|guid). Medium 0xE alone is
-// false here — main.cpp may still register on long medium streak (Ascension).
+// Returns true if STRONG ready (localPlayer+guid; flag optional).
+// NEVER flag alone — that registered mid-load (crash 2026-07-31 15:00).
+// Medium 0xE alone is false here — main.cpp may still register on long medium.
 bool WorldReady(uint32_t* outBits = nullptr);
 // Fill bits only (always). Medium = (bits & 0xE) == 0xE. Strong = bits & 0x31.
 uint32_t WorldReadyBits();

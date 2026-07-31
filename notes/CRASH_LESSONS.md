@@ -123,6 +123,17 @@ already inside `IsLinuxClient` → RuntimeCall. Nested VM re-entry → ERROR #13
 - Multi-dot different GUID: native Spell_C(guid), restore via pcall only.
 - FSExec allowed only when not already inside Lua (worker/main non-Lua paths).
 
+## WorldReadyStrong OR-bug (1.10.27-strong-fix) — FATAL
+
+**Proof:** 2026-07-31 15:00 inject during load. Register `via=strong` with
+`bits=0xF` (flag|wf|conn|mgr — **no** localPlayer/guid). PEW arm + crash ~2s later.
+
+**Cause:** `WorldReadyStrong` used `(bits & mask) != 0` (ANY bit). g_InWorld
+flag alone counted as "strong" mid character load.
+
+**Rule:** Strong = localPlayer **and** activeGuid (flag optional on Ascension).
+Never Register on flag alone. Medium path remains the long settle fallback.
+
 ## Melee multi-dot + readiness (1.10.26-melee-ready)
 
 **Symptom:** Icy Touch (ranged) multi-dot hit aura_search GUIDs correctly;

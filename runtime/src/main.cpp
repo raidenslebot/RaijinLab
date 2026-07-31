@@ -199,8 +199,11 @@ static DWORD WINAPI MainThread(LPVOID param) {
             const int needMedStr = kMediumStreak;
             const int needMedSet = kSettleMedium + mediumFailPenalty;
 
+            // Strong requires a real character (localPlayer|guid), never flag alone.
+            // Medium (wf|conn|mgr for 8s) is the Ascension fallback when strong never lights.
             const bool pathStrong = strong && strongStreak >= needStrong
-                                    && settle >= needSettleStrong;
+                                    && settle >= needSettleStrong
+                                    && (wbits & (16u | 32u)) == (16u | 32u);
             const bool pathMedium = medium && mediumStreak >= needMedStr
                                     && settle >= needMedSet;
 

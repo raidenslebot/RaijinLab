@@ -114,8 +114,18 @@ uint32_t WorldReadyBits() {
 }
 
 bool WorldReadyStrong(uint32_t bits) {
-    // flag | localPlayer | activeGuid
-    return (bits & (1u | 16u | 32u)) != 0;
+    // MUST have a real local character — never flag alone.
+    // Live crash 2026-07-31 15:00: Register via=strong with bits=0xF (flag|wf|
+    // conn|mgr) and NO localPlayer/guid → client died ~2s after PEW arm.
+    // Bug was `(bits & mask) != 0` which is OR of any bit (flag alone passes).
+    //
+    // Accept:
+    //   A) localPlayer + activeGuid (Ascension: g_InWorld flag often stuck 0)
+    //   B) full triple flag|localPlayer|guid
+    const uint32_t playerish = 16u | 32u; // localPlayer | activeGuid
+    if ((bits & playerish) == playerish) return true;
+    if ((bits & (1u | playerish)) == (1u | playerish)) return true;
+    return false;
 }
 
 bool WorldReadyMedium(uint32_t bits) {

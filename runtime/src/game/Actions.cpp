@@ -379,58 +379,6 @@ static bool WriteClientTargetGuid(uint64_t guid) {
     }
 }
 
-// Nested GetSpellCooldown readiness. Returns remaining seconds (>0 = not ready),
-// or 0 if ready / undetermined. Never invents a long hold — just refuses wire
-// when the client bar already says CD/GCD remaining. Awareness, not a sleep.
-static float SpellCooldownRemaining(lua_State* L, int spellId) {
-    if (!L || spellId <= 0) return 0.f;
-    using namespace RL::Game::Addr;
-    auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
-    auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
-    auto type = reinterpret_cast<fn_type>(lua_type);
-    auto settop = reinterpret_cast<fn_settop>(lua_settop);
-    auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
-    auto pushnumber = reinterpret_cast<fn_pushnumber>(lua_pushnumber);
-    auto tonumber = reinterpret_cast<double(__cdecl*)(lua_State*, int)>(lua_tonumber);
-    if (!getfield || !pcall || !type || !settop || !gettop || !pushnumber || !tonumber)
-        return 0.f;
-    __try {
-        int top = gettop(L);
-        // GetTime()
-        getfield(L, LUA_GLOBALSINDEX, "GetTime");
-        if (type(L, -1) != LUA_TFUNCTION) {
-            settop(L, top);
-            return 0.f;
-        }
-        if (pcall(L, 0, 1, 0) != 0) {
-            settop(L, top);
-            return 0.f;
-        }
-        double now = tonumber(L, -1);
-        settop(L, top);
-        // GetSpellCooldown(spellId) -> start, duration
-        getfield(L, LUA_GLOBALSINDEX, "GetSpellCooldown");
-        if (type(L, -1) != LUA_TFUNCTION) {
-            settop(L, top);
-            return 0.f;
-        }
-        pushnumber(L, (double)spellId);
-        if (pcall(L, 1, 2, 0) != 0) {
-            settop(L, top);
-            return 0.f;
-        }
-        double start = tonumber(L, -2);
-        double dur = tonumber(L, -1);
-        settop(L, top);
-        if (dur <= 0.0) return 0.f;
-        float rem = (float)((start + dur) - now);
-        if (rem < 0.f) rem = 0.f;
-        return rem;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0.f;
-    }
-}
-
 // Restore selection after Spell_C (which often sticks the cast victim as target).
 static void RestoreSelectionAfterCast(uint64_t prevTarget, uint64_t castVictim) {
     // First restore the descriptor field (melee pin). Then fix UI selection
@@ -472,16 +420,9 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
                   spellId, (unsigned long long)targetGuid, (void*)L,
                   (int)Taint::HardwareGatesApplied());
 
-    // RUNTIME readiness: refuse Spell_C when client CD/GCD still remaining.
-    // Stops Consecration / GCD spam ("spell is not ready yet") at the wire.
-    if (L) {
-        float rem = SpellCooldownRemaining(L, spellId);
-        if (rem > 0.05f) {
-            RL::Log::Info("CastSpell refuse not_ready id=%d rem=%.3f", spellId, rem);
-            g_cast_fail++;
-            return false;
-        }
-    }
+    // Readiness is Lua-side (Executor GetSpellCooldown). Do NOT nested-pcall
+    // GetSpellCooldown here — extra VM re-entry during IsLinuxClient is avoidable
+    // risk; the melee pin below is the cast-target authority fix.
 
     uint64_t prev = ReadClientTargetGuid();
 
@@ -637,12 +578,6 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
     uint64_t me = ActiveGuid();
     if (!me) { r.reason = "no_player"; return r; }
 
-    // Live client CD/GCD: refuse before face/LoS so multi-dot does not spam.
-    if (g_currentL) {
-        float rem = SpellCooldownRemaining(g_currentL, spellId);
-        if (rem > 0.05f) { r.reason = "not_ready"; return r; }
-    }
-
     if (targetGuid != 0) {
         Vec3 pb = OM::Position(targetGuid);
         Vec3 pa = OM::Position(me);
@@ -684,18 +619,9 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // Readiness before face/wire — never call Spell_C on CD (Consecration spam).
-    if (g_currentL) {
-        float rem = SpellCooldownRemaining(g_currentL, spellId);
-        if (rem > 0.05f) {
-            r.reason = "not_ready";
-            RL::Log::Info("CastSpellEx refuse not_ready id=%d rem=%.3f", spellId, rem);
-            return r;
-        }
-    }
-
     // Face gate: only block when we MEASURE not-facing.
     // Undetermined → cast (client is authority). Was zero multi-dot fires.
+    // (Readiness: Lua Executor GetSpellCooldown — no nested pcall here.)
     if (targetGuid != 0) {
         int face = IsFacingGuidEx(targetGuid, 1.5707963f);
         if (face == 0 && (flags & kCastFaceIfNeeded)) {

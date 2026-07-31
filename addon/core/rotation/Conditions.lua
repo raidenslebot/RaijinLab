@@ -704,8 +704,24 @@ Conditions.register("target_ttd", {
 Conditions.register("facing_target", {
     name = "Facing Target",
     category = "Target",
+    description = "Already facing the current client target. Does not turn you. Prefer Auto Face if you want the rotation to turn for this slot.",
     eval = function(ctx)
         return bool(ctx.target_exists, false) and bool(ctx.facing_target, false)
+    end,
+})
+
+-- Policy marker (always passes). Executor reads slot conditions for this id and
+-- turns toward the cast unit (target or aura_search GUID) before CastSpell.
+-- Without this condition, unit-targeted slots only cast when already facing.
+Conditions.register("auto_face", {
+    name = "Auto Face",
+    category = "Target",
+    description = "Before casting this slot, turn to face the cast unit (current target or Aura Search GUID). Does NOT change your selected target. Without this condition the slot only fires when you are already facing — no automatic turn.",
+    params = {},
+    eval = function()
+        -- Always true: presence on the slot is the policy. Invert disables it
+        -- the same as removing the condition (handled via want_true).
+        return true
     end,
 })
 

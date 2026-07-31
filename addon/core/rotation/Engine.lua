@@ -205,6 +205,21 @@ function Engine.slot_target_policy(slot)
     return policy
 end
 
+-- Slot policy: Auto Face condition present (and not inverted) → cast path may
+-- TurnByDelta toward the cast unit before Spell_C. Absence = no auto turn.
+function Engine.slot_wants_auto_face(slot)
+    if not slot then return false end
+    for _, c in ipairs(slot.conditions or {}) do
+        if c and c.id == "auto_face" then
+            local inv = c.args and (c.args.invert == true or c.args.invert == 1
+                or c.args.invert == "true"
+                or c.args.want == false or c.args.want == 0 or c.args.want == "false")
+            return not inv
+        end
+    end
+    return false
+end
+
 -- May this slot cast while the player is in a user-interaction UI?
 -- Default NO. Only an explicit player_state condition that matches the current
 -- busy state (or "busy"/"any_interaction") is an opt-in.
@@ -500,13 +515,15 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
                     -- ------------------------------------------------------
                     local pass, err = conditions_mod.evaluate_all(slot.conditions, ctx)
                     if pass then
+                        local want_auto_face = Engine.slot_wants_auto_face(slot)
                         -- After aura_search: only hard-block LoS here. Facing is
-                        -- handled in Executor with auto-face + multi-candidate try
-                        -- (denying here prevented auto-face from ever running).
+                        -- handled in Executor (optional Auto Face condition may turn).
                         if has_aura_search and ctx.aura_search_hit and ctx.aura_search_hit.guid
                             and Basic and Basic.guid_cast_gates then
                             local gok, gwhy = Basic.guid_cast_gates(ctx.aura_search_hit.guid, {
-                                skip_facing = true, -- Executor auto-faces
+                                -- Skip face precheck when Auto Face will turn; otherwise
+                                -- still skip here so multi-cand Executor can try next GUID.
+                                skip_facing = true,
                             })
                             if not gok and gwhy == "los" then
                                 -- Try next candidate with clear LoS if any.
@@ -543,6 +560,7 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
                                     action_type = slot.action_type or "spell",
                                     target_policy = policy,
                                     aura_search_hit = ctx.aura_search_hit,
+                                    auto_face = want_auto_face,
                                 }
                                 if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "CAST" } end
                                 return done(action, nil)
@@ -556,6 +574,7 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
                                 action_type = slot.action_type or "spell",
                                 target_policy = policy,
                                 aura_search_hit = ctx.aura_search_hit,
+                                auto_face = want_auto_face,
                             }
                             if opts.ignore_ready then
                                 if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "CAST" } end

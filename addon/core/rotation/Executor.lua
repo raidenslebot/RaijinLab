@@ -1642,6 +1642,15 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
+    -- Auto Face is opt-in only via the "Auto Face" slot condition (not always on).
+    local want_auto_face = action.auto_face == true
+    if not want_auto_face and action.slot then
+        local Eng = RaijinLab and RaijinLab.RotationEngine
+        if Eng and Eng.slot_wants_auto_face then
+            want_auto_face = Eng.slot_wants_auto_face(action.slot)
+        end
+    end
+
     if policy == "corpse" then
         -- Cast ON a verified corpse GUID only. Unverified CLEU ghosts caused
         -- "no corpses available" spam after condition falsely passed.
@@ -1696,10 +1705,11 @@ function Executor.attempt_action(action, ctx)
         -- Ground self-AoE (Consecration) has no facing requirement.
         local skip_face = ground or policy == "optional" or policy == "forbid"
             or is_self_aoe_spell(sid, name)
+        -- If Auto Face is on, skip face here — wire path will turn then recheck.
         local can, why = live_castable(sid, name, {
             policy = policy, needs_enemy = needs_enemy,
             skip_range = skip_r,
-            skip_facing = skip_face,
+            skip_facing = skip_face or want_auto_face,
             ctx = ctx,
         })
         if not can then
@@ -1825,17 +1835,18 @@ function Executor.attempt_action(action, ctx)
                 if W and W.is_facing_guid then
                     facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
                 end
-                if not facing_ok then
-                    -- Auto-face GUID (does not change selection). One attempt.
+                if not facing_ok and want_auto_face then
+                    -- Opt-in Auto Face condition only: turn toward GUID (no TargetUnit).
                     if W and W.face_guid then pcall(W.face_guid, cg) end
                     if W and W.is_facing_guid then
                         facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
                     end
                 end
                 if not facing_ok then
+                    -- No Auto Face, or still not facing after one turn: do NOT wire
+                    -- (avoids "in front of you" spam). Fall through to next candidate/slot.
                     blacklist_guid(cg, 1.25, "facing_prewire")
                     last_why = "facing"
-                    -- try next candidate
                 else
                     if W and W.is_los_guid and W.is_los_guid(cg) == false then
                         blacklist_guid(cg, 1.0, "los_prewire")

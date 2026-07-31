@@ -190,6 +190,12 @@ local COND_SUMMARY = {
         end
         return s
     end,
+    auto_face = function(a)
+        return "turn to face cast unit before casting (does not change target)"
+    end,
+    facing_target = function(a)
+        return "already facing current target (no turn)"
+    end,
     aura = function(a)
         local who = (tostring(a.unit) == "target") and "target" or "you"
         local kind = tostring(a.kind or "buff")

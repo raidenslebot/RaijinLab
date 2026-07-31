@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.25-runtime-md";
+const char* kVersion = "1.10.26-melee-ready";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1031,11 +1031,36 @@ static int Handle(lua_State* L, const char* name) {
         return GuidArg(L, idx);
     };
 
+    // True when stack arg looks like an intentional GUID/unit that FAILED to
+    // parse — never demote those to guid=0 (current-target) cast. Tokens like
+    // "target"/"player" intentionally resolve to 0 for self/current paths.
+    auto guidArgWasIntended = [&](int idx) -> bool {
+        const char* gs = checkstring(L, idx);
+        if (!gs || !gs[0]) {
+            // Numeric non-zero that failed? GuidArg already handles numbers.
+            double n = optnumber(L, idx, 0.0);
+            return n != 0.0;
+        }
+        if (!_stricmp(gs, "target") || !_stricmp(gs, "player") ||
+            !_stricmp(gs, "focus") || !_stricmp(gs, "mouseover") ||
+            !_stricmp(gs, "pet") || !_stricmp(gs, "npc") ||
+            !_stricmp(gs, "vehicle")) {
+            return false; // token → 0 is intentional
+        }
+        return true; // non-empty non-token string was a GUID attempt
+    };
+
     if (!std::strcmp(name, "CastSpell") || !std::strcmp(name, "CastSpellByID") ||
         !std::strcmp(name, "SpellCast")) {
         int spellId = (int)optnumber(L, 2, 0);
         if (spellId <= 0) return PushBool(L, false);
         uint64_t g = parseGuidArg(3);
+        // Multi-dot / melee: refuse rather than cast on current target when a
+        // GUID was supplied but failed to parse.
+        if (g == 0 && guidArgWasIntended(3)) {
+            RL::Log::Warn("CastSpell refuse bad_guid id=%d", spellId);
+            return PushBool(L, false);
+        }
         RL::Log::Info("CastSpell request id=%d guid=0x%llX",
                       spellId, (unsigned long long)g);
         RL::Game::MainThread::PulseFromMainThread();
@@ -1045,13 +1070,17 @@ static int Handle(lua_State* L, const char* name) {
         RL::Log::Info("CastSpell result id=%d ok=%d", spellId, (int)ok);
         return PushBool(L, ok);
     }
-    // Structured cast path: "1|ok" or "0|facing|los|oor|cast_fail|..."
+    // Structured cast path: "1|ok" or "0|facing|los|oor|not_ready|cast_fail|..."
     // flags: 1=FACE_IF_NEEDED, 4=SKIP_IF_NOT_FACING, 8=CHECK_LOS
     if (!std::strcmp(name, "CastSpellEx") || !std::strcmp(name, "CastSpellGuid")) {
         int spellId = (int)optnumber(L, 2, 0);
         uint64_t g = parseGuidArg(3);
         uint32_t flags = (uint32_t)optnumber(L, 4, 0.0);
         if (spellId <= 0) return PushString(L, "0|no_spell");
+        if (g == 0 && guidArgWasIntended(3)) {
+            RL::Log::Warn("CastSpellEx refuse bad_guid id=%d", spellId);
+            return PushString(L, "0|bad_guid");
+        }
         RL::Game::MainThread::PulseFromMainThread();
         Actions::SetCurrentLuaState(L);
         auto r = Actions::CastSpellEx(spellId, g, flags);

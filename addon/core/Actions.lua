@@ -91,10 +91,16 @@ function A.CastSpell(spellId, unitOrGuid)
     end
     spellId = tonumber(spellId) or 0
     if spellId <= 0 then return false end
+    -- FUNDAMENTAL: if a unit/GUID was requested, NEVER fall through to
+    -- CastSpell(id) with no GUID (that hits current target — melee multi-dot bug).
+    local had_unit = (unitOrGuid ~= nil and unitOrGuid ~= "" and unitOrGuid ~= 0)
     local g = guid_of(unitOrGuid)
+    if had_unit and not g then
+        return false
+    end
     -- Native Spell_C_CastSpell only (no ExecSecure - re-enters Lua and crashed client).
-    -- GUID path: runtime ALWAYS restores client selection after Spell_C (multi-dot
-    -- must never stick the victim as "target" when acquire is off).
+    -- GUID path: runtime pins UNIT_FIELD_TARGET for melee, then restores selection
+    -- after Spell_C (multi-dot must never stick the victim when acquire is off).
     local res
     if g then
         -- Prefer CastSpellEx with NO_TARGET_CHANGE so restore is double-ensured.
@@ -113,14 +119,18 @@ function A.CastSpell(spellId, unitOrGuid)
 end
 
 -- Authoritative cast: optional native face + skip if not facing + LoS.
--- Returns ok, reason ("ok"|"facing"|"los"|"oor"|"cast_fail"|...).
+-- Returns ok, reason ("ok"|"facing"|"los"|"oor"|"not_ready"|"cast_fail"|...).
 -- flags: A.CAST_FACE_IF_NEEDED | A.CAST_SKIP_IF_NOT_FACING | A.CAST_CHECK_LOS
 function A.CastSpellEx(spellId, unitOrGuid, flags)
     if not A.ensure() then return false, "no_runtime" end
     spellId = tonumber(spellId) or 0
     if spellId <= 0 then return false, "no_spell" end
     flags = tonumber(flags) or 0
+    local had_unit = (unitOrGuid ~= nil and unitOrGuid ~= "" and unitOrGuid ~= 0)
     local g = guid_of(unitOrGuid)
+    if had_unit and not g then
+        return false, "bad_guid"
+    end
     local res = rt("CastSpellEx", spellId, g or 0, flags)
     if type(res) ~= "string" then
         -- Old runtime: fall back to plain CastSpell

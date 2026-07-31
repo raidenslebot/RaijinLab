@@ -123,6 +123,25 @@ already inside `IsLinuxClient` → RuntimeCall. Nested VM re-entry → ERROR #13
 - Multi-dot different GUID: native Spell_C(guid), restore via pcall only.
 - FSExec allowed only when not already inside Lua (worker/main non-Lua paths).
 
+## Melee multi-dot + readiness (1.10.26-melee-ready)
+
+**Symptom:** Icy Touch (ranged) multi-dot hit aura_search GUIDs correctly;
+Plague Strike (melee) hit the *current* client target. Consecration spammed
+"spell is not ready yet".
+
+**Root causes:**
+1. Spell_C with a non-zero GUID still has melee path resolve against
+   `UNIT_FIELD_TARGET` (descriptor+0x48). Ranged honours the GUID arg.
+2. Wire returned true while client GCD/CD remaining; provisional hold was
+   capped at 150ms → re-wire every frame.
+
+**Rules (permanent):**
+- GUID cast: **pin** `UNIT_FIELD_TARGET` to victim for Spell_C, then restore
+  (descriptor write — not TargetUnit). Never demote intended GUID → guid=0.
+- Runtime refuses Spell_C when nested `GetSpellCooldown` rem > 0.05 (`not_ready`).
+- Provisional GCD after wire = full GCD length; refuse events free early.
+- Never shrink provisional GCD to 150ms.
+
 ## Multi-dot / aura_search — FUNDAMENTAL (do not regress)
 
 **Symptom:** Icy Touch only fired with a client target; acquire-off snapped

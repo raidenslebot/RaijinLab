@@ -259,12 +259,21 @@ local function apply_pending_refuse(reason, fail_name)
     Executor._next_gap = 0
 
     if refuse_is_not_ready(rl) then
-        -- Server still on GCD/CD. Hold to live remaining, but NEVER invent a
-        -- long freeze when remaining is ~0 (that stuck the whole rotation).
+        -- Server still on GCD/CD. Hold to live remaining. When GetSpellCooldown
+        -- still reports ~0 (race after wire), use a full GCD floor — that is
+        -- the real "not ready yet" state, not an artificial pause. Without
+        -- this floor, Consecration re-wired every frame and spammed UI errors.
         local hold = spell_ready_remaining(sid, name)
-        if hold < 0.05 then hold = 0.08 end
-        if hold > 1.5 then hold = 1.5 end
-        Executor._gcd_until = now() + hold
+        local gcd_floor = 0.75
+        if Executor.gcd_fallback then
+            local d = select(1, Executor.gcd_fallback())
+            if d and d > gcd_floor then gcd_floor = d end
+        end
+        if hold < gcd_floor then hold = gcd_floor end
+        if hold > 8.0 then hold = 8.0 end -- ability CDs (Consecration ~8s)
+        Executor._gcd_until = now() + math.min(hold, gcd_floor + 0.05)
+        -- Per-spell floor tracks full ability CD; global only tracks GCD so
+        -- lower-priority spells can cast while Consecration recovers.
         Executor._gcd_provisional = true
         Executor._gcd_src = "not_ready_hold"
         Executor._recent = Executor._recent or {}
@@ -1827,10 +1836,13 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Multi-dot: GUID is mandatory for needs_enemy when search found a unit.
-    -- Never fall back to untargeted cast (that becomes "current target only").
-    if needs_enemy and search and search.guid and not guid then
+    -- Multi-dot: GUID is mandatory when search found a unit.
+    -- Never fall back to current-target cast (melee hits wrong unit).
+    if search and search.guid then
         guid = search.guid
+    end
+    if search and not guid then
+        return false, "no_search_guid:" .. tostring(name)
     end
     if needs_enemy and not guid and not is_ground_self_aoe(sid, name) then
         return false, "no_target:" .. tostring(name)
@@ -1921,8 +1933,11 @@ function Executor.attempt_action(action, ctx)
                     blacklist_guid(cg, 0.20, "facing")
                 else
                     local reason = nil
-                    if want_auto_face and Act.CastSpellEx then
-                        local flags = FACE + SKIP + (want_acquire and 0 or NOTGT)
+                    -- Always use CastSpellEx for multi-dot GUID casts so runtime
+                    -- can return not_ready/facing and pin UNIT_FIELD_TARGET.
+                    if Act.CastSpellEx then
+                        local flags = (want_acquire and 0 or NOTGT)
+                        if want_auto_face then flags = flags + FACE + SKIP end
                         ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
                     else
                         ok = Act.CastSpell(cast_sid, cg)
@@ -1941,14 +1956,24 @@ function Executor.attempt_action(action, ctx)
                     end
                     ok = false
                     last_why = reason or "cast_fail"
-                    blacklist_guid(cg, 0.15, last_why)
+                    -- not_ready is a list/GCD issue, not a bad GUID — don't blacklist.
+                    if tostring(last_why) ~= "not_ready" and tostring(last_why) ~= "cooldown" then
+                        blacklist_guid(cg, 0.15, last_why)
+                    end
                 end
             else
                 -- RUNTIME ONLY: multi-dot and unit casts go CastSpell(id, guid).
                 -- Ground self-AoE uses CastSpell(id) with no unit.
-                local cok
+                local cok, creason
                 if ground_self then
-                    cok = Act.CastSpell(cast_sid)
+                    if Act.CastSpellEx then
+                        cok, creason = Act.CastSpellEx(cast_sid, nil, 0)
+                    else
+                        cok = Act.CastSpell(cast_sid)
+                    end
+                elseif Act.CastSpellEx then
+                    local flags = (want_acquire and 0 or NOTGT)
+                    cok, creason = Act.CastSpellEx(cast_sid, cg, flags)
                 else
                     cok = Act.CastSpell(cast_sid, cg)
                 end
@@ -1960,19 +1985,24 @@ function Executor.attempt_action(action, ctx)
                     end
                     break
                 end
-                last_why = "cast_failed"
+                last_why = creason or "cast_failed"
             end
         end
     end
 
     -- No unit candidates: self/ground cast path (Consecration etc.).
     if not ok and #try_list == 0 and self_cast_ok then
-        local cok = Act.CastSpell(cast_sid)
+        local cok, creason
+        if Act.CastSpellEx then
+            cok, creason = Act.CastSpellEx(cast_sid, nil, 0)
+        else
+            cok = Act.CastSpell(cast_sid)
+        end
         if cok then
             ok = true
             last_why = "ok"
         else
-            last_why = "cast_failed"
+            last_why = creason or "cast_failed"
         end
     end
 
@@ -2051,9 +2081,27 @@ function Executor.attempt_action(action, ctx)
             Executor._recent = Executor._recent or {}
             Executor._recent[sid] = tnow + 0.05 -- anti-spam THIS spell only
         else
-            Executor._gcd_until = tnow + math.min(grace, 0.12)
+            -- Wire accepted: provisional GCD = real GCD length (awareness of
+            -- client state), not a 120ms hope. Refuse events free early;
+            -- land confirms. Stops Consecration re-wire while GCD pending.
+            local gdur = grace
+            if Executor.gcd_fallback then
+                local d = select(1, Executor.gcd_fallback())
+                if d and d > gdur then gdur = d end
+            end
+            if gdur < 0.75 then gdur = 0.75 end
+            if gdur > 1.5 then gdur = 1.5 end
+            -- If client already shows ability CD, floor THIS spell only.
+            local arem = spell_ready_remaining(cast_sid, action._cast_name or name)
+            Executor._gcd_until = tnow + gdur
             Executor._gcd_src = "wire_pending"
             Executor._gcd_provisional = true
+            Executor._recent = Executor._recent or {}
+            if arem > gdur then
+                Executor._recent[sid] = tnow + math.min(arem, 10.0)
+            else
+                Executor._recent[sid] = tnow + gdur
+            end
         end
     end
 
@@ -2571,22 +2619,47 @@ function Executor._tick_body()
         local age = t - (pend.cast_t or t)
         local grace = pend.grace or 0.12
         if age > (grace + 0.05) then
-            -- Expired pending: free hard. Never leave a stuck lock.
+            -- Expired pending confirmation window. Drop the in-flight record
+            -- so we can re-eval, but do NOT zero a full provisional GCD that
+            -- attempt_action set after wire (that was the Consecration spam
+            -- path: grace 100ms → free → re-wire → "not ready yet").
+            local sid_p = pend.sid
+            local was_md = pend.no_gcd or pend.multidot
             Executor._pending = nil
-            if Executor._gcd_provisional or pend.no_gcd or pend.multidot then
+            if was_md then
+                -- Multi-dot: free list lock (never held a real GCD).
                 Executor._gcd_until = 0
                 Executor._gcd_provisional = false
                 Executor._gcd_src = "pending_expire"
+                clear_sid_soft_locks(sid_p)
+                gcd_active = casting_now and true or false
+            elseif Executor._gcd_provisional then
+                -- Keep remaining provisional GCD; re-sample live CD for this sid.
+                local rem = spell_ready_remaining(sid_p, pend.name)
+                if rem > 0.05 then
+                    Executor._recent = Executor._recent or {}
+                    Executor._recent[sid_p] = t + rem
+                    -- Global GCD only if still under GCD-length.
+                    if rem <= 1.6 and (Executor._gcd_until or 0) < t + rem then
+                        Executor._gcd_until = t + rem
+                    end
+                end
+                -- If provisional already elapsed, clear it.
+                if (Executor._gcd_until or 0) <= t then
+                    Executor._gcd_until = 0
+                    Executor._gcd_provisional = false
+                    Executor._gcd_src = "pending_expire"
+                end
             end
-            clear_sid_soft_locks(pend.sid)
-            if pend.no_gcd or pend.multidot then gcd_active = casting_now and true or false end
             pend = nil
             ctx.pending_sid = nil
         end
     end
-    -- Cap any provisional hold at 150ms hard.
-    if Executor._gcd_provisional and (Executor._gcd_until or 0) > t + 0.15 then
-        Executor._gcd_until = t + 0.15
+    -- Provisional GCD tracks real GCD (~0.75–1.5s) after wire. Cap only at
+    -- a full GCD length — NEVER 150ms (that re-wired Consecration every frame
+    -- and produced "spell is not ready yet" spam). Refuse events free early.
+    if Executor._gcd_provisional and (Executor._gcd_until or 0) > t + 1.55 then
+        Executor._gcd_until = t + 1.55
     end
     if not casting_now and Executor._gcd_provisional and (Executor._gcd_until or 0) <= t then
         Executor._gcd_until = 0
@@ -2647,7 +2720,29 @@ function Executor._tick_body()
         ctx._aura_search_retargeted = nil
         if ok then break end
         -- FAILURE RECOVERY: cast fail → next priority THIS tick. Never abort.
-        -- Clear provisional locks from the failed attempt so lower slots run.
+        local how_s = tostring(how or "")
+        local is_nready = how_s:find("not_ready", 1, true) or how_s:find("cooldown", 1, true)
+        if is_nready then
+            -- Runtime refused: spell/GCD not ready. Floor THIS spell; if it
+            -- looks like global GCD, hold the list briefly so we don't spam
+            -- every lower slot into the same "not ready" UI error.
+            local asid = tonumber(action.spell_id) or 0
+            local hold = spell_ready_remaining(asid, action.name)
+            if hold < 0.75 then hold = 0.75 end
+            if hold > 1.55 then hold = 1.55 end
+            Executor._recent = Executor._recent or {}
+            if asid > 0 then Executor._recent[asid] = t + hold end
+            Executor._gcd_until = t + hold
+            Executor._gcd_provisional = true
+            Executor._gcd_src = "fallthrough_not_ready"
+            Executor._pending = nil
+            -- Stop fallthrough: nothing else is castable on GCD either.
+            action = nil
+            ok = false
+            how = how_s
+            break
+        end
+        -- Non-readiness fail: clear provisional locks so lower slots run.
         Executor._pending = nil
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
@@ -2696,6 +2791,9 @@ function Executor._tick_body()
             if not (Executor._pending and Executor._pending.multidot
                 and tonumber(Executor._pending.sid) == sid) then
                 local g = is_md and math.min(grace, 0.10) or grace
+                -- Non-multidot: event window can stay short (grace), but the
+                -- provisional GCD must stay at full GCD length set in
+                -- attempt_action. Never shrink it back to ~100ms (Consecration spam).
                 Executor._pending = {
                     sid = sid, cast_t = t, deadline = t + g, grace = g,
                     before_cd = before_snap and before_snap.cd_start or 0,
@@ -2705,14 +2803,32 @@ function Executor._tick_body()
                     guid = cast_guid,
                     multidot = is_md and true or false,
                 }
-                if (Executor._gcd_until or 0) < t + g then
-                    Executor._gcd_until = t + g
-                    Executor._gcd_provisional = true
-                    Executor._gcd_src = "pending_grace"
+                if is_md then
+                    if (Executor._gcd_until or 0) < t + g then
+                        Executor._gcd_until = t + g
+                        Executor._gcd_provisional = true
+                        Executor._gcd_src = "pending_grace"
+                    end
+                else
+                    -- Preserve wire_pending GCD if already longer than grace.
+                    local need = g
+                    if Executor.gcd_fallback then
+                        local d = select(1, Executor.gcd_fallback())
+                        if d and d > need then need = d end
+                    end
+                    if need < 0.75 then need = 0.75 end
+                    if (Executor._gcd_until or 0) < t + need then
+                        Executor._gcd_until = t + need
+                        Executor._gcd_provisional = true
+                        Executor._gcd_src = "pending_grace"
+                    end
                 end
                 Executor._recent = Executor._recent or {}
-                if not Executor._recent[sid] or Executor._recent[sid] < t then
-                    Executor._recent[sid] = t + (is_md and 0.08 or g)
+                local floor_t = is_md and 0.08 or (math.max(g, 0.75))
+                if not Executor._recent[sid] or Executor._recent[sid] < t + floor_t then
+                    if not Executor._recent[sid] or Executor._recent[sid] < t then
+                        Executor._recent[sid] = t + floor_t
+                    end
                 end
             end
         end

@@ -587,14 +587,13 @@ Conditions.register("target_is_friend", {
 Conditions.register("target_hostility", {
     name = "Target Hostility",
     category = "Target",
-    description = "Target reaction band. Tick one or more: Hostile (red), Neutral (yellow), Friendly (green). Passes if the target matches ANY checked band.",
+    description = "Target reaction band. Tick one or more: Hostile (red), Neutral (yellow), Friendly (green). Passes if the target matches ANY checked band. With Aura Search, checks the search unit (runtime hostiles), not client target.",
     params = {
         { key = "hostile",  type = "bool", default = true,  label = "Hostile (red / attackable-hated)" },
         { key = "neutral",  type = "bool", default = false, label = "Neutral (yellow)" },
         { key = "friendly", type = "bool", default = false, label = "Friendly (green)" },
     },
     eval = function(ctx, args)
-        if not bool(ctx.target_exists, false) then return false end
         args = args or {}
         local want_h = args.hostile
         local want_n = args.neutral
@@ -607,6 +606,19 @@ Conditions.register("target_hostility", {
         want_n = want_n == true or want_n == 1 or want_n == "true"
         want_f = want_f == true or want_f == 1 or want_f == "true"
         if not (want_h or want_n or want_f) then return false end
+
+        -- Multi-dot: aura_search already filtered living attackable hostiles in
+        -- the runtime AuraSearch pack. Requiring client UnitExists("target")
+        -- forced multi-dot to depend on selection and made melee look broken.
+        local hit = ctx and ctx.aura_search_hit
+        if hit and hit.guid then
+            -- Runtime AuraSearch only returns hostile/attackable units.
+            -- Hostile/neutral multi-dot configs pass; friendly-only fails.
+            if want_h or want_n then return true end
+            return false
+        end
+
+        if not bool(ctx.target_exists, false) then return false end
 
         local band = ctx.target_hostility
         if type(band) ~= "string" or band == "" then

@@ -11,10 +11,14 @@ local RL = RaijinLab
 
 local function is_our_version(ver)
     if type(ver) ~= "string" or ver == "" then return false end
-    -- Runtime returns short "1.x.y" only (no product brand in version string)
+    -- Accept "1.10.39-bridge" / "1.x.y" / any 1.* runtime tag
     if ver:match("^1%.%d+") then return true end
     return false
 end
+
+-- Positive probe cache only (~0.2s). Never cache failure — recover the frame
+-- after main-thread seal without waiting for a long timer.
+local _bridge_fn, _bridge_ver, _bridge_t = nil, nil, 0
 
 local function probe_bridge(fn)
     if type(fn) ~= "function" then return nil end
@@ -26,9 +30,18 @@ local function probe_bridge(fn)
 end
 
 local function bridge()
+    local now = (GetTime and GetTime()) or 0
+    if _bridge_fn and _bridge_ver and (now - (_bridge_t or 0)) < 0.2 then
+        return _bridge_fn, _bridge_ver
+    end
     -- Stealth: ONLY stock global IsLinuxClient (rebound by inject).
-    -- Do not require a unique "RaijinLab_*" FrameScript global.
-    return probe_bridge(IsLinuxClient)
+    local fn, ver = probe_bridge(IsLinuxClient)
+    if fn then
+        _bridge_fn, _bridge_ver, _bridge_t = fn, ver, now
+        return fn, ver
+    end
+    _bridge_fn, _bridge_ver = nil, nil
+    return nil
 end
 
 function RL:HasRuntime()
@@ -40,16 +53,12 @@ function RL:RuntimeCall(name, ...)
     if not b then
         return nil
     end
-    -- Prefer stock IsLinuxClient only (stealth: no unique global name)
     return b(name, ...)
 end
 
 function RL:RuntimeVersion()
     local b, ver = bridge()
     if b and ver then return ver end
-    if not b then return nil end
-    local ok, v = pcall(b, "GetRuntimeVersion")
-    if ok and is_our_version(v) then return v end
     return nil
 end
 
@@ -67,7 +76,7 @@ function RL:RuntimeDetectDiag()
         return "ok ver=" .. tostring(ver)
     end
     -- Stock 3.3.5 stub: function exists, returns nil / wrong value
-    return "stock IsLinuxClient (bridge not bound yet — wait for BRIDGE ONLINE after inject//reload; do not /reload after inject unless deploying addon files)"
+    return "stock IsLinuxClient (wait for BRIDGE ONLINE + main seal; avoid /reload right after inject)"
 end
 
 function RL:AssertRuntime(feature)
@@ -211,11 +220,15 @@ do
         if has and not had then
             RL:OnRuntimeOnline(RL:RuntimeVersion())
             RL._runtime_online_t = GetTime and GetTime() or 0
+            -- Always print once so inject detection is visible without debug flag.
+            print("|cff7ec8e3RaijinLab|r: runtime |cff55ff55ONLINE|r "
+                .. tostring(RL:RuntimeVersion() or "?"))
         elseif not has and had then
             RL._runtime_online_noted = false
             RL._runtime_armed = false
             RL._runtime_hw_armed = false
             RL._arm_pos_ok = 0
+            _bridge_fn, _bridge_ver = nil, nil
             print("|cff7ec8e3RaijinLab|r: runtime |cffff5555OFFLINE|r")
         end
         -- ARM UNTIL IT ACTUALLY ARMS - NOT ONCE, ON AN EDGE.

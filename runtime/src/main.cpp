@@ -120,8 +120,8 @@ static DWORD WINAPI MainThread(LPVOID param) {
     constexpr int kSettleMedium       = 160; // ~8 s medium Register (first+rebind)
     constexpr int kSettleRebindStrong = 40;  // ~2 s strong rebind
     constexpr int kStrongRebind       = 20;  // ~1 s
-    constexpr int kFailBackoff        = 120; // ~6 s after Register AV
-    constexpr int kFailMedExtra       = 40;
+    constexpr int kFailBackoff        = 60;  // ~3 s after Register AV (was 6s)
+    constexpr int kFailMedExtra       = 20;  // smaller medium penalty after AV
 
     int mediumFailPenalty = 0;
     bool pendingRebind = false; // saw L go null or change after a successful bind

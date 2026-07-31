@@ -1,0 +1,50 @@
+{
+  "product_id": "b427df0f-4132-42b8-9eec-b504a7a5e3ba",
+  "product_slug": "ascension-live",
+  "modules": [
+    {
+      "module_id": "1405e56b-9dc5-4d0f-99ac-a1fa8d59b2a5",
+      "manifest_id": "67B9F242663C7CE0",
+      "state": "active",
+      "managed_roots": [
+        "Interface/AddOns/Blizzard_AchievementUI/Blizzard_AchievementUI.pub",
+        "Interface/AddOns/Blizzard_ArenaUI/Blizzard_ArenaUI.pub",
+        "Interface/AddOns/Blizzard_AuctionUI/Blizzard_AuctionUI.pub",
+        "Interface/AddOns/Blizzard_BarbershopUI/Blizzard_BarbershopUI.pub",
+        "Interface/AddOns/Blizzard_BattlefieldMinimap/Blizzard_BattlefieldMinimap.pub",
+        "Interface/AddOns/Blizzard_BindingUI/Blizzard_BindingUI.pub",
+        "Interface/AddOns/Blizzard_Calendar/Blizzard_Calendar.pub",
+        "Interface/AddOns/Blizzard_CombatLog/Blizzard_CombatLog.pub",
+        "Interface/AddOns/Blizzard_CombatText/Blizzard_CombatText.pub",
+        "Interface/AddOns/Blizzard_DebugTools/Blizzard_DebugTools.pub",
+        "Interface/AddOns/Blizzard_GMChatUI/Blizzard_GMChatUI.pub",
+        "Interface/AddOns/Blizzard_GMSurveyUI/Blizzard_GMSurveyUI.pub",
+        "Interface/AddOns/Blizzard_GlyphUI/Blizzard_GlyphUI.pub",
+        "Interface/AddOns/Blizzard_GuildBankUI/Blizzard_GuildBankUI.pub",
+        "Interface/AddOns/Blizzard_InspectUI/Blizzard_InspectUI.pub",
+        "Interface/AddOns/Blizzard_ItemSocketingUI/Blizzard_ItemSocketingUI.pub",
+        "Interface/AddOns/Blizzard_MacroUI/Blizzard_MacroUI.pub",
+        "Interface/AddOns/Blizzard_RaidUI/Blizzard_RaidUI.pub",
+        "Interface/AddOns/Blizzard_TalentUI/Blizzard_TalentUI.pub",
+        "Interface/AddOns/Blizzard_TimeManager/Blizzard_TimeManager.pub",
+        "Interface/AddOns/Blizzard_TokenUI/Blizzard_TokenUI.pub",
+        "Interface/AddOns/Blizzard_TradeSkillUI/Blizzard_TradeSkillUI.pub"
+      ]
+    },
+    {
+      "module_id": "99ca571a-2ac5-4bd0-b59c-ed4402faad65",
+      "manifest_id": "5B924ADB7B21CCF0",
+      "state": "active"
+    },
+    {
+      "module_id": "d19dd75f-7ca6-4486-884d-6948f3eddbcd",
+      "manifest_id": "AFADD662453021AC",
+      "state": "active"
+    },
+    {
+      "module_id": "c246d2fe-2275-4b8e-a1a2-efd74d030773",
+      "manifest_id": "E7A00CF10A30DFA4",
+      "state": "active"
+    }
+  ]
+}

@@ -1,0 +1,248 @@
+["Raiden Reaper"] = {
+			["enabled"] = true,
+			["ensure_empty_slot"] = true,
+			["name"] = "Raiden Reaper",
+			["slots"] = {
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "332651754-968291269",
+					["off_gcd"] = false,
+					["name"] = "Soul Capture",
+					["spell_id"] = 561289,
+					["conditions"] = {
+						{
+							["id"] = "corpse",
+							["args"] = {
+								["state"] = "available",
+								["op"] = ">=",
+								["count"] = 1,
+								["invert"] = false,
+								["range"] = 30,
+							},
+						}, -- [1]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [1]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "769402143-577593311",
+					["off_gcd"] = false,
+					["name"] = "Auto Attack",
+					["spell_id"] = 6603,
+					["conditions"] = {
+						{
+							["id"] = "auto_repeat",
+							["args"] = {
+								["invert"] = true,
+								["mode"] = "melee",
+							},
+						}, -- [1]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [2]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "701559496-468398084",
+					["off_gcd"] = false,
+					["name"] = "Soulrend",
+					["spell_id"] = 573316,
+					["conditions"] = {
+						{
+							["id"] = "aura",
+							["args"] = {
+								["state"] = "present",
+								["unit"] = "player",
+								["name"] = "",
+								["kind"] = "buff",
+								["spell_id"] = 803031,
+								["min_stacks"] = 1,
+								["invert"] = false,
+								["min_remaining"] = 0,
+							},
+						}, -- [1]
+						{
+							["id"] = "power",
+							["args"] = {
+								["value_max"] = 100,
+								["power_type"] = "runic",
+								["value"] = 39,
+								["mode"] = "units",
+								["invert"] = false,
+								["op"] = "<=",
+							},
+						}, -- [2]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [3]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "903073214-862605671",
+					["off_gcd"] = false,
+					["name"] = "Soul Strike",
+					["spell_id"] = 500517,
+					["conditions"] = {
+						{
+							["id"] = "power",
+							["args"] = {
+								["value_max"] = 100,
+								["power_type"] = "runic",
+								["value"] = 40,
+								["mode"] = "units",
+								["invert"] = false,
+								["op"] = ">=",
+							},
+						}, -- [1]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [4]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "777642140-618579669",
+					["off_gcd"] = false,
+					["name"] = "Soulrend",
+					["spell_id"] = 573316,
+					["conditions"] = {
+						{
+							["id"] = "aura",
+							["args"] = {
+								["state"] = "present",
+								["unit"] = "player",
+								["name"] = "",
+								["kind"] = "buff",
+								["spell_id"] = 803031,
+								["min_stacks"] = 1,
+								["invert"] = false,
+								["min_remaining"] = 0,
+							},
+						}, -- [1]
+						{
+							["id"] = "power",
+							["args"] = {
+								["value_max"] = 100,
+								["power_type"] = "runic",
+								["value"] = 40,
+								["mode"] = "units",
+								["invert"] = false,
+								["op"] = ">=",
+							},
+						}, -- [2]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [5]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "644337291-75777460",
+					["off_gcd"] = false,
+					["name"] = "Reap",
+					["spell_id"] = 500357,
+					["conditions"] = {
+						{
+							["id"] = "aura",
+							["args"] = {
+								["state"] = "missing",
+								["unit"] = "player",
+								["name"] = "",
+								["kind"] = "buff",
+								["spell_id"] = 803031,
+								["min_stacks"] = 1,
+								["invert"] = false,
+								["min_remaining"] = 0,
+							},
+						}, -- [1]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [6]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "587939086-48280282",
+					["off_gcd"] = false,
+					["name"] = "Spectre Stride",
+					["spell_id"] = 801624,
+					["conditions"] = {
+						{
+							["id"] = "aura",
+							["args"] = {
+								["state"] = "present",
+								["unit"] = "player",
+								["name"] = "",
+								["kind"] = "buff",
+								["spell_id"] = 800797,
+								["min_stacks"] = 1,
+								["invert"] = false,
+								["min_remaining"] = 0,
+							},
+						}, -- [1]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [7]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "827631459-426343578",
+					["off_gcd"] = false,
+					["name"] = "Underwalk",
+					["spell_id"] = 800797,
+					["conditions"] = {
+						{
+							["id"] = "in_combat",
+							["args"] = {
+								["invert"] = true,
+							},
+						}, -- [1]
+						{
+							["id"] = "target_distance",
+							["args"] = {
+								["op"] = ">=",
+								["invert"] = false,
+								["range"] = 6,
+							},
+						}, -- [2]
+						{
+							["id"] = "target_distance",
+							["args"] = {
+								["op"] = "<=",
+								["invert"] = false,
+								["range"] = 26,
+							},
+						}, -- [3]
+						{
+							["id"] = "cooldown",
+							["args"] = {
+								["spell_id"] = 801624,
+								["op"] = "ready",
+								["invert"] = false,
+								["seconds"] = 1,
+							},
+						}, -- [4]
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [8]
+				{
+					["enabled"] = true,
+					["while_casting"] = false,
+					["id"] = "259559924-323709831",
+					["off_gcd"] = false,
+					["name"] = "Empty",
+					["spell_id"] = 0,
+					["conditions"] = {
+					},
+					["action_type"] = "spell",
+					["notes"] = "",
+				}, -- [9]
+			},
+		}

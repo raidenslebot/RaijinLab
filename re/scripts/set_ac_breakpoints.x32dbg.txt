@@ -1,0 +1,136 @@
+// ============================================================
+// Ascension AC Breakpoint Script (x32dbg)
+// Target: live Ascension.exe (x86) with Extensions.dll + DivxTac.dll loaded
+// Author : Claude (AC RE track)
+// Ground truth: notes/11a_divxtac_ac_logic.md + Extensions decomp sink analysis
+// ------------------------------------------------------------
+// Usage in x32dbg: File -> Script -> Load Script -> Run
+// All module-relative forms (Module.dll+RVA) are ASLR-safe.
+// ------------------------------------------------------------
+// SAFETY:
+//   SAFE (won't crash game on trigger — pure inspection points):
+//     - All bpm on Extensions.dll sink + 14 vector callers  (execute BP on ret path)
+//     - All bpx on kernel32/kernelbase imports (IsDebuggerPresent, CheckRemoteDebuggerPresent,
+//       GetThreadContext, FindWindowW, CloseHandle, CreateToolhelp32Snapshot,
+//       K32GetProcessMemoryInfo, LoadLibraryA/W, CreateThread)
+//     - bpx on DivxTac DeviceIoControl / CreateFileA (HWID collection, one-shot at init)
+//   POTENTIALLY NOISY (many hits; consider log-only or conditional):
+//     - CloseHandle (Extensions AC uses CloseHandleException trick but game calls it constantly)
+//     - VirtualProtect (game loader + JIT-ish paths hit it often)
+//     - LoadLibraryA/W on Ascension.exe (fires at startup for every DLL)
+//     - CreateThread (fires for worker pools, sound, network — filter by return address)
+//   REQUIRE CONDITIONAL ACTION (may destabilize if held too long):
+//     - bpm on sink 100b5650 : hitting it means an alert is about to be queued;
+//       if you plan to skip/patch, set condition to break only when arg1 (DBG_* enum id)
+//       matches the vector you're studying, else the network thread will stall and the
+//       server-side session timer may drop you.
+//     - GetThreadContext : Ascension.exe itself does not call this in the hot loop;
+//       any hit is almost certainly the HW-debug-register vector (caller 100b6731 area).
+//       SAFE to break, but do NOT single-step through the CONTEXT dump — the AC thread
+//       is inside a Sleep-throttled loop; blocking >1s is fine, blocking >30s risks
+//       the 60s cadence detector on the managed side (see 11a).
+// ============================================================
+
+SetLogFile "C:\Ascension\Workspace\RaijinLab\re\x32dbg_session.log"
+log "AC BP script loaded"
+
+// ------------------------------------------------------------
+// [1] Extensions.dll native anti-debug SINK
+// ------------------------------------------------------------
+// FUN_100b5650 @ VA 0x100b5650 (file 0xB4A50). All 14 vectors funnel here
+// before packing the alert into CMSG_ANTICHEAT_ALERT (opcode 1311).
+// Breaking here catches EVERY native detection regardless of which vector fired.
+// arg1 (stack+4) = DBG_* enum id (see strings BEINGEBUGGEDPEB, RDTSC, INT3CC, ...)
+log "BP: Extensions sink FUN_100b5650"
+bpm Extensions.dll+B4A50
+
+// ------------------------------------------------------------
+// [2] Extensions.dll — 14 direct callers of the sink (one per vector)
+// ------------------------------------------------------------
+// Each BP identifies WHICH anti-debug check fired without needing to
+// classify the DBG_* enum arg. RVA = VA - 0x10000000.
+log "BP: 14 anti-debug vector callers"
+bpm Extensions.dll+B5CBA    ; vector 01 (likely PEB.BeingDebugged / NTGLOBALFLAGPEB)
+bpm Extensions.dll+B5EB8    ; vector 02 (NtQueryInformationProcess ProcessDebugPort)
+bpm Extensions.dll+B6154    ; vector 03 (NtQueryInformationProcess ProcessDebugFlags/Object)
+bpm Extensions.dll+B6731    ; vector 04 (HARDWAREDEBUGREGISTERS — GetThreadContext DR0-DR7)
+bpm Extensions.dll+B6954    ; vector 05 (MOVSS / stepping trick)
+bpm Extensions.dll+B6C32    ; vector 06 (RDTSC timing delta)
+bpm Extensions.dll+B6FF1    ; vector 07 (INT3 / 0xCC scan or SEH INT3CC)
+bpm Extensions.dll+B7189    ; vector 08 (INT2D SEH check)
+bpm Extensions.dll+B72F7    ; vector 09 (CLOSEHANDLEEXCEPTION — invalid handle SEH)
+bpm Extensions.dll+B74BD    ; vector 10 (SINGLESTEPEXCEPTION / trap flag)
+bpm Extensions.dll+B76B8    ; vector 11 (PREFIXHOP — prefix opcode SEH)
+bpm Extensions.dll+B7C79    ; vector 12 (DEBUGACTIVEPROCESS self-attach probe)
+bpm Extensions.dll+B80B2    ; vector 13 (FINDWINDOW — OllyDbg/x64dbg window class)
+bpm Extensions.dll+B82E4    ; vector 14 (OUTPUTDEBUGSTRING / QueryPerfCounter / GetTickCount)
+
+// ------------------------------------------------------------
+// [3] DivxTac.dll native detection routines
+// ------------------------------------------------------------
+// RVAs derived from image base 0x10000000. These are the C++ natives
+// invoked by the managed AntiCheatThreadLoop (60s cadence, see 11a).
+log "BP: DivxTac native detect routines"
+bpm DivxTac.dll+2EC4        ; DetectDebugger (IsDebuggerPresent + CRDP wrapper)
+bpm DivxTac.dll+2FA8        ; DetectHackProcess helper (process name compare)
+bpm DivxTac.dll+3094        ; DetectHackModule helper (module name compare, lowercased+.dll)
+bpm DivxTac.dll+3234        ; DetectHackTitle helper (window title / class compare)
+bpm DivxTac.dll+33F8        ; SendProcessAntiCheatAlert (opcode 1311, subtype process)
+bpm DivxTac.dll+35BC        ; SendModuleAntiCheatAlert  (opcode 1311, subtype module)
+bpm DivxTac.dll+22FC        ; AnticheatInitializeHandler entry (opcode 14, magic 0xDEADBABE)
+bpm DivxTac.dll+5580        ; MasterHardDiskSerial getter (HWID via IOCTL_STORAGE_QUERY_PROPERTY)
+bpm DivxTac.dll+5908        ; HWID/serial formatter (feeds CMSG_ANTICHEAT_VERSION subtype 4)
+
+// ------------------------------------------------------------
+// [4] Extensions.dll — Win32 imports the AC vectors call
+// ------------------------------------------------------------
+// bpx on import thunks catches the call from ANY caller in Extensions,
+// which is what we want to correlate with the vector BPs above.
+log "BP: Extensions.dll imported Win32 APIs used by AC"
+bpx Extensions.dll:IsDebuggerPresent            ; vector 01 primary
+bpx Extensions.dll:CheckRemoteDebuggerPresent   ; vector 02 alternate
+bpx Extensions.dll:GetThreadContext             ; vector 04 (HW debug regs DR0..DR7)
+bpx Extensions.dll:FindWindowW                  ; vector 13 (debugger window enum)
+bpx Extensions.dll:CloseHandle                  ; vector 09 (invalid-handle SEH trick) — NOISY
+bpx Extensions.dll:VirtualProtect               ; anti-patch scan / trampoline check — NOISY
+bpx Extensions.dll:CreateToolhelp32Snapshot     ; process/module enum (feeds vectors 5,6-like scans)
+bpx Extensions.dll:K32GetProcessMemoryInfo      ; working-set / peak memory heuristic
+bpx Extensions.dll:LoadLibraryW                 ; module-load monitor (MMgr64.exe spawn helper)
+
+// ------------------------------------------------------------
+// [5] DivxTac.dll — Win32 imports (per imports_xref.txt)
+// ------------------------------------------------------------
+// DivxTac imports are MINIMAL: no RPM, no Crypt*, no VirtualProtect.
+// Only these three matter for AC behavior tracking.
+log "BP: DivxTac.dll imported Win32 APIs"
+bpx DivxTac.dll:DeviceIoControl                 ; HWID via SMART/STORAGE IOCTLs (one-shot @ init)
+bpx DivxTac.dll:CreateFileA                     ; \\.\PhysicalDrive0 open for HWID (one-shot)
+bpx DivxTac.dll:IsDebuggerPresent               ; DetectDebugger native path (3 xrefs in binary)
+
+// ------------------------------------------------------------
+// [6] Ascension.exe — side-load / thread-spawn observation points
+// ------------------------------------------------------------
+// LoadLibraryA/W on the main exe fires early for DivxDecoder / Extensions / MMgr64
+// launcher path. CreateThread catches the moment the AC worker thread is spun up.
+log "BP: Ascension.exe loader + thread APIs (catch AC init)"
+bpx Ascension.exe:LoadLibraryA                  ; catches DivxDecoder.dll side-load
+bpx Ascension.exe:LoadLibraryW                  ; catches Extensions.dll / MMgr64 launcher paths
+bpx Ascension.exe:CreateThread                  ; catches AC worker thread spawn — filter by start addr
+
+log "AC BP script: all breakpoints armed"
+// ============================================================
+// Total BPs armed: 39
+//   1  Extensions sink
+//  14  Extensions vector callers
+//   9  DivxTac natives
+//   9  Extensions imports
+//   3  DivxTac imports
+//   3  Ascension.exe imports
+// ============================================================
+// Post-load tips:
+//   - Use `bpl` to list; `bd <addr>` to disable without removing.
+//   - For CloseHandle / VirtualProtect noise: right-click BP -> Set condition
+//     e.g. `mod.name(ret) == "Extensions.dll"` to filter only AC-thread hits.
+//   - Log-only mode: right-click BP -> Edit -> uncheck "Break" + set Log text
+//     "{p:cip} vec=B5CBA arg1={s:[esp+4]}" — keeps AC thread flowing.
+// ============================================================

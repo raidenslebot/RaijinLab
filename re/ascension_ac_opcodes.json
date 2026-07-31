@@ -1,0 +1,656 @@
+{
+  "_meta": {
+    "target": "Ascension WoW 3.3.5 client (custom lineage)",
+    "binaries": [
+      "dumps/Extensions.dll",
+      "dumps/DivxTac.dll"
+    ],
+    "id_source": {
+      "table_va": "0x102c9120",
+      "table_file_offset": "0x2c8520",
+      "table_count": 2517,
+      "structure": "Flat array of 4-byte little-endian pointers to per-opcode stubs (each stub is `b8 <str_va> c3` = mov eax,name_ptr; ret). Array index == opcode ID. Recovered by walking two independent xrefs (0x102ca59c and 0x102c9cb8) back/forward while entries stay stubs.",
+      "verification": "Anchors matched task-supplied ground truth: index 1311 -> CMSG_ANTICHEAT_ALERT, 1312 -> CMSG_ANTICHEAT_VERSION, 742 -> SMSG_WARDEN_DATA, 743 -> CMSG_WARDEN_DATA."
+    },
+    "divxtac_handlers": {
+      "register_site_rva": "0x000058BC (SetMessageHandlers)",
+      "context_magic": "0xDEADBABE (-559039810 int32)",
+      "handler_signature": "int __cdecl H(void* param, Opcodes msgId, uint time, CDataStore* msg)",
+      "notes": "DivxTac registers server->client handlers on opcode IDs 14 and 35 — the Extensions name table calls those IDs SMSG_MOVE_CHARACTER_CHEAT and SMSG_GODMODE (legacy debug/cheat opcodes from stock 3.3.5). Ascension repurposes both IDs as anti-cheat transport (SMSG_ANTICHEAT_INIT and SMSG_ANTICHEAT_BANNED_PROCESS_LIST respectively)."
+    },
+    "extraction_scripts": "re-derive with python -c 'see _meta.id_source' walking Extensions.dll at file 0x2c8520"
+  },
+  "opcodes": [
+    {
+      "name": "CMSG_MOVE_CHARACTER_CHEAT",
+      "dir": "C2S",
+      "id": 13,
+      "hex": "0x00D",
+      "source": "Extensions.dll opcode-name table [idx 13]",
+      "payload": "legacy 3.3.5 cheat opcode (stock name preserved in table)",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_MOVE_CHARACTER_CHEAT",
+      "aliases": ["SMSG_ANTICHEAT_INIT (Ascension repurpose)"],
+      "dir": "S2C",
+      "id": 14,
+      "hex": "0x00E",
+      "source": "Extensions.dll opcode-name table [idx 14]; DivxTac.dll <Module>.SetMessageHandlers registers AnticheatInitializeHandler on (Opcodes)14 with ctx=0xDEADBABE",
+      "payload": "server: opcode envelope only (no meaningful body — DivxTac ignores `msg` arg); client responds with CMSG_ANTICHEAT_VERSION (1312) subtype 4 + master HDD serial",
+      "role": "anticheat_init_trigger",
+      "handler_dnspy": "AnticheatInitializeHandler @ Token 0x06000072"
+    },
+    {
+      "name": "SMSG_CHECK_FOR_BOTS",
+      "dir": "S2C",
+      "id": 21,
+      "hex": "0x015",
+      "source": "Extensions.dll opcode-name table [idx 21]",
+      "payload": "server-driven bot-scan trigger (Ascension-placed at this stock 3.3.5 debug ID slot)",
+      "role": "bot_detection"
+    },
+    {
+      "name": "CMSG_BOT_DETECTED2",
+      "dir": "C2S",
+      "id": 23,
+      "hex": "0x017",
+      "source": "Extensions.dll opcode-name table [idx 23]",
+      "payload": "client-side bot-scanner positive response (v2 variant)",
+      "role": "bot_detection"
+    },
+    {
+      "name": "SMSG_GODMODE",
+      "aliases": ["SMSG_ANTICHEAT_BANNED_PROCESS_LIST (Ascension repurpose)"],
+      "dir": "S2C",
+      "id": 35,
+      "hex": "0x023",
+      "source": "Extensions.dll opcode-name table [idx 35]; DivxTac.dll <Module>.SetMessageHandlers registers AnticheatBannedProcessListHandler on (Opcodes)35 with ctx=0xDEADBABE",
+      "payload": "uint32 count, then count * CDataStore::GetString entries appended to BannedProccesses vector",
+      "role": "anticheat_banlist_push",
+      "handler_dnspy": "AnticheatBannedProcessListHandler @ Token 0x06000071"
+    },
+    {
+      "name": "CMSG_CHEAT_SETMONEY",
+      "dir": "C2S",
+      "id": 36,
+      "hex": "0x024",
+      "source": "Extensions.dll opcode-name table [idx 36]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_LEVEL_CHEAT",
+      "dir": "C2S",
+      "id": 37,
+      "hex": "0x025",
+      "source": "Extensions.dll opcode-name table [idx 37]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_PET_LEVEL_CHEAT",
+      "dir": "C2S",
+      "id": 38,
+      "hex": "0x026",
+      "source": "Extensions.dll opcode-name table [idx 38]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_COOLDOWN_CHEAT",
+      "dir": "C2S",
+      "id": 40,
+      "hex": "0x028",
+      "source": "Extensions.dll opcode-name table [idx 40]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_USE_SKILL_CHEAT",
+      "dir": "C2S",
+      "id": 41,
+      "hex": "0x029",
+      "source": "Extensions.dll opcode-name table [idx 41]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_DISABLE_PVP_CHEAT",
+      "dir": "C2S",
+      "id": 48,
+      "hex": "0x030",
+      "source": "Extensions.dll opcode-name table [idx 48]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_WEATHER_SPEED_CHEAT",
+      "dir": "C2S",
+      "id": 31,
+      "hex": "0x01F",
+      "source": "Extensions.dll opcode-name table [idx 31]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_TELEPORT_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 198,
+      "hex": "0x0C6",
+      "source": "Extensions.dll opcode-name table [idx 198]",
+      "payload": "movement cheat MSG",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_RUN_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 204,
+      "hex": "0x0CC",
+      "source": "Extensions.dll opcode-name table [idx 204]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_RUN_BACK_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 206,
+      "hex": "0x0CE",
+      "source": "Extensions.dll opcode-name table [idx 206]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_WALK_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 208,
+      "hex": "0x0D0",
+      "source": "Extensions.dll opcode-name table [idx 208]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_SWIM_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 210,
+      "hex": "0x0D2",
+      "source": "Extensions.dll opcode-name table [idx 210]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_SWIM_BACK_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 212,
+      "hex": "0x0D4",
+      "source": "Extensions.dll opcode-name table [idx 212]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_ALL_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 214,
+      "hex": "0x0D6",
+      "source": "Extensions.dll opcode-name table [idx 214]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_TURN_RATE_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 215,
+      "hex": "0x0D7",
+      "source": "Extensions.dll opcode-name table [idx 215]",
+      "payload": "movement cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_TOGGLE_COLLISION_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 217,
+      "hex": "0x0D9",
+      "source": "Extensions.dll opcode-name table [idx 217]",
+      "payload": "movement cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_MOVE_CHARM_PORT_CHEAT",
+      "dir": "C2S",
+      "id": 224,
+      "hex": "0x0E0",
+      "source": "Extensions.dll opcode-name table [idx 224]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_TRIGGER_CINEMATIC_CHEAT",
+      "dir": "C2S",
+      "id": 248,
+      "hex": "0x0F8",
+      "source": "Extensions.dll opcode-name table [idx 248]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_FACTION_CHEAT",
+      "dir": "C2S",
+      "id": 294,
+      "hex": "0x126",
+      "source": "Extensions.dll opcode-name table [idx 294]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_SKILL_CHEAT",
+      "dir": "C2S",
+      "id": 472,
+      "hex": "0x1D8",
+      "source": "Extensions.dll opcode-name table [idx 472]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_COOLDOWN_CHEAT",
+      "dir": "S2C",
+      "id": 481,
+      "hex": "0x1E1",
+      "source": "Extensions.dll opcode-name table [idx 481]",
+      "payload": "cheat notification",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_STAT_CHEAT",
+      "dir": "C2S",
+      "id": 541,
+      "hex": "0x21D",
+      "source": "Extensions.dll opcode-name table [idx 541]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_XP_CHEAT",
+      "dir": "C2S",
+      "id": 545,
+      "hex": "0x221",
+      "source": "Extensions.dll opcode-name table [idx 545]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_CHARACTER_POINT_CHEAT",
+      "dir": "C2S",
+      "id": 547,
+      "hex": "0x223",
+      "source": "Extensions.dll opcode-name table [idx 547]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_PLAYER_AI_CHEAT",
+      "dir": "C2S",
+      "id": 620,
+      "hex": "0x26C",
+      "source": "Extensions.dll opcode-name table [idx 620]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_RESET_FACTION_CHEAT",
+      "dir": "C2S",
+      "id": 641,
+      "hex": "0x281",
+      "source": "Extensions.dll opcode-name table [idx 641]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_DURABILITY_CHEAT",
+      "dir": "C2S",
+      "id": 647,
+      "hex": "0x287",
+      "source": "Extensions.dll opcode-name table [idx 647]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_PVP_RANK_CHEAT",
+      "dir": "C2S",
+      "id": 648,
+      "hex": "0x288",
+      "source": "Extensions.dll opcode-name table [idx 648]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_ADD_PVP_MEDAL_CHEAT",
+      "dir": "C2S",
+      "id": 649,
+      "hex": "0x289",
+      "source": "Extensions.dll opcode-name table [idx 649]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_DEL_PVP_MEDAL_CHEAT",
+      "dir": "C2S",
+      "id": 650,
+      "hex": "0x28A",
+      "source": "Extensions.dll opcode-name table [idx 650]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_MOVE_START_SWIM_CHEAT",
+      "dir": "C2S",
+      "id": 728,
+      "hex": "0x2D8",
+      "source": "Extensions.dll opcode-name table [idx 728]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_MOVE_STOP_SWIM_CHEAT",
+      "dir": "C2S",
+      "id": 729,
+      "hex": "0x2D9",
+      "source": "Extensions.dll opcode-name table [idx 729]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_WARDEN_DATA",
+      "dir": "S2C",
+      "id": 742,
+      "hex": "0x2E6",
+      "source": "Extensions.dll opcode-name table [idx 742]",
+      "payload": "Warden challenge/module bytes from server (opcode name only present — DivxTac does NOT register a managed handler; native Warden handler lives in Extensions.dll)",
+      "role": "warden"
+    },
+    {
+      "name": "CMSG_WARDEN_DATA",
+      "dir": "C2S",
+      "id": 743,
+      "hex": "0x2E7",
+      "source": "Extensions.dll opcode-name table [idx 743]",
+      "payload": "Warden response bytes from client",
+      "role": "warden"
+    },
+    {
+      "name": "CMSG_IGNORE_KNOCKBACK_CHEAT",
+      "dir": "C2S",
+      "id": 812,
+      "hex": "0x32C",
+      "source": "Extensions.dll opcode-name table [idx 812]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_START_SWIM_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 833,
+      "hex": "0x341",
+      "source": "Extensions.dll opcode-name table [idx 833]",
+      "payload": "movement cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_STOP_SWIM_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 834,
+      "hex": "0x342",
+      "source": "Extensions.dll opcode-name table [idx 834]",
+      "payload": "movement cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_CHEAT_SET_HONOR_CURRENCY",
+      "dir": "C2S",
+      "id": 891,
+      "hex": "0x37B",
+      "source": "Extensions.dll opcode-name table [idx 891]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_CHEAT_SET_ARENA_CURRENCY",
+      "dir": "C2S",
+      "id": 892,
+      "hex": "0x37C",
+      "source": "Extensions.dll opcode-name table [idx 892]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_FLIGHT_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 893,
+      "hex": "0x37D",
+      "source": "Extensions.dll opcode-name table [idx 893]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_FLIGHT_BACK_SPEED_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 895,
+      "hex": "0x37F",
+      "source": "Extensions.dll opcode-name table [idx 895]",
+      "payload": "movement speed cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_ACTIVE_PVP_CHEAT",
+      "dir": "C2S",
+      "id": 921,
+      "hex": "0x399",
+      "source": "Extensions.dll opcode-name table [idx 921]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_CHEAT_DUMP_ITEMS_DEBUG_ONLY",
+      "dir": "C2S",
+      "id": 922,
+      "hex": "0x39A",
+      "source": "Extensions.dll opcode-name table [idx 922]",
+      "payload": "debug",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_CHEAT_DUMP_ITEMS_DEBUG_ONLY_RESPONSE",
+      "dir": "S2C",
+      "id": 923,
+      "hex": "0x39B",
+      "source": "Extensions.dll opcode-name table [idx 923]",
+      "payload": "debug response",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_CHEAT_DUMP_ITEMS_DEBUG_ONLY_RESPONSE_WRITE_FILE",
+      "dir": "S2C",
+      "id": 924,
+      "hex": "0x39C",
+      "source": "Extensions.dll opcode-name table [idx 924]",
+      "payload": "debug response",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_IGNORE_REQUIREMENTS_CHEAT",
+      "dir": "C2S",
+      "id": 936,
+      "hex": "0x3A8",
+      "source": "Extensions.dll opcode-name table [idx 936]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_IGNORE_REQUIREMENTS_CHEAT",
+      "dir": "S2C",
+      "id": 937,
+      "hex": "0x3A9",
+      "source": "Extensions.dll opcode-name table [idx 937]",
+      "payload": "cheat ack",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_BOT_DETECTED",
+      "dir": "C2S",
+      "id": 960,
+      "hex": "0x3C0",
+      "source": "Extensions.dll opcode-name table [idx 960]",
+      "payload": "client-side bot-scanner positive response (v1)",
+      "role": "bot_detection"
+    },
+    {
+      "name": "CMSG_CHEAT_PLAYER_LOGIN",
+      "dir": "C2S",
+      "id": 962,
+      "hex": "0x3C2",
+      "source": "Extensions.dll opcode-name table [idx 962]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_CHEAT_PLAYER_LOOKUP",
+      "dir": "C2S",
+      "id": 963,
+      "hex": "0x3C3",
+      "source": "Extensions.dll opcode-name table [idx 963]",
+      "payload": "cheat lookup",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_CHEAT_PLAYER_LOOKUP",
+      "dir": "S2C",
+      "id": 964,
+      "hex": "0x3C4",
+      "source": "Extensions.dll opcode-name table [idx 964]",
+      "payload": "cheat lookup response",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_IGNORE_DIMINISHING_RETURNS_CHEAT",
+      "dir": "C2S",
+      "id": 1029,
+      "hex": "0x405",
+      "source": "Extensions.dll opcode-name table [idx 1029]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "SMSG_IGNORE_DIMINISHING_RETURNS_CHEAT",
+      "dir": "S2C",
+      "id": 1030,
+      "hex": "0x406",
+      "source": "Extensions.dll opcode-name table [idx 1030]",
+      "payload": "cheat ack",
+      "role": "cheat"
+    },
+    {
+      "name": "MSG_MOVE_SET_PITCH_RATE_CHEAT",
+      "dir": "C2S|S2C",
+      "id": 1114,
+      "hex": "0x45A",
+      "source": "Extensions.dll opcode-name table [idx 1114]",
+      "payload": "movement cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_COMPLETE_ACHIEVEMENT_CHEAT",
+      "dir": "C2S",
+      "id": 1134,
+      "hex": "0x46E",
+      "source": "Extensions.dll opcode-name table [idx 1134]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_CRITERIA_CHEAT",
+      "dir": "C2S",
+      "id": 1136,
+      "hex": "0x470",
+      "source": "Extensions.dll opcode-name table [idx 1136]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_UNITANIMTIER_CHEAT",
+      "dir": "C2S",
+      "id": 1138,
+      "hex": "0x472",
+      "source": "Extensions.dll opcode-name table [idx 1138]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_FORCE_SAY_CHEAT",
+      "dir": "C2S",
+      "id": 1150,
+      "hex": "0x47E",
+      "source": "Extensions.dll opcode-name table [idx 1150]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_FLOOD_GRACE_CHEAT",
+      "dir": "C2S",
+      "id": 1175,
+      "hex": "0x497",
+      "source": "Extensions.dll opcode-name table [idx 1175]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_START_BATTLEFIELD_CHEAT",
+      "dir": "C2S",
+      "id": 1227,
+      "hex": "0x4CB",
+      "source": "Extensions.dll opcode-name table [idx 1227]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_END_BATTLEFIELD_CHEAT",
+      "dir": "C2S",
+      "id": 1228,
+      "hex": "0x4CC",
+      "source": "Extensions.dll opcode-name table [idx 1228]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_SET_PAID_SERVICE_CHEAT",
+      "dir": "C2S",
+      "id": 1245,
+      "hex": "0x4DD",
+      "source": "Extensions.dll opcode-name table [idx 1245]",
+      "payload": "cheat",
+      "role": "cheat"
+    },
+    {
+      "name": "CMSG_ANTICHEAT_ALERT",
+      "dir": "C2S",
+      "id": 1311,
+      "hex": "0x51F",
+      "source": "Extensions.dll opcode-name table [idx 1311]; DivxTac.dll AntiCheatService.DetectDebugger / SendProcessAntiCheatAlert / SendModuleAntiCheatAlert all PutInt32(1311)",
+      "payload": "3 length-prefixed C strings via CDataStore.PutString. Emitters seen: (a) DetectDebugger -> ('DEBUGGER','DEBUGGER',Process.GetCurrentProcess().ProcessName); (b) SendProcessAntiCheatAlert -> (ProcessDescription.ProcessName@+0, ProcessDescription.WindowTitle@+24, ProcessDescription.FilePath@+48); (c) SendModuleAntiCheatAlert -> (ProcessModule.ModuleName, Process.MainWindowTitle, ProcessModule.FileName)",
+      "role": "anticheat_alert",
+      "emitter_dnspy": [
+        "AntiCheatService.DetectDebugger @ Token 0x0600000B",
+        "AntiCheatService.SendProcessAntiCheatAlert @ Token 0x0600000C",
+        "AntiCheatService.SendModuleAntiCheatAlert @ Token 0x0600000D"
+      ]
+    },
+    {
+      "name": "CMSG_ANTICHEAT_VERSION",
+      "dir": "C2S",
+      "id": 1312,
+      "hex": "0x520",
+      "source": "Extensions.dll opcode-name table [idx 1312]; DivxTac.dll AnticheatInitializeHandler emits PutInt32(1312)",
+      "payload": "int32 subtype (=4, hardcoded), then 1 length-prefixed C string containing master HDD serial (via MasterHardDiskSerial.GetSerialNo -> DeviceIoControl SMART/STORAGE IOCTLs)",
+      "role": "anticheat_handshake_response",
+      "emitter_dnspy": "AnticheatInitializeHandler @ Token 0x06000072 (sent in reply to inbound opcode 14)"
+    }
+  ]
+}

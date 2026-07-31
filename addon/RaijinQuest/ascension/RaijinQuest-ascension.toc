@@ -1,0 +1,12 @@
+## Interface: 30300
+## Title: |cff33ffccpf|cffffffffQuest |cffcccccc[Ascension WoW DB] |cffff5555[RELEASE]
+## Author: Shagu
+## Notes: Ascension WoW DB extension for RaijinQuest
+## Version: 1.01
+## Dependencies: RaijinQuest
+
+init\data-ascension.xml
+init\enUS-ascension.xml
+
+patchtable.lua
+RaijinQuest-ascension.lua

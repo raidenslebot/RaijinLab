@@ -1,0 +1,190 @@
+[
+  {
+    "name": "g_luaState",
+    "address": "0x00D3F78C",
+    "confidence": 0.99,
+    "type": "global",
+    "data_type": "lua_State*",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "mov esi,[0xD3F78C] in FrameScript_Execute at 0x819249",
+        "method": "data_xref"
+      },
+      {
+        "level": 2,
+        "evidence": "Also read by FrameScript_RegisterFunction and FrameScript_UnregisterFunction",
+        "method": "cross_reference"
+      },
+      {
+        "level": 3,
+        "evidence": "Written at 0x819BD0 (state creation) and 0x81A9B5",
+        "method": "write_xref"
+      }
+    ],
+    "notes": "CRITICAL: SDK metadata had this mislabeled as g_currentMapId. Confirmed g_luaState via FrameScript context.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_InWorld",
+    "address": "0x00D3F60C",
+    "confidence": 0.95,
+    "type": "global",
+    "data_type": "bool",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Set true at 0x810933 and 0x812404 (FrameScript init)",
+        "method": "write_xref"
+      },
+      {
+        "level": 2,
+        "evidence": "Set false at 0x8121E9 (FrameScript teardown)",
+        "method": "write_xref"
+      },
+      {
+        "level": 3,
+        "evidence": "Best InWorld candidate: FrameScript area, 2 true / 1 false pattern",
+        "method": "pattern_analysis"
+      }
+    ],
+    "notes": "CRITICAL: Old SDK had 0xC7D0EC which was WRONG (always reads 0x00). This is in FrameScript code area.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_clientConnection",
+    "address": "0x00C79CE0",
+    "confidence": 0.6,
+    "type": "global",
+    "data_type": "void*",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Referenced in network code, may read DLL addresses when modules loaded",
+        "method": "data_xref"
+      }
+    ],
+    "notes": "UNVERIFIED \u2014 may read DLL addresses when modules loaded. Needs re-verification.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_objectManager",
+    "address": "0x00CD87A8",
+    "confidence": 0.7,
+    "type": "global",
+    "data_type": "CGObjectManager*",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "From SDK metadata, referenced by ClntObjMgr functions",
+        "method": "data_xref"
+      }
+    ],
+    "notes": "From SDK metadata. Needs binary scan verification for higher confidence.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_localPlayer",
+    "address": "0x00C7B098",
+    "confidence": 0.65,
+    "type": "global",
+    "data_type": "CGPlayer_C*",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "From SDK metadata",
+        "method": "metadata"
+      }
+    ],
+    "notes": "From SDK metadata. Needs binary scan verification.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_cameraBase",
+    "address": "0x00B7CE50",
+    "confidence": 0.65,
+    "type": "global",
+    "data_type": "void*",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "From SDK metadata, camera system",
+        "method": "metadata"
+      }
+    ],
+    "notes": "From SDK metadata. Needs binary scan verification.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "g_gameTime",
+    "address": "0x00BD0798",
+    "confidence": 0.65,
+    "type": "global",
+    "data_type": "uint32_t",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "From SDK metadata",
+        "method": "metadata"
+      }
+    ],
+    "notes": "From SDK metadata. Needs binary scan verification.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  }
+]

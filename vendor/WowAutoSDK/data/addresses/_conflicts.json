@@ -1,0 +1,26 @@
+[
+  {
+    "type": "same_address_different_name",
+    "address": "0x00D3F78C",
+    "existing": "g_currentMapId (SDK metadata - WRONG)",
+    "correct": "g_luaState (binary scan verified)",
+    "resolution": "Binary scan confirmed via FrameScript_Execute data xref at 0x819249",
+    "resolved_date": "2026-04-13"
+  },
+  {
+    "type": "wrong_address",
+    "name": "g_luaState",
+    "wrong_address": "0x00D415F8",
+    "correct_address": "0x00D3F78C",
+    "resolution": "Old SDK had wrong address. Binary scan confirmed 0xD3F78C from FrameScript_Execute.",
+    "resolved_date": "2026-04-13"
+  },
+  {
+    "type": "wrong_address",
+    "name": "g_InWorld",
+    "wrong_address": "0x00C7D0EC",
+    "correct_address": "0x00D3F60C",
+    "resolution": "0xC7D0EC always reads 0x00. 0xD3F60C confirmed via FrameScript init/teardown pattern.",
+    "resolved_date": "2026-04-13"
+  }
+]

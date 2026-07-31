@@ -1,0 +1,667 @@
+{
+  "scan_date": "2026-04-13",
+  "build": "12340",
+  "results": {
+    "pe_info": {
+      "image_base": 4194304,
+      "entry_point": 4198400,
+      "sections": {
+        ".text": {
+          "va_start": "0x00401000",
+          "va_end": "0x009DE3B3",
+          "raw_offset": "0x00000400",
+          "raw_size": "0x005DD400"
+        },
+        ".rdata": {
+          "va_start": "0x009DF000",
+          "va_end": "0x00AB5679",
+          "raw_offset": "0x005DD800",
+          "raw_size": "0x000D6800"
+        },
+        ".data": {
+          "va_start": "0x00AB6000",
+          "va_end": "0x00DD0508",
+          "raw_offset": "0x006B4000",
+          "raw_size": "0x00078E00"
+        },
+        ".zdata": {
+          "va_start": "0x00DD1000",
+          "va_end": "0x00DD2000",
+          "raw_offset": "0x0072CE00",
+          "raw_size": "0x00001000"
+        },
+        ".tls": {
+          "va_start": "0x00DD2000",
+          "va_end": "0x00DD2019",
+          "raw_offset": "0x0072DE00",
+          "raw_size": "0x00000200"
+        },
+        ".rsrc": {
+          "va_start": "0x00DD3000",
+          "va_end": "0x00DFB890",
+          "raw_offset": "0x0072E000",
+          "raw_size": "0x00028A00"
+        }
+      }
+    },
+    "anchor": {
+      "name": "FrameScript_Execute",
+      "address": "0x00819210",
+      "method": "config.json"
+    },
+    "framescript": [],
+    "lua_api": [
+      {
+        "address": "0x0084D1A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D390",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D3D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D3F0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D420",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D480",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D580",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D840",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084D860",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DA50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DAB0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DB10",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DB90",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DBD0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DBF0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DC50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DCC0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DD70",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DE50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DEB0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DED0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DEF0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DF20",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DF60",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DF90",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084DFE0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E030",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E070",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E0B0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E0E0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E150",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E1C0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E1F0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E210",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E280",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E2A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E2D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E300",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E350",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E3A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E3D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E400",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E4D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E500",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E530",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E560",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E590",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E600",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E670",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E6E0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E730",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E7A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E8D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E900",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084E970",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EA00",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EA90",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EB40",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EBF0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EC30",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EC50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084ECC0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084ED00",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084ED40",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084ED50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EE50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EE60",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EE70",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EE80",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EE90",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EF20",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EF30",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EF50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084EF90",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F010",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F030",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F0D0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F0F0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F150",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F210",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F280",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F2C0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F2F0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F350",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F3B0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F4A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F520",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F560",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F5C0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F610",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F6A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F6C0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F7A0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F830",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F860",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F8B0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F960",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F9C0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084F9F0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FA50",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FAB0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FB30",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FB60",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FBD0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FC00",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FD20",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FDD0",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FE40",
+        "confidence": 0.8,
+        "in_cluster": true
+      },
+      {
+        "address": "0x0084FF30",
+        "confidence": 0.8,
+        "in_cluster": true
+      }
+    ],
+    "globals": [
+      {
+        "name": "g_luaState",
+        "address": "0x00D3F78C",
+        "evidence": "Read by FrameScript_Execute at 0x00819249 into esi (score=35)",
+        "confidence": 0.95
+      },
+      {
+        "name": "g_InWorld",
+        "address": "0x00D3F60C",
+        "evidence": "Score 100: 2 true writes, 1 false writes, 1 reads, 2 in FrameScript region",
+        "confidence": 0.95
+      }
+    ],
+    "inworld_candidates": [
+      {
+        "address": "0x00D3F60C",
+        "score": 100,
+        "true_write_count": 2,
+        "false_write_count": 1,
+        "read_count": 1,
+        "read_page_spread": 1,
+        "fs_true_count": 2,
+        "fs_false_count": 1
+      },
+      {
+        "address": "0x00D3F79C",
+        "score": 100,
+        "true_write_count": 1,
+        "false_write_count": 1,
+        "read_count": 1,
+        "read_page_spread": 1,
+        "fs_true_count": 1,
+        "fs_false_count": 1
+      },
+      {
+        "address": "0x00C5DEA0",
+        "score": 85,
+        "true_write_count": 1,
+        "false_write_count": 1,
+        "read_count": 78,
+        "read_page_spread": 42,
+        "fs_true_count": 0,
+        "fs_false_count": 0
+      },
+      {
+        "address": "0x00BD19B8",
+        "score": 85,
+        "true_write_count": 1,
+        "false_write_count": 1,
+        "read_count": 18,
+        "read_page_spread": 11,
+        "fs_true_count": 0,
+        "fs_false_count": 0
+      },
+      {
+        "address": "0x00CE049F",
+        "score": 75,
+        "true_write_count": 1,
+        "false_write_count": 1,
+        "read_count": 7,
+        "read_page_spread": 5,
+        "fs_true_count": 0,
+        "fs_false_count": 0
+      }
+    ]
+  }
+}

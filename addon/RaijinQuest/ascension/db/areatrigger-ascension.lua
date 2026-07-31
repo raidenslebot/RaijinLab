@@ -1,0 +1,2 @@
+RaijinQuestDB["areatrigger"]["data-ascension"] = {
+}

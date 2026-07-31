@@ -1,0 +1,6 @@
+GetAscensionDonationPoints
+GetAscensionSeasonalPoints
+LoadAscensionContentJSON
+OpenAscensionDBURL
+OpenAscensionURL
+OpenAscensionWikiURL

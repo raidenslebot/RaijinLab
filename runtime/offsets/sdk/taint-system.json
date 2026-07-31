@@ -1,0 +1,142 @@
+[
+  {
+    "name": "TaintContext",
+    "address": "0x00D4139C",
+    "confidence": 0.90,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["FrameScript_Execute disasm -> xref to 0xD4139C taint check pattern"],
+    "notes": "Taint source; 0 = secure execution context"
+  },
+  {
+    "name": "ExecCounter",
+    "address": "0x00D413A0",
+    "confidence": 0.90,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TaintContext (+4 bytes), confirmed by securecall_inc referencing ADD [D413A0]"],
+    "notes": "Script nesting depth counter"
+  },
+  {
+    "name": "CombatLockdown",
+    "address": "0x00D413A4",
+    "confidence": 0.90,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TaintContext (+8 bytes), confirmed by taint cluster in .data section"],
+    "notes": "0 = not in combat lockdown"
+  },
+  {
+    "name": "EventHandlerPtr",
+    "address": "0x00D413B0",
+    "confidence": 0.90,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["Referenced by EventHandlerSet instruction at 0x52A95E: C7 05 B0 13 D4 00"],
+    "notes": "Function pointer that fires ADDON_ACTION_BLOCKED; 0 = disabled"
+  },
+  {
+    "name": "EventHandlerSet",
+    "address": "0x0052A95E",
+    "confidence": 0.85,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Pattern match: C7 05 B0 13 D4 00 50 A6 52 00 — sets EventHandlerPtr"],
+    "notes": "MOV [D413B0], 0052A650 (10 bytes) — sets EventHandlerPtr"
+  },
+  {
+    "name": "EventHandlerClear",
+    "address": "0x0052A96C",
+    "confidence": 0.85,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to EventHandlerSet (+14 bytes), pattern: C7 05 B0 13 D4 00 00 00 00 00 — clears EventHandlerPtr"],
+    "notes": "MOV [D413B0], 0 (10 bytes) — clears EventHandlerPtr"
+  },
+  {
+    "name": "HardwareEventFlag",
+    "address": "0x00BEAF4C",
+    "confidence": 0.85,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["Pattern scan in .text: CMP DWORD PTR [BEAF4C], 0 at multiple sites, gates hardware input events"],
+    "notes": "Hardware event active flag; 0 = no hardware event in progress. Referenced by CMP DWORD [addr], 0 / JE pattern"
+  },
+  {
+    "name": "VMTaintSkip1",
+    "address": "0x00857493",
+    "confidence": 0.90,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Disassembly xref from FrameScript_Execute taint check path"],
+    "notes": "JE (0x74) at Lua VM taint event check site 1"
+  },
+  {
+    "name": "VMTaintSkip2",
+    "address": "0x00857317",
+    "confidence": 0.90,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Disassembly xref from FrameScript_Execute taint check path"],
+    "notes": "JE (0x74) at Lua VM taint event check site 2"
+  },
+  {
+    "name": "TaintErrorReporter",
+    "address": "0x00513530",
+    "confidence": 0.90,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["push ebp prologue confirmed, xrefs from taint error handling paths"],
+    "notes": "Taint error reporter function; stubbed to xor eax,eax; ret"
+  },
+  {
+    "name": "issecure_JNE",
+    "address": "0x00816DAA",
+    "confidence": 0.90,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Inside issecure() function near FrameScript cluster, JNE gates return value"],
+    "notes": "JNE (0x75) in issecure() — NOP to always return 1"
+  },
+  {
+    "name": "forceinsecure",
+    "address": "0x00816F00",
+    "confidence": 0.90,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Near FrameScript cluster, starts with 83 3D 9C pattern referencing TaintContext"],
+    "notes": "Forces insecure context; stubbed to xor eax,eax; ret"
+  },
+  {
+    "name": "securecall_save",
+    "address": "0x00816F34",
+    "confidence": 0.90,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Inside securecall, MOV EAX, [D4139C] — saves TaintContext"],
+    "notes": "A1 9C 13 D4 00 — context save in securecall"
+  },
+  {
+    "name": "securecall_inc",
+    "address": "0x00816F44",
+    "confidence": 0.90,
+    "type": "patch_site",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Inside securecall, ADD [D413A0], reg — increments ExecCounter"],
+    "notes": "01 3D A0 13 D4 00 — counter increment in securecall"
+  }
+]

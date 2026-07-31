@@ -1,0 +1,2 @@
+RaijinQuestDB["quests"]["data-ascension"] = {
+}

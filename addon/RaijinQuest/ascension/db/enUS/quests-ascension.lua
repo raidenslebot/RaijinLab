@@ -1,0 +1,2 @@
+RaijinQuestDB["quests"]["enUS-ascension"] = {
+}

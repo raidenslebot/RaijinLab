@@ -1,0 +1,190 @@
+{
+  "ClntObjMgrGetActivePlayer": {
+    "va": "0x4d3790",
+    "bytes": "648b0d2c000000a1bc39d4008b14818b",
+    "good": false,
+    "disasm": [
+      "0x4d3790: mov ecx, dword ptr fs:[0x2c]",
+      "0x4d3797: mov eax, dword ptr [0xd439bc]",
+      "0x4d379c: mov edx, dword ptr [ecx + eax*4]",
+      "0x4d379f: mov ecx, dword ptr [edx + 8]",
+      "0x4d37a5: test ecx, ecx",
+      "0x4d37a7: jne 0x4d37ae"
+    ]
+  },
+  "ClntObjMgrGetActivePlayerObj": {
+    "va": "0x4d3910",
+    "bytes": "8bcfe8297bfaff8d5304528bcfe81e7b",
+    "good": true,
+    "disasm": [
+      "0x4d3910: mov ecx, edi",
+      "0x4d3912: call 0x47b440",
+      "0x4d3917: lea edx, [ebx + 4]",
+      "0x4d391a: push edx",
+      "0x4d391b: mov ecx, edi",
+      "0x4d391d: call 0x47b440"
+    ]
+  },
+  "ClntObjMgrObjectPtr": {
+    "va": "0x4d4db0",
+    "bytes": "558bec648b0d2c000000a1bc39d4008b",
+    "good": true,
+    "disasm": [
+      "0x4d4db0: push ebp",
+      "0x4d4db1: mov ebp, esp",
+      "0x4d4db3: mov ecx, dword ptr fs:[0x2c]",
+      "0x4d4dba: mov eax, dword ptr [0xd439bc]",
+      "0x4d4dbf: mov edx, dword ptr [ecx + eax*4]",
+      "0x4d4dc2: mov ecx, dword ptr [edx + 8]"
+    ]
+  },
+  "ClntObjMgrEnumVisibleObjects": {
+    "va": "0x4d4b30",
+    "bytes": "558beca1bc39d400648b0d2c00000053",
+    "good": true,
+    "disasm": [
+      "0x4d4b30: push ebp",
+      "0x4d4b31: mov ebp, esp",
+      "0x4d4b33: mov eax, dword ptr [0xd439bc]",
+      "0x4d4b38: mov ecx, dword ptr fs:[0x2c]",
+      "0x4d4b3f: push ebx",
+      "0x4d4b40: push esi"
+    ]
+  },
+  "ClntObjMgrGetUnitFromName": {
+    "va": "0x60e000",
+    "bytes": "239f006a105250e8a46decff83c41485",
+    "good": false,
+    "disasm": [
+      "0x60e000: and ebx, dword ptr [edi + 0x52106a00]",
+      "0x60e006: push eax",
+      "0x60e007: call 0x4d4db0",
+      "0x60e00c: add esp, 0x14",
+      "0x60e00f: test eax, eax",
+      "0x60e011: je 0x60e04a"
+    ]
+  },
+  "CGPlayer_C__ClickToMove": {
+    "va": "0x727400",
+    "bytes": "558bec83ec18538bd98b43088b083b0d",
+    "good": true,
+    "disasm": [
+      "0x727400: push ebp",
+      "0x727401: mov ebp, esp",
+      "0x727403: sub esp, 0x18",
+      "0x727406: push ebx",
+      "0x727407: mov ebx, ecx",
+      "0x727409: mov eax, dword ptr [ebx + 8]"
+    ]
+  },
+  "CGUnit_C__GetFacing": {
+    "va": "0x7b9de0",
+    "bytes": "558bec51538b5d088b430c85c0568bf1",
+    "good": true,
+    "disasm": [
+      "0x7b9de0: push ebp",
+      "0x7b9de1: mov ebp, esp",
+      "0x7b9de3: push ecx",
+      "0x7b9de4: push ebx",
+      "0x7b9de5: mov ebx, dword ptr [ebp + 8]",
+      "0x7b9de8: mov eax, dword ptr [ebx + 0xc]"
+    ]
+  },
+  "CGWorldFrame_C__Intersect": {
+    "va": "0x7a3b70",
+    "bytes": "558bec83ec188b45188305c404ce0001",
+    "good": true,
+    "disasm": [
+      "0x7a3b70: push ebp",
+      "0x7a3b71: mov ebp, esp",
+      "0x7a3b73: sub esp, 0x18",
+      "0x7a3b76: mov eax, dword ptr [ebp + 0x18]",
+      "0x7a3b79: add dword ptr [0xce04c4], 1",
+      "0x7a3b80: push ebx"
+    ]
+  },
+  "GetCamera": {
+    "va": "0x4f5960",
+    "bytes": "a16c43b70085c074078b80207e0000c3",
+    "good": true,
+    "disasm": [
+      "0x4f5960: mov eax, dword ptr [0xb7436c]",
+      "0x4f5965: test eax, eax",
+      "0x4f5967: je 0x4f5970",
+      "0x4f5969: mov eax, dword ptr [eax + 0x7e20]",
+      "0x4f596f: ret ",
+      "0x4f5970: xor eax, eax"
+    ]
+  },
+  "FrameScript_Execute": {
+    "va": "0x819210",
+    "bytes": "558bec518305a013d40001a19c13d400",
+    "good": true,
+    "disasm": [
+      "0x819210: push ebp",
+      "0x819211: mov ebp, esp",
+      "0x819213: push ecx",
+      "0x819214: add dword ptr [0xd413a0], 1",
+      "0x81921b: mov eax, dword ptr [0xd4139c]",
+      "0x819220: mov dword ptr [ebp - 4], eax"
+    ]
+  },
+  "FrameScript_GetText": {
+    "va": "0x819d40",
+    "bytes": "558bec83ec088b450c535657beff149e",
+    "good": true,
+    "disasm": [
+      "0x819d40: push ebp",
+      "0x819d41: mov ebp, esp",
+      "0x819d43: sub esp, 8",
+      "0x819d46: mov eax, dword ptr [ebp + 0xc]",
+      "0x819d49: push ebx",
+      "0x819d4a: push esi"
+    ]
+  },
+  "FrameScript_RegisterFunction": {
+    "va": "0x817f90",
+    "bytes": "558bec8b450c568b358cf7d3006a0050",
+    "good": true,
+    "disasm": [
+      "0x817f90: push ebp",
+      "0x817f91: mov ebp, esp",
+      "0x817f93: mov eax, dword ptr [ebp + 0xc]",
+      "0x817f96: push esi",
+      "0x817f97: mov esi, dword ptr [0xd3f78c]",
+      "0x817f9d: push 0"
+    ]
+  },
+  "GetLuaState": {
+    "va": "0x817d90",
+    "bytes": "33c0837d08010f95c05dc3cccccccccc",
+    "good": false,
+    "disasm": [
+      "0x817d90: xor eax, eax",
+      "0x817d92: cmp dword ptr [ebp + 8], 1",
+      "0x817d96: setne al",
+      "0x817d99: pop ebp",
+      "0x817d9a: ret ",
+      "0x817d9b: int3 "
+    ]
+  },
+  "CGUnit_C__GetUnitName": {
+    "va": "0x67a7b0",
+    "bytes": "ff8b138b02578bcbffd05e5f5b5dc204",
+    "good": false,
+    "disasm": [
+      "0x67a7b0: dec dword ptr [ebx + 0x57028b13]",
+      "0x67a7b6: mov ecx, ebx",
+      "0x67a7b8: call eax",
+      "0x67a7ba: pop esi",
+      "0x67a7bb: pop edi",
+      "0x67a7bc: pop ebx"
+    ]
+  },
+  "CGGameObject_C__GetName": {
+    "va": "0x5f8a90",
+    "bytes": "feffff000f84aa0300008b55fc803a00",
+    "good": false,
+    "disasm": []
+  }
+}

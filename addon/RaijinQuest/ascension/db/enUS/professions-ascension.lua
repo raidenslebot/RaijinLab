@@ -1,0 +1,2 @@
+RaijinQuestDB["professions"]["enUS-ascension"] = {
+}

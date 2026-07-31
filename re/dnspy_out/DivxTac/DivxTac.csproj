@@ -1,0 +1,174 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProjectGuid>{73818491-AB83-4C44-92DA-E221F39A08A8}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>DivxTac</RootNamespace>
+    <AssemblyName>DivxTac</AssemblyName>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+  </ItemGroup>
+  <ItemGroup>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="$_s__CatchableTypeArray$_extraBytes_12.cs" />
+    <Compile Include="$_s__RTTIBaseClassArray$_extraBytes_12.cs" />
+    <Compile Include="$_s__RTTIBaseClassArray$_extraBytes_4.cs" />
+    <Compile Include="$_s__RTTIBaseClassArray$_extraBytes_8.cs" />
+    <Compile Include="$_TypeDescriptor$_extraBytes_17.cs" />
+    <Compile Include="$_TypeDescriptor$_extraBytes_20.cs" />
+    <Compile Include="$_TypeDescriptor$_extraBytes_26.cs" />
+    <Compile Include="$_TypeDescriptor$_extraBytes_31.cs" />
+    <Compile Include="$_TypeDescriptor$_extraBytes_50.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY00$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY00Q6MPBXXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY01$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY01D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY01Q6AXXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY02$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY02Q6AXXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY04$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY04Q6AXXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY06$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY07$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0A@P6AHXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0A@P6AXXZ.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BA@$$CBC.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BA@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BAA@D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BAA@K.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BC@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BE@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BF@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0BL@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0CA@D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0CHBA@D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0DJ@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0DOI@D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0EAA@D.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0FL@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0GG@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0GJ@$$CBD.cs" />
+    <Compile Include="-CppImplementationDetails-\$ArrayType$$$BY0GN@$$CBD.cs" />
+    <Compile Include="-CrtImplementationDetails-\LanguageSupport.cs" />
+    <Compile Include="-CrtImplementationDetails-\ModuleLoadException.cs" />
+    <Compile Include="-CrtImplementationDetails-\ModuleLoadExceptionHandlerException.cs" />
+    <Compile Include="-CrtImplementationDetails-\ModuleUninitializer.cs" />
+    <Compile Include="-CrtImplementationDetails-\Progress.cs" />
+    <Compile Include="-CrtImplementationDetails-\ThisModule.cs" />
+    <Compile Include="-CrtImplementationDetails-\TriBool.cs" />
+    <Compile Include="-Module-.cs" />
+    <Compile Include="AntiCheatService.cs" />
+    <Compile Include="BannedProccesses.cs" />
+    <Compile Include="BannedProccessesManaged.cs" />
+    <Compile Include="CDataStore.cs" />
+    <Compile Include="CDataStoreManagedHelper.cs" />
+    <Compile Include="DetourMgr.cs" />
+    <Compile Include="EHExceptionRecord.cs" />
+    <Compile Include="gcroot-System.cs" />
+    <Compile Include="ICLRRuntimeHost.cs" />
+    <Compile Include="ICorRuntimeHost.cs" />
+    <Compile Include="IUnknown.cs" />
+    <Compile Include="lockRef.cs" />
+    <Compile Include="ManagedDetourMgrlockRef.cs" />
+    <Compile Include="MasterHardDiskSerial.cs" />
+    <Compile Include="msclr\interop\context_node-char const -,System.cs" />
+    <Compile Include="msclr\interop\context_node-wchar_t const -,System.cs" />
+    <Compile Include="msclr\interop\context_node_base.cs" />
+    <Compile Include="msclr\interop\details\char_buffer-char-.cs" />
+    <Compile Include="msclr\interop\marshal_context.cs" />
+    <Compile Include="msclr\lock.cs" />
+    <Compile Include="msclr\_detail_class.cs" />
+    <Compile Include="Opcodes.cs" />
+    <Compile Include="phmap\flat_hash_map-enum GlobalOffsets,unsigned char -,phmap.cs" />
+    <Compile Include="phmap\priv\internal_layout\LayoutImpl-std.cs" />
+    <Compile Include="phmap\priv\Layout-signed char,phmap.cs" />
+    <Compile Include="phmap\priv\raw_hash_set-phmap.cs" />
+    <Compile Include="ProcessDescription.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="std\-append@-$basic_string@DU-$char_traits@D\__l2\-lambda_b520e6e7dd2c85f4b83ca9ec1210796f-.cs" />
+    <Compile Include="std\-assign@-$basic_string@DU-$char_traits@D\__l2\-lambda_88acb98cb1d3e807ff08d7ebe077788e-.cs" />
+    <Compile Include="std\allocator-char-.cs" />
+    <Compile Include="std\allocator-std.cs" />
+    <Compile Include="std\bad_alloc.cs" />
+    <Compile Include="std\bad_array_new_length.cs" />
+    <Compile Include="std\basic_string-char,std.cs" />
+    <Compile Include="std\chrono\duration-double,std.2.cs" />
+    <Compile Include="std\chrono\duration-double,std.cs" />
+    <Compile Include="std\chrono\duration-__int64,std.2.cs" />
+    <Compile Include="std\chrono\duration-__int64,std.3.cs" />
+    <Compile Include="std\chrono\duration-__int64,std.4.cs" />
+    <Compile Include="std\chrono\duration-__int64,std.cs" />
+    <Compile Include="std\chrono\time_point-std.cs" />
+    <Compile Include="std\exception.cs" />
+    <Compile Include="std\forward_iterator_tag.cs" />
+    <Compile Include="std\integral_constant-bool,0-.cs" />
+    <Compile Include="std\integral_constant-bool,1-.cs" />
+    <Compile Include="std\shared_ptr-ProcessDescription-.cs" />
+    <Compile Include="std\thread.cs" />
+    <Compile Include="std\tuple-void (__cdecl-)(void)-.cs" />
+    <Compile Include="std\unique_ptr-DetourMgr,std.cs" />
+    <Compile Include="std\unique_ptr-std.cs" />
+    <Compile Include="std\vector-char,std.cs" />
+    <Compile Include="std\vector-std.cs" />
+    <Compile Include="std\_Compressed_pair-std.cs" />
+    <Compile Include="std\_Equal_allocators.cs" />
+    <Compile Include="std\_One_then_variadic_args_t.cs" />
+    <Compile Include="std\_Ptr_base-ProcessDescription-.cs" />
+    <Compile Include="std\_Ref_count_base.cs" />
+    <Compile Include="std\_Ref_count_obj2-ProcessDescription-.cs" />
+    <Compile Include="std\_String_val-std.cs" />
+    <Compile Include="std\_Uninitialized_backout_al-std.cs" />
+    <Compile Include="std\_Value_init_tag.cs" />
+    <Compile Include="std\_Vector_iterator-std.cs" />
+    <Compile Include="type_info.cs" />
+    <Compile Include="xtime.cs" />
+    <Compile Include="_EXCEPTION_POINTERS.cs" />
+    <Compile Include="_GETVERSIONINPARAMS.cs" />
+    <Compile Include="_GUID.cs" />
+    <Compile Include="_OSVERSIONINFOEXW.cs" />
+    <Compile Include="_OVERLAPPED.cs" />
+    <Compile Include="_SECURITY_ATTRIBUTES.cs" />
+    <Compile Include="_SENDCMDINPARAMS.cs" />
+    <Compile Include="_STORAGE_PROPERTY_QUERY.cs" />
+    <Compile Include="_s__RTTIBaseClassDescriptor.cs" />
+    <Compile Include="_s__RTTIClassHierarchyDescriptor.cs" />
+    <Compile Include="_s__RTTICompleteObjectLocator.cs" />
+    <Compile Include="_s__ThrowInfo.cs" />
+    <Compile Include="_Thrd_t.cs" />
+    <Compile Include="__scrt_native_startup_state.cs" />
+    <Compile Include="__std_exception_data.cs" />
+    <Compile Include="__s_GUID.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="app.manifest" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

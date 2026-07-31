@@ -1,0 +1,178 @@
+{
+  "sink": "FUN_100b5650@0x100b5650",
+  "notes": "Sink signature: __cdecl violation_report(int type_id, void* enc_ctx_stack_buf). Each of the 14 callers pushes a type_id (1..0x14 in the DBG_* enum ordering as laid out in .rdata @0x10b2a1d0) and a pointer to an XMM-scrambled context blob prepared on the stack (movaps/xorps sequences visible right before the call). Ghidra decompilation failed for the whole 0x100b5650..0x100b8310 cluster (VMProtect-style anti-decompilation padding + heavy control-flow obfuscation); classification below is derived from IAT xrefs, PEB fs:[0x30] reads, and instruction-level primitives (int 0x2d, pushfd/popfd, GetThreadContext, FindWindowW, etc.) rather than decompiled C. The ID<->string mapping was cross-validated against 8 independent anchors (ID=1 PEB read, ID=2 CheckRemoteDebuggerPresent, ID=3 IsDebuggerPresent, ID=4 second PEB read, ID=5 dynamic-resolved NtQuery via GetProcAddress, ID=6 FindWindowW x2 callers, ID=0xb GetThreadContext, ID=0x14 int 0x2d) and the string-table order at 0x10b2a1d0. IDs 7,8,9,10,13,14,15 (OUTPUTDEBUGSTRING, NTSETINFORMATIONTHREAD, DEBUGACTIVEPROCESS, PROCESSFILENAME, RDTSC, QUERYPERFORMANCECOUNTER, GETTICKCOUNT) exist as strings in .rdata but have NO caller of FUN_100b5650 in this build.",
+  "vectors": [
+    {
+      "caller_va": "0x100b5cba",
+      "containing_fn": "FUN_100b5ae0@0x100b5ae0",
+      "type_id_pushed": 1,
+      "technique_string": "BEINGEBUGGEDPEB",
+      "technique_class": "peb_direct_read",
+      "api_calls_used": [],
+      "primitive_evidence": "mov eax, fs:[0x30] at 0x100b5b01 (reads PEB); no Win32 API imports",
+      "brief_description": "Reads PEB.BeingDebugged (fs:[0x30]+2) directly, bypassing IsDebuggerPresent."
+    },
+    {
+      "caller_va": "0x100b5eb8",
+      "containing_fn": "FUN_100b5ce0@0x100b5ce0",
+      "type_id_pushed": 2,
+      "technique_string": "CHECKREMOTEDEBUGGERPRESENT",
+      "technique_class": "api_check",
+      "api_calls_used": ["kernel32!GetCurrentProcess", "kernel32!CheckRemoteDebuggerPresent"],
+      "primitive_evidence": "call [0x10b1a054] GetCurrentProcess @0x100b5cff; call [0x10b1a068] CheckRemoteDebuggerPresent @0x100b5d0b",
+      "brief_description": "Calls CheckRemoteDebuggerPresent(GetCurrentProcess(), &out) and checks the BOOL out flag."
+    },
+    {
+      "caller_va": "0x100b6154",
+      "containing_fn": "FUN_100b5ed0@0x100b5ed0",
+      "type_id_pushed": 6,
+      "technique_string": "FINDWINDOW",
+      "technique_class": "window_class_enum",
+      "api_calls_used": ["user32!FindWindowW"],
+      "primitive_evidence": "call [0x10b1a3bc] FindWindowW @0x100b5f80 (single class-name lookup)",
+      "brief_description": "FindWindowW against a single hard-coded debugger window/class name (first FindWindow variant)."
+    },
+    {
+      "caller_va": "0x100b6731",
+      "containing_fn": "FUN_100b6170@0x100b6170",
+      "type_id_pushed": 6,
+      "technique_string": "FINDWINDOW",
+      "technique_class": "window_class_enum",
+      "api_calls_used": ["user32!FindWindowW"],
+      "primitive_evidence": "call [0x10b1a3bc] FindWindowW @0x100b6525 and @0x100b6538 (two class-name lookups); larger 1.5KB body suggests fuller class-name list",
+      "brief_description": "FindWindowW scan across multiple debugger window classes (OllyDbg/x64dbg/IDA/etc). Second FindWindow variant, same type_id=6 as the first."
+    },
+    {
+      "caller_va": "0x100b6954",
+      "containing_fn": "FUN_100b6750@0x100b6750",
+      "type_id_pushed": 16,
+      "technique_string": "CLOSEHANDLEEXCEPTION",
+      "technique_class": "seh_invalid_handle",
+      "api_calls_used": ["kernel32!CloseHandle"],
+      "primitive_evidence": "call [0x10b1a020] CloseHandle @0x100b67a9 wrapped in SEH (pushfd stack-frame setup visible)",
+      "brief_description": "Calls CloseHandle on a deliberately-invalid handle inside SEH; only a debugger raises STATUS_INVALID_HANDLE (0xC0000008), which the handler catches to fingerprint the debugger."
+    },
+    {
+      "caller_va": "0x100b6c32",
+      "containing_fn": "FUN_100b69f0@0x100b69f0",
+      "type_id_pushed": 11,
+      "technique_string": "HARDWAREDEBUGREGISTERS",
+      "technique_class": "hardware_breakpoint_scan",
+      "api_calls_used": ["kernel32!GetCurrentThread", "kernel32!GetThreadContext"],
+      "primitive_evidence": "call [0x10b1a074] GetCurrentThread @0x100b6a20; call [0x10b1a078] GetThreadContext @0x100b6a34 (CONTEXT_DEBUG_REGISTERS)",
+      "brief_description": "GetThreadContext(GetCurrentThread(), CONTEXT_DEBUG_REGISTERS) and checks DR0-DR3/DR6/DR7 for non-zero hardware breakpoints."
+    },
+    {
+      "caller_va": "0x100b6ff1",
+      "containing_fn": "FUN_100b6c50@0x100b6c50",
+      "type_id_pushed": 20,
+      "technique_string": "INT2D",
+      "technique_class": "seh_int_2d",
+      "api_calls_used": ["kernel32!GetModuleHandleW", "kernel32!GetProcAddress"],
+      "primitive_evidence": "int 0x2d instruction at 0x100b6ec0 (opcode CD 2D); GetModuleHandleW [0x10b1a02c] @0x100b6d8b + GetProcAddress [0x10b1a030] @0x100b6ea6 for dynamic ntdll resolution",
+      "brief_description": "Executes `int 0x2d` inside SEH: without a debugger the kernel raises STATUS_BREAKPOINT; with a debugger the trailing byte is skipped and no exception fires, exposing the debugger."
+    },
+    {
+      "caller_va": "0x100b7189",
+      "containing_fn": "FUN_100b7020@0x100b7020",
+      "type_id_pushed": 18,
+      "technique_string": "INT3CC",
+      "technique_class": "seh_int3",
+      "api_calls_used": [],
+      "primitive_evidence": "SEH-only, no imports; small 400-byte body with pushfd frame at 0x100b709e; ID slot corresponds to INT3CC in .rdata string order",
+      "brief_description": "Executes a 0xCC (int 3) inside SEH: no debugger => __except catches STATUS_BREAKPOINT; debugger swallows the exception first, so the handler never runs."
+    },
+    {
+      "caller_va": "0x100b72f7",
+      "containing_fn": "FUN_100b71b0@0x100b71b0",
+      "type_id_pushed": 3,
+      "technique_string": "ISDEBUGGERPRESENT",
+      "technique_class": "api_check",
+      "api_calls_used": ["kernel32!IsDebuggerPresent"],
+      "primitive_evidence": "call [0x10b1a060] IsDebuggerPresent @0x100b71c4",
+      "brief_description": "Trivial IsDebuggerPresent() BOOL check."
+    },
+    {
+      "caller_va": "0x100b74bd",
+      "containing_fn": "FUN_100b7310@0x100b7310",
+      "type_id_pushed": 12,
+      "technique_string": "MOVSS",
+      "technique_class": "seh_movss_single_step",
+      "api_calls_used": [],
+      "primitive_evidence": "SEH-only; pushfd @0x100b733f (trap-flag manipulation); no imports; ID slot corresponds to MOVSS in .rdata string order",
+      "brief_description": "MOVSS/POP-SS single-step trick: pushfd|or [esp],0x100|popfd then a MOVSS or POP SS; MOV to SS masks the pending single-step so the trap only fires under a real debugger."
+    },
+    {
+      "caller_va": "0x100b76b8",
+      "containing_fn": "FUN_100b74e0@0x100b74e0",
+      "type_id_pushed": 4,
+      "technique_string": "NTGLOBALFLAGPEB",
+      "technique_class": "peb_direct_read",
+      "api_calls_used": [],
+      "primitive_evidence": "mov eax, fs:[0x30] at 0x100b7501 (reads PEB); no Win32 API imports; distinct offset (+0x68) from the ID=1 read",
+      "brief_description": "Reads PEB.NtGlobalFlag (fs:[0x30]+0x68) and tests for the debug-heap flags 0x70 (FLG_HEAP_ENABLE_TAIL_CHECK|FREE_CHECK|VALIDATE_PARAMETERS)."
+    },
+    {
+      "caller_va": "0x100b7c79",
+      "containing_fn": "FUN_100b76d0@0x100b76d0",
+      "type_id_pushed": 5,
+      "technique_string": "NTQUERYINFORMATIONPROCESS",
+      "technique_class": "syscall_dynamic",
+      "api_calls_used": ["kernel32!LoadLibraryW", "kernel32!GetProcAddress", "kernel32!GetCurrentProcess"],
+      "primitive_evidence": "LoadLibraryW [0x10b1a084] @0x100b784b (loads ntdll); GetProcAddress [0x10b1a030] @0x100b79a6 (resolves NtQueryInformationProcess); GetCurrentProcess [0x10b1a054] @0x100b79b6; largest anti-debug body (1488 bytes) consistent with multiple ProcessInformationClass queries",
+      "brief_description": "Dynamically resolves ntdll!NtQueryInformationProcess and probes ProcessDebugPort(7), ProcessDebugObjectHandle(0x1E), and ProcessDebugFlags(0x1F) to detect a user-mode debugger."
+    },
+    {
+      "caller_va": "0x100b80b2",
+      "containing_fn": "FUN_100b7f40@0x100b7f40",
+      "type_id_pushed": 19,
+      "technique_string": "PREFIXHOP",
+      "technique_class": "seh_prefix_step_over",
+      "api_calls_used": [],
+      "primitive_evidence": "SEH-only; pushfd @0x100b7fc7 and popfd @0x100b7fea; no imports; ID slot corresponds to PREFIXHOP in .rdata string order",
+      "brief_description": "Instruction-prefix single-step trick: sets TF then executes an instruction with a redundant prefix (e.g. F3/F2/64/65). A real debugger single-steps past the prefix and the trailing opcode separately, breaking the expected exception sequence; no debugger => the SEH handler catches one clean STATUS_SINGLE_STEP."
+    },
+    {
+      "caller_va": "0x100b82e4",
+      "containing_fn": "FUN_100b80e0@0x100b80e0",
+      "type_id_pushed": 17,
+      "technique_string": "SINGLESTEPEXCEPTION",
+      "technique_class": "seh_trap_flag",
+      "api_calls_used": [],
+      "primitive_evidence": "pushfd @0x100b813b + popfd @0x100b8141 (classic EFLAGS.TF toggle); SEH frame present; no imports; ID slot corresponds to SINGLESTEPEXCEPTION in .rdata string order",
+      "brief_description": "Sets the trap flag via pushfd/or [esp],0x100/popfd inside SEH: no debugger => STATUS_SINGLE_STEP is caught by the handler; debugger swallows the exception, and the handler never fires."
+    }
+  ],
+  "count": 14,
+  "unused_type_ids": {
+    "7":  "OUTPUTDEBUGSTRING (no caller in this build)",
+    "8":  "NTSETINFORMATIONTHREAD (no caller)",
+    "9":  "DEBUGACTIVEPROCESS (no caller)",
+    "10": "PROCESSFILENAME (no caller)",
+    "13": "RDTSC (no caller)",
+    "14": "QUERYPERFORMANCECOUNTER (no caller)",
+    "15": "GETTICKCOUNT (no caller)"
+  },
+  "id_to_string_table_order": {
+    "1":  "BEINGEBUGGEDPEB",
+    "2":  "CHECKREMOTEDEBUGGERPRESENT",
+    "3":  "ISDEBUGGERPRESENT",
+    "4":  "NTGLOBALFLAGPEB",
+    "5":  "NTQUERYINFORMATIONPROCESS",
+    "6":  "FINDWINDOW",
+    "7":  "OUTPUTDEBUGSTRING",
+    "8":  "NTSETINFORMATIONTHREAD",
+    "9":  "DEBUGACTIVEPROCESS",
+    "10": "PROCESSFILENAME",
+    "11": "HARDWAREDEBUGREGISTERS",
+    "12": "MOVSS",
+    "13": "RDTSC",
+    "14": "QUERYPERFORMANCECOUNTER",
+    "15": "GETTICKCOUNT",
+    "16": "CLOSEHANDLEEXCEPTION",
+    "17": "SINGLESTEPEXCEPTION",
+    "18": "INT3CC",
+    "19": "PREFIXHOP",
+    "20": "INT2D"
+  }
+}

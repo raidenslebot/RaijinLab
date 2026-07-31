@@ -1,0 +1,18 @@
+# Normalize text; keep scripts with LF so CI / Linux tools behave.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.tga binary
+*.blp binary
+*.ttf binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.pdb binary

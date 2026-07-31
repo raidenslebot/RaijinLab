@@ -1,0 +1,127 @@
+[
+  {
+    "name": "FrameScript_Execute",
+    "address": "0x00819210",
+    "confidence": 0.99,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "String reference 'Script_Execute' at anchor site",
+        "method": "string_xref"
+      }
+    ],
+    "notes": "3 args, __cdecl. NOT thread safe. Calls lua_pcall internally.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "FrameScript_RegisterFunction",
+    "address": "0x00817F90",
+    "confidence": 0.97,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Same FrameScript module, reads g_luaState from [0xD3F78C]",
+        "method": "module_proximity"
+      },
+      {
+        "level": 1,
+        "evidence": "Calls lua_pushcclosure(0x84E400), lua_pushstring(0x84E350), lua_insert(0x84DCC0), lua_rawset(0x84E970)",
+        "method": "call_graph"
+      }
+    ],
+    "notes": "2 args (name, handler). Thread-safe (writes to internal table).",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "FrameScript_UnregisterFunction",
+    "address": "0x00817FD0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 1,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Adjacent to FrameScript_RegisterFunction (0x817F90), reads [0xD3F78C]",
+        "method": "module_proximity"
+      }
+    ],
+    "notes": "1 arg (name). Reads g_luaState from [0xD3F78C].",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "FrameScript_GetText",
+    "address": "0x0081A350",
+    "confidence": 0.93,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Same FrameScript module code region (0x819xxx-0x81Axxx)",
+        "method": "module_proximity"
+      }
+    ],
+    "notes": "2 args. NOT thread safe.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "FrameScript_SetGlobal",
+    "address": "0x008191F0",
+    "confidence": 0.9,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Calls lua_setfield(0x84F7A0) with g_luaState from [0xD3F78C]",
+        "method": "call_graph"
+      }
+    ],
+    "notes": "Wrapper around lua_setfield.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  }
+]

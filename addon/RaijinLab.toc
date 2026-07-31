@@ -1,0 +1,133 @@
+## Interface: 30300
+## Title: |cff7ec8e3Raijin|r|cffffffffLab|r
+## Notes: Full automation suite - rotation creator, nav, gather, combat, quest, grind
+## Author: RaijinLab
+## Version: 1.8.0-db-dataonly
+## SavedVariables: RaijinLabDB, RaijinQuest_questcache
+## SavedVariablesPerCharacter: RaijinQuest_config, RaijinQuestBrowser_fav, RaijinQuest_history, RaijinQuest_colors, RaijinQuest_server
+## DefaultState: enabled
+## X-Website: local
+## X-Category: Development
+## X-RaijinLab-Target: Ascension 3.3.5
+libs\bitops.lua
+core\Variables.lua
+core\Persistence.lua
+core\Compat.lua
+core\Chain.lua
+core\DisableCTM.lua
+core\Runtime.lua
+core\Ipc.lua
+core\Actions.lua
+core\StatusUI.lua
+core\API.lua
+# GOFlags must load after API.lua (it reads no enums, but callers do) and
+# before anything that interprets gameobject dynamic flags.
+core\GOFlags.lua
+core\DebugLog.lua
+core\Hooks.lua
+core\objects\Functions.lua
+core\objects\Manager.lua
+core\objects\Tracker.lua
+core\World.lua
+core\SpellUtil.lua
+core\RankResolver.lua
+core\UI.lua
+core\Scheduler.lua
+core\GroundCache.lua
+core\WorldMesh.lua
+core\Surveyor.lua
+core\HLP.lua
+core\POI.lua
+core\Traversability.lua
+core\Obstacles.lua
+core\TravelNet.lua
+core\Patrol.lua
+core\Mount.lua
+core\Rest.lua
+core\Vendor.lua
+core\Death.lua
+core\Trainer.lua
+# The client's OWN map rectangles, extracted from WorldMapArea.dbc by
+# tools/worldmap_extract.py. Turns a map percentage into a world position
+# EXACTLY - no runtime calibration, no walking to gather samples, and it
+# works while dead (a ghost sees every npc at 0,0,0 and can fit nothing).
+data\WorldMapAreas.lua
+core\Know.lua
+core\Sensors.lua
+core\Caps.lua
+core\Fail.lua
+core\Outcomes.lua
+core\Contract.lua
+core\Replay.lua
+core\NavGrid.lua
+core\SearchField.lua
+core\Master.lua
+core\Director.lua
+core\Watchdog.lua
+core\Pathfinder.lua
+core\Navigator.lua
+core\TurnDiag.lua
+core\Nav.lua
+# UI.lua must load before Menu/Editor (exports RaijinLab.UI)
+core\rotation\Protection.lua
+core\rotation\Conditions.lua
+core\rotation\BasicRules.lua
+core\rotation\Engine.lua
+core\rotation\Metrics.lua
+core\rotation\SpellGate.lua
+core\rotation\Executor.lua
+core\rotation\Editor.lua
+core\DevLog.lua
+core\Telemetry.lua
+core\Contracts.lua
+core\ConfigBackup.lua
+core\Snapshot.lua
+core\Menu.lua
+core\MinimapIcon.lua
+core\Drawing.lua
+modules\ObjectESP.lua
+core\Events.lua
+core\Instrument.lua
+core\Farming.lua
+modules\arena\Awareness.lua
+modules\travel\Travel.lua
+modules\loot\Looter.lua
+modules\farming\Farms.lua
+modules\farming\Farmer.lua
+modules\questing\QuestLog.lua
+modules\questing\QuestFrame.lua
+modules\questing\QuestOM.lua
+# --- RaijinQuest: vendored world database (was pfQuest + pfQuest-ascension).
+# Renamed and moved in-tree so a launcher update cannot overwrite it and so
+# it can be extended. Order matters: base data, then locale, then the core
+# addon, then the Ascension overrides that patch entries on top.
+RaijinQuest\init\data.xml
+RaijinQuest\init\enUS.xml
+# addon.xml (the pfQuest UI: map, tracker, browser, journal, config) is
+# DELIBERATELY NOT LOADED. We use RaijinQuest as a DATA SOURCE only. Its UI
+# threw a cascade of errors when vendored, and this client is 32-bit: a
+# crash dump showed 1.8GB of a 2GB address space in use with 140MB of Lua.
+# QuestDB reads the tables directly and resolves names by inverting the
+# locale tables itself, so none of that code is needed.
+RaijinQuest\ascension\init\data-ascension.xml
+RaijinQuest\ascension\init\enUS-ascension.xml
+RaijinQuest\ascension\patchtable.lua
+# RaijinQuest-ascension.lua is DELIBERATELY NOT LOADED: it is purely an
+# update notifier for the upstream standalone addon - it polls a version over
+# CHAT_MSG_ADDON, broadcasts to GUILD/PARTY/RAID, and prints a GitHub link.
+# This copy is vendored so it can never update itself. Nothing references
+# anything it defines (hcstrsplit, gpiupdater).
+modules\questing\QuestDB.lua
+modules\questing\QuestPolicy.lua
+modules\questing\QuestInteract.lua
+modules\questing\Escort.lua
+modules\questing\Goals.lua
+modules\questing\Suite.lua
+modules\combat\Brain.lua
+modules\gathering\Gatherer.lua
+modules\grinding\Grinder.lua
+core\Vision.lua
+core\SelfTest.lua
+core\ChatHandler.lua
+init.lua
+Bindings.xml

@@ -1,0 +1,940 @@
+/**
+ * Ascension SDK - Import Tables
+ * Auto-generated from PE binary analysis
+ *
+ * Generated: 2026-04-03 10:01:40
+ */
+
+#pragma once
+
+#ifndef ASCENSION_SDK_IMPORTS_H
+#define ASCENSION_SDK_IMPORTS_H
+
+
+// ========================================
+// Ascension IMPORTS
+// ========================================
+
+// --- ADVAPI32.dll (13 functions) ---
+// 0x009DF000: CryptReleaseContext
+// 0x009DF004: ConvertStringSecurityDescriptorToSecurityDescriptorW
+// 0x009DF008: RegCloseKey
+// 0x009DF00C: RegOpenKeyExA
+// 0x009DF010: RegQueryValueExA
+// 0x009DF014: RegFlushKey
+// 0x009DF018: RegSetValueExA
+// 0x009DF01C: RegCreateKeyExA
+// 0x009DF020: GetUserNameA
+// 0x009DF024: RegEnumKeyA
+// 0x009DF028: CryptGenRandom
+// 0x009DF02C: CryptAcquireContextA
+// 0x009DF030: RegOpenKeyA
+
+// --- DINPUT8.dll (1 functions) ---
+// 0x009DF038: DirectInput8Create
+
+// --- DivxDecoder.dll (4 functions) ---
+// 0x009DF040: SetOutputFormat
+// 0x009DF044: DivxDecode
+// 0x009DF048: UnInitializeDivxDecoder
+// 0x009DF04C: InitializeDivxDecoder
+
+// --- GDI32.dll (29 functions) ---
+// 0x009DF054: ChoosePixelFormat
+// 0x009DF058: CreateBitmap
+// 0x009DF05C: TranslateCharsetInfo
+// 0x009DF060: GetStockObject
+// 0x009DF064: SelectObject
+// 0x009DF068: DeleteObject
+// 0x009DF06C: SetBkColor
+// 0x009DF070: GetDeviceGammaRamp
+// 0x009DF074: CreateSolidBrush
+// 0x009DF078: SetBkMode
+// 0x009DF07C: GetPixelFormat
+// 0x009DF080: SetDeviceGammaRamp
+// 0x009DF084: DescribePixelFormat
+// 0x009DF088: SetTextColor
+// 0x009DF08C: SetPixelFormat
+// 0x009DF090: DeleteDC
+// 0x009DF094: StretchBlt
+// 0x009DF098: BitBlt
+// 0x009DF09C: CreateCompatibleDC
+// 0x009DF0A0: OffsetViewportOrgEx
+// 0x009DF0A4: SetViewportOrgEx
+// 0x009DF0A8: SelectClipRgn
+// 0x009DF0AC: CreateRectRgn
+// 0x009DF0B0: Rectangle
+// 0x009DF0B4: CreateFontIndirectA
+// 0x009DF0B8: GetObjectA
+// 0x009DF0BC: SetMapMode
+// 0x009DF0C0: GdiFlush
+// 0x009DF0C4: CreateDIBSection
+
+// --- HID.DLL (8 functions) ---
+// 0x009DF0CC: HidD_GetSerialNumberString
+// 0x009DF0D0: HidD_GetHidGuid
+// 0x009DF0D4: HidD_SetFeature
+// 0x009DF0D8: HidD_GetPreparsedData
+// 0x009DF0DC: HidD_GetAttributes
+// 0x009DF0E0: HidP_GetCaps
+// 0x009DF0E4: HidD_GetProductString
+// 0x009DF0E8: HidD_FreePreparsedData
+
+// --- IMM32.dll (9 functions) ---
+// 0x009DF0F0: ImmGetConversionStatus
+// 0x009DF0F4: ImmGetContext
+// 0x009DF0F8: ImmGetCompositionStringA
+// 0x009DF0FC: ImmAssociateContext
+// 0x009DF100: ImmSetConversionStatus
+// 0x009DF104: ImmAssociateContextEx
+// 0x009DF108: ImmNotifyIME
+// 0x009DF10C: ImmGetCandidateListA
+// 0x009DF110: ImmReleaseContext
+
+// --- KERNEL32.dll (173 functions) ---
+// 0x009DF118: SetEnvironmentVariableA
+// 0x009DF11C: CompareStringA
+// 0x009DF120: FlushFileBuffers
+// 0x009DF124: CloseHandle
+// 0x009DF128: CreateFileA
+// 0x009DF12C: GetTimeZoneInformation
+// 0x009DF130: GetConsoleOutputCP
+// 0x009DF134: DeleteCriticalSection
+// 0x009DF138: OpenFile
+// 0x009DF13C: DeviceIoControl
+// 0x009DF140: OpenFileMappingA
+// 0x009DF144: CreateFileMappingA
+// 0x009DF148: MapViewOfFile
+// 0x009DF14C: WriteConsoleA
+// 0x009DF150: WaitForMultipleObjectsEx
+// 0x009DF154: WriteFileEx
+// 0x009DF158: ReadFileEx
+// 0x009DF15C: GetOverlappedResult
+// 0x009DF160: CancelIo
+// 0x009DF164: GetWindowsDirectoryA
+// 0x009DF168: GetSystemDirectoryA
+// 0x009DF16C: GetSystemTimeAsFileTime
+// 0x009DF170: GetCurrentProcessId
+// 0x009DF174: GetTickCount
+// 0x009DF178: QueryPerformanceCounter
+// 0x009DF17C: TlsGetValue
+// 0x009DF180: TlsAlloc
+// 0x009DF184: RtlUnwind
+// 0x009DF188: SetStdHandle
+// 0x009DF18C: GetFileType
+// 0x009DF190: SetHandleCount
+// 0x009DF194: GetLastError
+// 0x009DF198: GetEnvironmentStrings
+// 0x009DF19C: FreeEnvironmentStringsA
+// 0x009DF1A0: GetModuleFileNameA
+// 0x009DF1A4: GetStdHandle
+// 0x009DF1A8: WriteFile
+// 0x009DF1AC: ExitProcess
+// 0x009DF1B0: GetModuleHandleA
+// 0x009DF1B4: IsDebuggerPresent
+// 0x009DF1B8: SetUnhandledExceptionFilter
+// 0x009DF1BC: UnhandledExceptionFilter
+// 0x009DF1C0: GetCurrentProcess
+// 0x009DF1C4: TerminateProcess
+// 0x009DF1C8: GetStartupInfoA
+// 0x009DF1CC: GetProcessHeap
+// 0x009DF1D0: HeapAlloc
+// 0x009DF1D4: GetVersionExA
+// 0x009DF1D8: HeapFree
+// 0x009DF1DC: GetCommandLineA
+// 0x009DF1E0: ConvertThreadToFiber
+// 0x009DF1E4: CreateFiberEx
+// 0x009DF1E8: DeleteFiber
+// 0x009DF1EC: GetDateFormatA
+// 0x009DF1F0: GetTimeFormatA
+// 0x009DF1F4: GetStringTypeA
+// 0x009DF1F8: LCMapStringA
+// 0x009DF1FC: GetConsoleMode
+// 0x009DF200: GetConsoleCP
+// 0x009DF204: SetFilePointer
+// 0x009DF208: TlsSetValue
+// 0x009DF20C: TlsFree
+// 0x009DF210: InterlockedIncrement
+// 0x009DF214: SetLastError
+// 0x009DF218: GetCurrentThreadId
+// 0x009DF21C: InterlockedDecrement
+// 0x009DF220: GetCurrentThread
+// 0x009DF224: HeapDestroy
+// 0x009DF228: HeapCreate
+// 0x009DF22C: VirtualFree
+// 0x009DF230: GetLocaleInfoA
+// 0x009DF234: HeapReAlloc
+// 0x009DF238: VirtualAlloc
+// 0x009DF23C: GetOEMCP
+// 0x009DF240: GetACP
+// 0x009DF244: InitializeCriticalSection
+// 0x009DF248: LoadLibraryA
+// 0x009DF24C: InterlockedExchange
+// 0x009DF250: FreeLibrary
+// 0x009DF254: EnterCriticalSection
+// 0x009DF258: LeaveCriticalSection
+// 0x009DF25C: RaiseException
+// 0x009DF260: HeapSize
+// 0x009DF264: Sleep
+// 0x009DF268: VirtualQuery
+// 0x009DF26C: UnmapViewOfFile
+// 0x009DF270: GetDriveTypeA
+// 0x009DF274: ExitThread
+// 0x009DF278: GetFullPathNameA
+// 0x009DF27C: GlobalAlloc
+// 0x009DF280: GlobalFree
+// 0x009DF284: GlobalLock
+// 0x009DF288: GlobalUnlock
+// 0x009DF28C: VirtualProtect
+// 0x009DF290: LocalFree
+// 0x009DF294: FlushInstructionCache
+// 0x009DF298: GetQueuedCompletionStatus
+// 0x009DF29C: CreateIoCompletionPort
+// 0x009DF2A0: GetCommandLineW
+// 0x009DF2A4: GlobalMemoryStatusEx
+// 0x009DF2A8: GetPriorityClass
+// 0x009DF2AC: SetPriorityClass
+// 0x009DF2B0: IsBadWritePtr
+// 0x009DF2B4: OpenThread
+// 0x009DF2B8: SuspendThread
+// 0x009DF2BC: GetThreadContext
+// 0x009DF2C0: Thread32First
+// 0x009DF2C4: Thread32Next
+// 0x009DF2C8: lstrcpynA
+// 0x009DF2CC: IsBadReadPtr
+// 0x009DF2D0: MulDiv
+// 0x009DF2D4: SwitchToFiber
+// 0x009DF2D8: GetSystemInfo
+// 0x009DF2DC: SetEvent
+// 0x009DF2E0: WaitForSingleObject
+// 0x009DF2E4: CreateSemaphoreA
+// 0x009DF2E8: ReleaseSemaphore
+// 0x009DF2EC: GlobalMemoryStatus
+// 0x009DF2F0: ResumeThread
+// 0x009DF2F4: TerminateThread
+// 0x009DF2F8: SetThreadPriority
+// 0x009DF2FC: GetThreadPriority
+// 0x009DF300: GetProcessAffinityMask
+// 0x009DF304: SignalObjectAndWait
+// 0x009DF308: FileTimeToLocalFileTime
+// 0x009DF30C: FileTimeToSystemTime
+// 0x009DF310: SystemTimeToFileTime
+// 0x009DF314: SizeofResource
+// 0x009DF318: LockResource
+// 0x009DF31C: LoadResource
+// 0x009DF320: FindResourceExA
+// 0x009DF324: QueryPerformanceFrequency
+// 0x009DF328: Module32First
+// 0x009DF32C: Module32Next
+// 0x009DF330: GetDiskFreeSpaceA
+// 0x009DF334: ReadFile
+// 0x009DF338: CreateThread
+// 0x009DF33C: GetFileAttributesExA
+// 0x009DF340: GetFileSize
+// 0x009DF344: GetFileAttributesA
+// 0x009DF348: MoveFileA
+// 0x009DF34C: DeleteFileA
+// 0x009DF350: CreateEventA
+// 0x009DF354: OpenEventA
+// 0x009DF358: GetComputerNameA
+// 0x009DF35C: GetTempPathA
+// 0x009DF360: CreateToolhelp32Snapshot
+// 0x009DF364: SetThreadAffinityMask
+// 0x009DF368: WaitForSingleObjectEx
+// 0x009DF36C: CreateProcessA
+// 0x009DF370: DuplicateHandle
+// 0x009DF374: SetCurrentDirectoryA
+// 0x009DF378: GetCurrentDirectoryA
+// 0x009DF37C: FindClose
+// 0x009DF380: FindNextFileA
+// 0x009DF384: FindFirstFileA
+// 0x009DF388: GetDiskFreeSpaceExA
+// 0x009DF38C: GetShortPathNameA
+// 0x009DF390: CreateDirectoryA
+// 0x009DF394: RemoveDirectoryA
+// 0x009DF398: SetEndOfFile
+// 0x009DF39C: SetFileAttributesA
+// 0x009DF3A0: SetFileTime
+// 0x009DF3A4: ResetEvent
+// 0x009DF3A8: WaitForMultipleObjects
+// 0x009DF3AC: SetProcessAffinityMask
+// 0x009DF3B0: GetLocalTime
+// 0x009DF3B4: FormatMessageA
+// 0x009DF3B8: GetExitCodeProcess
+// 0x009DF3BC: GetVersion
+// 0x009DF3C0: OutputDebugStringA
+// 0x009DF3C4: CreateMutexA
+// 0x009DF3C8: ReleaseMutex
+
+// --- MSACM32.dll (6 functions) ---
+// 0x009DF3D0: acmStreamSize
+// 0x009DF3D4: acmStreamPrepareHeader
+// 0x009DF3D8: acmStreamConvert
+// 0x009DF3DC: acmStreamUnprepareHeader
+// 0x009DF3E0: acmFormatSuggest
+// 0x009DF3E4: acmStreamOpen
+
+// --- OPENGL32.dll (70 functions) ---
+// 0x009DF3EC: glGenTextures
+// 0x009DF3F0: glEnable
+// 0x009DF3F4: glTexParameteri
+// 0x009DF3F8: glReadPixels
+// 0x009DF3FC: wglGetProcAddress
+// 0x009DF400: wglDeleteContext
+// 0x009DF404: wglMakeCurrent
+// 0x009DF408: wglCreateContext
+// 0x009DF40C: glBindTexture
+// 0x009DF410: glTexImage2D
+// 0x009DF414: glDeleteTextures
+// 0x009DF418: glDisable
+// 0x009DF41C: glGetError
+// 0x009DF420: glGetIntegerv
+// 0x009DF424: glGetString
+// 0x009DF428: glCopyTexSubImage2D
+// 0x009DF42C: glCopyTexImage2D
+// 0x009DF430: wglGetCurrentDC
+// 0x009DF434: glCullFace
+// 0x009DF438: glBlendFunc
+// 0x009DF43C: glMatrixMode
+// 0x009DF440: glPolygonOffset
+// 0x009DF444: wglGetCurrentContext
+// 0x009DF448: glColorPointer
+// 0x009DF44C: glTexCoordPointer
+// 0x009DF450: glScissor
+// 0x009DF454: glClipPlane
+// 0x009DF458: glPolygonMode
+// 0x009DF45C: glViewport
+// 0x009DF460: glDepthRange
+// 0x009DF464: glDepthMask
+// 0x009DF468: glColorMask
+// 0x009DF46C: glTexGeni
+// 0x009DF470: glNormalPointer
+// 0x009DF474: glVertexPointer
+// 0x009DF478: glLightf
+// 0x009DF47C: glLightfv
+// 0x009DF480: glLightModelfv
+// 0x009DF484: glColor4fv
+// 0x009DF488: glMaterialfv
+// 0x009DF48C: glLoadIdentity
+// 0x009DF490: glLoadMatrixf
+// 0x009DF494: glFogf
+// 0x009DF498: glFogi
+// 0x009DF49C: glPixelStorei
+// 0x009DF4A0: glColorMaterial
+// 0x009DF4A4: glLightModeli
+// 0x009DF4A8: glTexGenfv
+// 0x009DF4AC: glPointSize
+// 0x009DF4B0: glFrontFace
+// 0x009DF4B4: glDepthFunc
+// 0x009DF4B8: glFogfv
+// 0x009DF4BC: glAlphaFunc
+// 0x009DF4C0: glMaterialf
+// 0x009DF4C4: glTexSubImage2D
+// 0x009DF4C8: glClear
+// 0x009DF4CC: glClearColor
+// 0x009DF4D0: wglSwapLayerBuffers
+// 0x009DF4D4: glFinish
+// 0x009DF4D8: glDrawArrays
+// 0x009DF4DC: glDrawElements
+// 0x009DF4E0: glLineWidth
+// 0x009DF4E4: glTexEnviv
+// 0x009DF4E8: glHint
+// 0x009DF4EC: glTexEnvi
+// 0x009DF4F0: glTexEnvf
+// 0x009DF4F4: glTexEnvfv
+// 0x009DF4F8: glEnableClientState
+// 0x009DF4FC: glDisableClientState
+// 0x009DF500: glGetFloatv
+
+// --- SETUPAPI.dll (6 functions) ---
+// 0x009DF508: SetupDiGetClassDevsA
+// 0x009DF50C: SetupDiGetDeviceInterfaceDetailA
+// 0x009DF510: SetupDiEnumDeviceInterfaces
+// 0x009DF514: SetupDiDestroyDeviceInfoList
+// 0x009DF518: SetupDiGetDeviceRegistryPropertyA
+// 0x009DF51C: SetupDiEnumDeviceInfo
+
+// --- SHELL32.dll (2 functions) ---
+// 0x009DF524: FindExecutableA
+// 0x009DF528: ShellExecuteA
+
+// --- USER32.dll (74 functions) ---
+// 0x009DF530: GetParent
+// 0x009DF534: CloseClipboard
+// 0x009DF538: OpenClipboard
+// 0x009DF53C: SetCapture
+// 0x009DF540: GetForegroundWindow
+// 0x009DF544: MessageBeep
+// 0x009DF548: GetKeyState
+// 0x009DF54C: FillRect
+// 0x009DF550: IsDialogMessageA
+// 0x009DF554: TranslateAcceleratorA
+// 0x009DF558: GetKeyboardLayout
+// 0x009DF55C: EmptyClipboard
+// 0x009DF560: SendInput
+// 0x009DF564: SystemParametersInfoA
+// 0x009DF568: GetAsyncKeyState
+// 0x009DF56C: ClientToScreen
+// 0x009DF570: InvertRect
+// 0x009DF574: VkKeyScanA
+// 0x009DF578: DrawTextExA
+// 0x009DF57C: CharLowerBuffA
+// 0x009DF580: GetDesktopWindow
+// 0x009DF584: GetActiveWindow
+// 0x009DF588: PostMessageA
+// 0x009DF58C: IsIconic
+// 0x009DF590: IsZoomed
+// 0x009DF594: PostQuitMessage
+// 0x009DF598: SetFocus
+// 0x009DF59C: KillTimer
+// 0x009DF5A0: SetTimer
+// 0x009DF5A4: WaitForInputIdle
+// 0x009DF5A8: MapVirtualKeyA
+// 0x009DF5AC: LoadBitmapA
+// 0x009DF5B0: GetMessageA
+// 0x009DF5B4: PeekMessageA
+// 0x009DF5B8: TranslateMessage
+// 0x009DF5BC: DispatchMessageA
+// 0x009DF5C0: wsprintfA
+// 0x009DF5C4: IsWindow
+// 0x009DF5C8: IsWindowVisible
+// 0x009DF5CC: MessageBoxA
+// 0x009DF5D0: LoadStringA
+// 0x009DF5D4: SetCursor
+// 0x009DF5D8: GetCursorPos
+// 0x009DF5DC: ScreenToClient
+// 0x009DF5E0: GetClientRect
+// 0x009DF5E4: LoadImageA
+// 0x009DF5E8: LoadCursorA
+// 0x009DF5EC: MapWindowPoints
+// 0x009DF5F0: BeginPaint
+// 0x009DF5F4: EndPaint
+// 0x009DF5F8: AdjustWindowRectEx
+// 0x009DF5FC: GetSystemMetrics
+// 0x009DF600: ShowWindow
+// 0x009DF604: ChangeDisplaySettingsExA
+// 0x009DF608: SetWindowPos
+// 0x009DF60C: GetWindowRect
+// 0x009DF610: ClipCursor
+// 0x009DF614: GetWindowPlacement
+// 0x009DF618: SendMessageA
+// 0x009DF61C: MoveWindow
+// 0x009DF620: SetClipboardData
+// 0x009DF624: ReleaseCapture
+// 0x009DF628: DefWindowProcA
+// 0x009DF62C: RegisterClassExA
+// 0x009DF630: CreateWindowExA
+// 0x009DF634: GetDC
+// 0x009DF638: ReleaseDC
+// 0x009DF63C: DestroyWindow
+// 0x009DF640: UnregisterClassA
+// 0x009DF644: EnumDisplaySettingsA
+// 0x009DF648: EnumDisplayDevicesA
+// 0x009DF64C: MonitorFromPoint
+// 0x009DF650: GetMonitorInfoA
+// 0x009DF654: MsgWaitForMultipleObjects
+
+// --- VERSION.dll (3 functions) ---
+// 0x009DF65C: GetFileVersionInfoA
+// 0x009DF660: GetFileVersionInfoSizeA
+// 0x009DF664: VerQueryValueA
+
+// --- WININET.dll (12 functions) ---
+// 0x009DF66C: InternetReadFileExA
+// 0x009DF670: InternetCloseHandle
+// 0x009DF674: HttpQueryInfoA
+// 0x009DF678: InternetSetOptionA
+// 0x009DF67C: InternetConnectA
+// 0x009DF680: InternetOpenA
+// 0x009DF684: HttpSendRequestA
+// 0x009DF688: InternetSetCookieA
+// 0x009DF68C: HttpOpenRequestA
+// 0x009DF690: InternetCrackUrlA
+// 0x009DF694: InternetSetStatusCallback
+// 0x009DF698: InternetSetStatusCallbackA
+
+// --- WINMM.dll (22 functions) ---
+// 0x009DF6A0: waveOutPrepareHeader
+// 0x009DF6A4: waveInReset
+// 0x009DF6A8: waveInClose
+// 0x009DF6AC: waveInOpen
+// 0x009DF6B0: waveInStart
+// 0x009DF6B4: waveInGetNumDevs
+// 0x009DF6B8: waveOutGetNumDevs
+// 0x009DF6BC: waveInGetDevCapsA
+// 0x009DF6C0: waveInUnprepareHeader
+// 0x009DF6C4: waveInPrepareHeader
+// 0x009DF6C8: waveInAddBuffer
+// 0x009DF6CC: waveOutGetPosition
+// 0x009DF6D0: waveOutReset
+// 0x009DF6D4: waveOutWrite
+// 0x009DF6D8: waveOutUnprepareHeader
+// 0x009DF6DC: waveOutOpen
+// 0x009DF6E0: waveOutClose
+// 0x009DF6E4: waveOutGetDevCapsA
+// 0x009DF6E8: timeKillEvent
+// 0x009DF6EC: timeSetEvent
+// 0x009DF6F0: mciSendCommandA
+// 0x009DF6F4: timeGetTime
+
+// --- WS2_32.dll (32 functions) ---
+// 0x009DF6FC: WSACancelAsyncRequest
+// 0x009DF700: WSAAsyncGetHostByName
+// 0x009DF704: WSACleanup
+// 0x009DF708: accept
+// 0x009DF70C: select
+// 0x009DF710: WSAGetLastError
+// 0x009DF714: WSAStartup
+// 0x009DF718: setsockopt
+// 0x009DF71C: getsockopt
+// 0x009DF720: socket
+// 0x009DF724: closesocket
+// 0x009DF728: __WSAFDIsSet
+// 0x009DF72C: connect
+// 0x009DF730: listen
+// 0x009DF734: bind
+// 0x009DF738: htons
+// 0x009DF73C: htonl
+// 0x009DF740: gethostbyname
+// 0x009DF744: ntohs
+// 0x009DF748: getsockname
+// 0x009DF74C: recv
+// 0x009DF750: getpeername
+// 0x009DF754: send
+// 0x009DF758: inet_addr
+// 0x009DF75C: WSACloseEvent
+// 0x009DF760: WSACreateEvent
+// 0x009DF764: WSAEventSelect
+// 0x009DF768: WSAEnumNetworkEvents
+// 0x009DF76C: sendto
+// 0x009DF770: recvfrom
+// 0x009DF774: inet_ntoa
+// 0x009DF778: ioctlsocket
+
+// --- ole32.dll (6 functions) ---
+// 0x009DF780: PropVariantClear
+// 0x009DF784: CoCreateInstance
+// 0x009DF788: CoTaskMemFree
+// 0x009DF78C: CoUninitialize
+// 0x009DF790: CLSIDFromString
+// 0x009DF794: CoInitialize
+
+// ========================================
+// Extensions IMPORTS
+// ========================================
+
+// --- ADVAPI32.dll (6 functions) ---
+// 0x105C8000: CryptGenRandom
+// 0x105C8004: RegCloseKey
+// 0x105C8008: RegOpenKeyExA
+// 0x105C800C: CryptReleaseContext
+// 0x105C8010: CryptAcquireContextA
+// 0x105C8014: RegQueryValueExA
+
+// --- KERNEL32.dll (83 functions) ---
+// 0x105C801C: CloseHandle
+// 0x105C8020: CreateFileW
+// 0x105C8024: GetLastError
+// 0x105C8028: GetModuleHandleW
+// 0x105C802C: GetProcAddress
+// 0x105C8030: WideCharToMultiByte
+// 0x105C8034: FindClose
+// 0x105C8038: FindFirstFileW
+// 0x105C803C: FindNextFileW
+// 0x105C8040: GetFileAttributesW
+// 0x105C8044: Sleep
+// 0x105C8048: GetModuleFileNameW
+// 0x105C804C: WaitForSingleObject
+// 0x105C8050: GetCurrentProcess
+// 0x105C8054: VirtualProtect
+// 0x105C8058: VirtualAllocEx
+// 0x105C805C: IsDebuggerPresent
+// 0x105C8060: OutputDebugStringA
+// 0x105C8064: CheckRemoteDebuggerPresent
+// 0x105C8068: QueryPerformanceCounter
+// 0x105C806C: GetCurrentProcessId
+// 0x105C8070: GetCurrentThread
+// 0x105C8074: GetThreadContext
+// 0x105C8078: GetModuleFileNameA
+// 0x105C807C: LoadLibraryW
+// 0x105C8080: CreateToolhelp32Snapshot
+// 0x105C8084: GlobalAlloc
+// 0x105C8088: GlobalLock
+// 0x105C808C: GlobalFree
+// 0x105C8090: LocalFree
+// 0x105C8094: FormatMessageA
+// 0x105C8098: FormatMessageW
+// 0x105C809C: MultiByteToWideChar
+// 0x105C80A0: GetCommandLineW
+// 0x105C80A4: K32GetProcessMemoryInfo
+// 0x105C80A8: GetVolumePathNameW
+// 0x105C80AC: GetVolumeNameForVolumeMountPointW
+// 0x105C80B0: DeviceIoControl
+// 0x105C80B4: GetSystemWindowsDirectoryW
+// 0x105C80B8: SetEvent
+// 0x105C80BC: OpenEventW
+// 0x105C80C0: CreateProcessW
+// 0x105C80C4: OpenFileMappingW
+// 0x105C80C8: MapViewOfFile
+// 0x105C80CC: UnmapViewOfFile
+// 0x105C80D0: LoadLibraryA
+// 0x105C80D4: SetLastError
+// 0x105C80D8: GetCurrentThreadId
+// 0x105C80DC: CreateDirectoryA
+// 0x105C80E0: CreateFileA
+// 0x105C80E4: RaiseException
+// 0x105C80E8: SetUnhandledExceptionFilter
+// 0x105C80EC: OpenThread
+// 0x105C80F0: GetSystemInfo
+// 0x105C80F4: GetLocalTime
+// 0x105C80F8: VirtualQuery
+// 0x105C80FC: GetModuleHandleA
+// 0x105C8100: GlobalMemoryStatus
+// 0x105C8104: LocalAlloc
+// 0x105C8108: Thread32First
+// 0x105C810C: Thread32Next
+// 0x105C8110: DisableThreadLibraryCalls
+// 0x105C8114: FlushInstructionCache
+// 0x105C8118: GetFileSizeEx
+// 0x105C811C: ReadFile
+// 0x105C8120: HeapAlloc
+// 0x105C8124: HeapFree
+// 0x105C8128: CreateFileMappingA
+// 0x105C812C: CreateDirectoryW
+// 0x105C8130: FindFirstFileExW
+// 0x105C8134: GetSystemTimeAsFileTime
+// 0x105C8138: IsProcessorFeaturePresent
+// 0x105C813C: TerminateProcess
+// 0x105C8140: UnhandledExceptionFilter
+// 0x105C8144: InitializeSListHead
+// 0x105C8148: WakeAllConditionVariable
+// 0x105C814C: GetLocaleInfoEx
+// 0x105C8150: SleepConditionVariableSRW
+// 0x105C8154: AcquireSRWLockExclusive
+// 0x105C8158: ReleaseSRWLockExclusive
+// 0x105C815C: GetFileInformationByHandleEx
+// 0x105C8160: GetFileAttributesExW
+// 0x105C8164: AreFileApisANSI
+
+// --- MSVCP140.dll (132 functions) ---
+// 0x105C816C: ?_Xbad_function_call@std@@YAXXZ
+// 0x105C8170: ?_Xout_of_range@std@@YAXPBD@Z
+// 0x105C8174: ??0_Lockit@std@@QAE@H@Z
+// 0x105C8178: ??1_Lockit@std@@QAE@XZ
+// 0x105C817C: ?_Init@locale@std@@CAPAV_Locimp@12@_N@Z
+// 0x105C8180: ?_Getgloballocale@locale@std@@CAPAV_Locimp@12@XZ
+// 0x105C8184: ?_Id_cnt@id@locale@std@@0HA
+// 0x105C8188: ??0_Locinfo@std@@QAE@PBD@Z
+// 0x105C818C: ??1_Locinfo@std@@QAE@XZ
+// 0x105C8190: ?_Getfalse@_Locinfo@std@@QBEPBDXZ
+// 0x105C8194: ?_Gettrue@_Locinfo@std@@QBEPBDXZ
+// 0x105C8198: ?c_str@?$_Yarn@D@std@@QBEPBDXZ
+// 0x105C819C: ??0facet@locale@std@@IAE@I@Z
+// 0x105C81A0: ??1facet@locale@std@@MAE@XZ
+// 0x105C81A4: ?_Incref@facet@locale@std@@UAEXXZ
+// 0x105C81A8: ?_Decref@facet@locale@std@@UAEPAV_Facet_base@3@XZ
+// 0x105C81AC: ?id@?$numpunct@D@std@@2V0locale@2@A
+// 0x105C81B0: ?uncaught_exceptions@std@@YAHXZ
+// 0x105C81B4: ?good@ios_base@std@@QBE_NXZ
+// 0x105C81B8: ?flags@ios_base@std@@QBEHXZ
+// 0x105C81BC: ?setf@ios_base@std@@QAEHHH@Z
+// 0x105C81C0: ?width@ios_base@std@@QBE_JXZ
+// 0x105C81C4: ?width@ios_base@std@@QAE_J_J@Z
+// 0x105C81C8: ??0?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAE@XZ
+// 0x105C81CC: ??1?$basic_streambuf@DU?$char_traits@D@std@@@std@@UAE@XZ
+// 0x105C81D0: ?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QAEHD@Z
+// 0x105C81D4: ?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QAE_JPBD_J@Z
+// 0x105C81D8: ?eback@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81DC: ?gptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81E0: ?pbase@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81E4: ?pptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81E8: ?egptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81EC: ?gbump@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXH@Z
+// 0x105C81F0: ?setg@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXPAD00@Z
+// 0x105C81F4: ?epptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBEPADXZ
+// 0x105C81F8: ?setp@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXPAD0@Z
+// 0x105C81FC: ?setp@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXPAD00@Z
+// 0x105C8200: ?_Pninc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEPADXZ
+// 0x105C8204: ??1?$basic_ios@DU?$char_traits@D@std@@@std@@UAE@XZ
+// 0x105C8208: ?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QAEXH_N@Z
+// 0x105C820C: ?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QBEPAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ
+// 0x105C8210: ?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QBEPAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ
+// 0x105C8214: ?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QBEDXZ
+// 0x105C8218: ?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QAEDD@Z
+// 0x105C821C: ??0?$basic_ios@DU?$char_traits@D@std@@@std@@IAE@XZ
+// 0x105C8220: ??0?$basic_ostream@DU?$char_traits@D@std@@@std@@QAE@PAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z
+// 0x105C8224: ??1?$basic_ostream@DU?$char_traits@D@std@@@std@@UAE@XZ
+// 0x105C8228: ?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEXXZ
+// 0x105C822C: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@P6AAAVios_base@1@AAV21@@Z@Z
+// 0x105C8230: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@I@Z
+// 0x105C8234: ?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV12@XZ
+// 0x105C8238: ?setw@std@@YA?AU?$_Smanip@_J@1@_J@Z
+// 0x105C823C: ?_Lock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UAEXXZ
+// 0x105C8240: ?_Unlock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UAEXXZ
+// 0x105C8244: ?showmanyc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JXZ
+// 0x105C8248: ?uflow@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAEHXZ
+// 0x105C824C: ?xsgetn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JPAD_J@Z
+// 0x105C8250: ?xsputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JPBD_J@Z
+// 0x105C8254: ?setbuf@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAEPAV12@PAD_J@Z
+// 0x105C8258: ?sync@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAEHXZ
+// 0x105C825C: ?imbue@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAEXABVlocale@2@@Z
+// 0x105C8260: _Query_perf_counter
+// 0x105C8264: _Query_perf_frequency
+// 0x105C8268: _Thrd_detach
+// 0x105C826C: _Cnd_do_broadcast_at_thread_exit
+// 0x105C8270: ?_Throw_Cpp_error@std@@YAXH@Z
+// 0x105C8274: ?always_noconv@codecvt_base@std@@QBE_NXZ
+// 0x105C8278: ?in@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PBD1AAPBDPAD3AAPAD@Z
+// 0x105C827C: ?out@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PBD1AAPBDPAD3AAPAD@Z
+// 0x105C8280: ?unshift@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PAD1AAPAD@Z
+// 0x105C8284: ?_Getcat@?$codecvt@DDU_Mbstatet@@@std@@SAIPAPBVfacet@locale@2@PBV42@@Z
+// 0x105C8288: ?getloc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QBE?AVlocale@2@XZ
+// 0x105C828C: ?_Gndec@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEPADXZ
+// 0x105C8290: ?_Gninc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEPADXZ
+// 0x105C8294: ?_Gnavail@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBE_JXZ
+// 0x105C8298: ?pbump@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXH@Z
+// 0x105C829C: ?_Pnavail@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IBE_JXZ
+// 0x105C82A0: ?_Init@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXXZ
+// 0x105C82A4: ?_Init@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXPAPAD0PAH001@Z
+// 0x105C82A8: ??0?$basic_istream@DU?$char_traits@D@std@@@std@@QAE@PAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z
+// 0x105C82AC: ??1?$basic_istream@DU?$char_traits@D@std@@@std@@UAE@XZ
+// 0x105C82B0: ?_Fiopen@std@@YAPAU_iobuf@@PBDHH@Z
+// 0x105C82B4: ?id@?$codecvt@DDU_Mbstatet@@@std@@2V0locale@2@A
+// 0x105C82B8: ?_Syserror_map@std@@YAPBDH@Z
+// 0x105C82BC: ?_Winerror_map@std@@YAHH@Z
+// 0x105C82C0: ?sbumpc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QAEHXZ
+// 0x105C82C4: ?sgetc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QAEHXZ
+// 0x105C82C8: ?_Fiopen@std@@YAPAU_iobuf@@PB_WHH@Z
+// 0x105C82CC: ?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV12@PBD_J@Z
+// 0x105C82D0: ?_Xinvalid_argument@std@@YAXPBD@Z
+// 0x105C82D4: ?_Getcvt@_Locinfo@std@@QBE?AU_Cvtvec@@XZ
+// 0x105C82D8: ?setf@ios_base@std@@QAEHH@Z
+// 0x105C82DC: ?snextc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QAEHXZ
+// 0x105C82E0: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@H@Z
+// 0x105C82E4: ?_Ipfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QAE_N_N@Z
+// 0x105C82E8: ??5?$basic_istream@DU?$char_traits@D@std@@@std@@QAEAAV01@P6AAAVios_base@1@AAV21@@Z@Z
+// 0x105C82EC: ??5?$basic_istream@DU?$char_traits@D@std@@@std@@QAEAAV01@AAH@Z
+// 0x105C82F0: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@N@Z
+// 0x105C82F4: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@PBX@Z
+// 0x105C82F8: ??0?$basic_iostream@DU?$char_traits@D@std@@@std@@QAE@PAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z
+// 0x105C82FC: ??1?$basic_iostream@DU?$char_traits@D@std@@@std@@UAE@XZ
+// 0x105C8300: ?_Random_device@std@@YAIXZ
+// 0x105C8304: ?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QBEDD@Z
+// 0x105C8308: _Strcoll
+// 0x105C830C: _Strxfrm
+// 0x105C8310: ?_Getcoll@_Locinfo@std@@QBE?AU_Collvec@@XZ
+// 0x105C8314: ?tolower@?$ctype@D@std@@QBEDD@Z
+// 0x105C8318: ?tolower@?$ctype@D@std@@QBEPBDPADPBD@Z
+// 0x105C831C: ?_Getcat@?$ctype@D@std@@SAIPAPBVfacet@locale@2@PBV42@@Z
+// 0x105C8320: ?_Xregex_error@std@@YAXW4error_type@regex_constants@1@@Z
+// 0x105C8324: ?id@?$ctype@D@std@@2V0locale@2@A
+// 0x105C8328: ?id@?$collate@D@std@@2V0locale@2@A
+// 0x105C832C: _Mtx_init_in_situ
+// 0x105C8330: _Mtx_lock
+// 0x105C8334: _Mtx_unlock
+// 0x105C8338: ?clear@?$basic_ios@DU?$char_traits@D@std@@@std@@QAEXH_N@Z
+// 0x105C833C: _Xtime_get_ticks
+// 0x105C8340: ?getloc@ios_base@std@@QBE?AVlocale@2@XZ
+// 0x105C8344: ?put@?$time_put@DV?$ostreambuf_iterator@DU?$char_traits@D@std@@@std@@@std@@QBE?AV?$ostreambuf_iterator@DU?$char_traits@D@std@@@2@V32@AAVios_base@2@DPBUtm@@PBD3@Z
+// 0x105C8348: ?_Getcat@?$time_put@DV?$ostreambuf_iterator@DU?$char_traits@D@std@@@std@@@std@@SAIPAPBVfacet@locale@2@PBV42@@Z
+// 0x105C834C: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@P6AAAV01@AAV01@@Z@Z
+// 0x105C8350: ??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV01@_J@Z
+// 0x105C8354: ?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV12@D@Z
+// 0x105C8358: ?id@?$time_put@DV?$ostreambuf_iterator@DU?$char_traits@D@std@@@std@@@std@@2V0locale@2@A
+// 0x105C835C: _Mbrtowc
+// 0x105C8360: ?id@?$numpunct@_W@std@@2V0locale@2@A
+// 0x105C8364: ?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A
+// 0x105C8368: ??5?$basic_istream@DU?$char_traits@D@std@@@std@@QAEAAV01@AAI@Z
+// 0x105C836C: ?setprecision@std@@YA?AU?$_Smanip@_J@1@_J@Z
+// 0x105C8370: ?_Xlength_error@std@@YAXPBD@Z
+// 0x105C8374: ?_Xbad_alloc@std@@YAXXZ
+// 0x105C8378: ??Bios_base@std@@QBE_NXZ
+
+// --- OLEAUT32.dll (4 functions) ---
+// 0x105C8380: VariantInit
+// 0x105C8384: SysFreeString
+// 0x105C8388: SysAllocString
+// 0x105C838C: VariantClear
+
+// --- SHELL32.dll (1 functions) ---
+// 0x105C8394: CommandLineToArgvW
+
+// --- USER32.dll (14 functions) ---
+// 0x105C839C: GetForegroundWindow
+// 0x105C83A0: GetWindowRect
+// 0x105C83A4: FindWindowW
+// 0x105C83A8: FlashWindow
+// 0x105C83AC: SetClipboardData
+// 0x105C83B0: EmptyClipboard
+// 0x105C83B4: SetCursorPos
+// 0x105C83B8: SetWindowPos
+// 0x105C83BC: CloseClipboard
+// 0x105C83C0: EnumDisplayMonitors
+// 0x105C83C4: GetMonitorInfoA
+// 0x105C83C8: MessageBoxW
+// 0x105C83CC: ClientToScreen
+// 0x105C83D0: OpenClipboard
+
+// --- VCRUNTIME140.dll (23 functions) ---
+// 0x105C83D8: __current_exception_context
+// 0x105C83DC: __RTDynamicCast
+// 0x105C83E0: __RTtypeid
+// 0x105C83E4: strchr
+// 0x105C83E8: __std_type_info_compare
+// 0x105C83EC: longjmp
+// 0x105C83F0: _setjmp3
+// 0x105C83F4: __current_exception
+// 0x105C83F8: _except_handler4_common
+// 0x105C83FC: __std_type_info_destroy_list
+// 0x105C8400: __std_type_info_name
+// 0x105C8404: memchr
+// 0x105C8408: _purecall
+// 0x105C840C: memmove
+// 0x105C8410: strstr
+// 0x105C8414: memset
+// 0x105C8418: __std_terminate
+// 0x105C841C: memcpy
+// 0x105C8420: __CxxFrameHandler3
+// 0x105C8424: _CxxThrowException
+// 0x105C8428: __std_exception_destroy
+// 0x105C842C: __std_exception_copy
+// 0x105C8430: strrchr
+
+// --- api-ms-win-crt-convert-l1-1-0.dll (9 functions) ---
+// 0x105C8438: atoi
+// 0x105C843C: strtol
+// 0x105C8440: wcstombs
+// 0x105C8444: wcstombs_s
+// 0x105C8448: strtoll
+// 0x105C844C: strtod
+// 0x105C8450: strtoull
+// 0x105C8454: atof
+// 0x105C8458: strtoul
+
+// --- api-ms-win-crt-filesystem-l1-1-0.dll (2 functions) ---
+// 0x105C8460: _unlock_file
+// 0x105C8464: _lock_file
+
+// --- api-ms-win-crt-heap-l1-1-0.dll (7 functions) ---
+// 0x105C846C: _callnewh
+// 0x105C8470: _aligned_free
+// 0x105C8474: _aligned_malloc
+// 0x105C8478: realloc
+// 0x105C847C: calloc
+// 0x105C8480: malloc
+// 0x105C8484: free
+
+// --- api-ms-win-crt-locale-l1-1-0.dll (2 functions) ---
+// 0x105C848C: localeconv
+// 0x105C8490: ___lc_codepage_func
+
+// --- api-ms-win-crt-math-l1-1-0.dll (13 functions) ---
+// 0x105C8498: _fdclass
+// 0x105C849C: round
+// 0x105C84A0: _ldclass
+// 0x105C84A4: _libm_sse2_sqrt_precise
+// 0x105C84A8: _dclass
+// 0x105C84AC: ceil
+// 0x105C84B0: _fdsign
+// 0x105C84B4: _ldsign
+// 0x105C84B8: _libm_sse2_cos_precise
+// 0x105C84BC: _libm_sse2_sin_precise
+// 0x105C84C0: _dsign
+// 0x105C84C4: floor
+// 0x105C84C8: _libm_sse2_pow_precise
+
+// --- api-ms-win-crt-runtime-l1-1-0.dll (19 functions) ---
+// 0x105C84D0: _crt_atexit
+// 0x105C84D4: _execute_onexit_table
+// 0x105C84D8: terminate
+// 0x105C84DC: _register_onexit_function
+// 0x105C84E0: _beginthreadex
+// 0x105C84E4: _initialize_onexit_table
+// 0x105C84E8: _initialize_narrow_environment
+// 0x105C84EC: strerror
+// 0x105C84F0: _errno
+// 0x105C84F4: _invalid_parameter_noinfo
+// 0x105C84F8: _invoke_watson
+// 0x105C84FC: _configure_narrow_argv
+// 0x105C8500: _seh_filter_dll
+// 0x105C8504: abort
+// 0x105C8508: _set_invalid_parameter_handler
+// 0x105C850C: _initterm
+// 0x105C8510: _initterm_e
+// 0x105C8514: signal
+// 0x105C8518: _cexit
+
+// --- api-ms-win-crt-stdio-l1-1-0.dll (19 functions) ---
+// 0x105C8520: fsetpos
+// 0x105C8524: fopen
+// 0x105C8528: fread
+// 0x105C852C: _fseeki64
+// 0x105C8530: fwrite
+// 0x105C8534: fclose
+// 0x105C8538: fputc
+// 0x105C853C: fgetpos
+// 0x105C8540: fgetc
+// 0x105C8544: setvbuf
+// 0x105C8548: fflush
+// 0x105C854C: ungetc
+// 0x105C8550: _get_stream_buffer_pointers
+// 0x105C8554: __stdio_common_vsprintf
+// 0x105C8558: __stdio_common_vsprintf_s
+// 0x105C855C: __stdio_common_vsscanf
+// 0x105C8560: puts
+// 0x105C8564: __stdio_common_vfprintf
+// 0x105C8568: __stdio_common_vsnwprintf_s
+
+// --- api-ms-win-crt-string-l1-1-0.dll (11 functions) ---
+// 0x105C8570: toupper
+// 0x105C8574: isdigit
+// 0x105C8578: iswspace
+// 0x105C857C: strcpy_s
+// 0x105C8580: strncat
+// 0x105C8584: strncmp
+// 0x105C8588: isalnum
+// 0x105C858C: isspace
+// 0x105C8590: tolower
+// 0x105C8594: _stricmp
+// 0x105C8598: strncpy
+
+// --- api-ms-win-crt-time-l1-1-0.dll (8 functions) ---
+// 0x105C85A0: _mktime64
+// 0x105C85A4: _difftime64
+// 0x105C85A8: _gmtime64_s
+// 0x105C85AC: _localtime64_s
+// 0x105C85B0: _time64
+// 0x105C85B4: _gmtime64
+// 0x105C85B8: strftime
+// 0x105C85BC: _localtime64
+
+// --- api-ms-win-crt-utility-l1-1-0.dll (1 functions) ---
+// 0x105C85C4: qsort
+
+// --- dbghelp.dll (14 functions) ---
+// 0x105C85CC: StackWalk64
+// 0x105C85D0: SymSetOptions
+// 0x105C85D4: SymCleanup
+// 0x105C85D8: SymFunctionTableAccess64
+// 0x105C85DC: SymGetModuleBase64
+// 0x105C85E0: SymGetLineFromAddr64
+// 0x105C85E4: SymInitialize
+// 0x105C85E8: SymSetContext
+// 0x105C85EC: SymFromAddr
+// 0x105C85F0: MiniDumpWriteDump
+// 0x105C85F4: SymGetTypeFromName
+// 0x105C85F8: SymGetTypeInfo
+// 0x105C85FC: SymEnumSymbols
+// 0x105C8600: UnDecorateSymbolName
+
+// --- discord_game_sdk.dll (1 functions) ---
+// 0x105C8608: DiscordCreate
+
+// --- ole32.dll (5 functions) ---
+// 0x105C8610: CoCreateInstance
+// 0x105C8614: CoSetProxyBlanket
+// 0x105C8618: CoInitializeSecurity
+// 0x105C861C: CoInitializeEx
+// 0x105C8620: CoUninitialize
+
+#endif // ASCENSION_SDK_IMPORTS_H

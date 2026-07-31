@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="RAIJINLAB_TOGGLE_MENU" header="RAIJINLAB" runOnUp="false">
+        RaijinLab_ToggleMenu()
+    </Binding>
+</Bindings>

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "g_clientConnection",
+    "address": "0x00C79CE0",
+    "confidence": 0.85,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["Known WoW 3.3.5a global, xrefs from ClntObjMgr functions"],
+    "notes": "Pointer to CClientConnection singleton"
+  },
+  {
+    "name": "g_localPlayer",
+    "address": "0x00C7B098",
+    "confidence": 0.85,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["xrefs from player-specific code paths"],
+    "notes": "Pointer to local player GUID or shortcut"
+  },
+  {
+    "name": "g_objectManager",
+    "address": "0x00CD87A8",
+    "confidence": 0.85,
+    "type": "global",
+    "section": ".data",
+    "build": "12340",
+    "trust_chain": ["xrefs from ClntObjMgrEnumVisObjs and related functions"],
+    "notes": "Object manager base pointer"
+  }
+]

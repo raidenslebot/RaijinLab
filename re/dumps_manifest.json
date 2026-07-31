@@ -1,0 +1,141 @@
+{
+  "final": {
+    "Ascension.exe": {
+      "sha256": "5b26e33b2129737af3a0c3164459f4c9b109398dab921f76c6740a8746fbb929",
+      "size": 7694848,
+      "timestamp": 1277448958
+    },
+    "DivxDecoder.dll": {
+      "sha256": "ed34d37b575c91a56704218eb9f6abbefda8b7de0e2ed44c96191abd0f9915a5",
+      "size": 413696,
+      "timestamp": 1076466304
+    },
+    "DivxTac.dll": {
+      "sha256": "30c3b677d63ed5814f8f15cb5962aba4c9f7b5f352d484bf9892ce0b77ffca65",
+      "size": 98816,
+      "timestamp": 1633835898
+    },
+    "Extensions.dll": {
+      "sha256": "4e81e71157771b1d6b4ea1635a74e5f940cabbf45ff71d3521577ebf433b282e",
+      "size": 12647992,
+      "timestamp": 1784515974
+    },
+    "MMgr64.exe": {
+      "sha256": "fa9cbcd062edecc05fb116af7afa366b7323d24318e371364951d53d152e38d3",
+      "size": 364032,
+      "timestamp": 1777846817
+    },
+    "WowError.exe": {
+      "sha256": "a1a159d1f2e81e933533dcf24d045d701607192107d6f172da3b0d168df4eed6",
+      "size": 205824,
+      "timestamp": 1760214735
+    },
+    "d3d10core.dll": {
+      "sha256": "2b9150f290cc1b09bed8bb661403b6c8c863ffc9759b7803a4e1f305b8cb066e",
+      "size": 196622,
+      "timestamp": 1731929663
+    },
+    "d3d11.dll": {
+      "sha256": "20e0d58ae836bc9d54cff4dedb2d8c6e5e6b261fb12f0a4983b7bd81f8a58728",
+      "size": 4599822,
+      "timestamp": 1731929663
+    },
+    "d3d8.dll": {
+      "sha256": "efb950fc91ec612a7126732644bc8f7e862009a9866e1ae311d9a3eea3a48818",
+      "size": 1622030,
+      "timestamp": 1731929664
+    },
+    "d3d9.dll": {
+      "sha256": "3d6b529dc4f7f55639aad580e81b2939ab1489cdbb9f1550dce74e41656bbf5b",
+      "size": 4284430,
+      "timestamp": 1736781717
+    },
+    "discord_game_sdk.dll": {
+      "sha256": "d8e7d9feb3de8482b186ae44fd1c9abb41fe2b3b3d2c7cd3a4d742ebbad30cdf",
+      "size": 3154744,
+      "timestamp": 1574880036
+    },
+    "dxgi.dll": {
+      "sha256": "dabe59a85e82876e89fdaae1f718bac80db9a8e13660f48c6b8a746d74bf87c2",
+      "size": 3014670,
+      "timestamp": 1736781717
+    }
+  },
+  "mid_download": {
+    "Ascension.exe": {
+      "sha256": "5b26e33b2129737af3a0c3164459f4c9b109398dab921f76c6740a8746fbb929",
+      "size": 7694848,
+      "timestamp": 1277448958
+    },
+    "DivxDecoder.dll": {
+      "sha256": "ed34d37b575c91a56704218eb9f6abbefda8b7de0e2ed44c96191abd0f9915a5",
+      "size": 413696,
+      "timestamp": 1076466304
+    },
+    "DivxTac.dll": {
+      "sha256": "30c3b677d63ed5814f8f15cb5962aba4c9f7b5f352d484bf9892ce0b77ffca65",
+      "size": 98816,
+      "timestamp": 1633835898
+    },
+    "Extensions.dll": {
+      "sha256": "4e81e71157771b1d6b4ea1635a74e5f940cabbf45ff71d3521577ebf433b282e",
+      "size": 12647992,
+      "timestamp": 1784515974
+    },
+    "MMgr64.exe": {
+      "sha256": "fa9cbcd062edecc05fb116af7afa366b7323d24318e371364951d53d152e38d3",
+      "size": 364032,
+      "timestamp": 1777846817
+    }
+  },
+  "diff": [
+    {
+      "name": "Ascension.exe",
+      "action": "identical"
+    },
+    {
+      "name": "DivxDecoder.dll",
+      "action": "identical"
+    },
+    {
+      "name": "DivxTac.dll",
+      "action": "identical"
+    },
+    {
+      "name": "Extensions.dll",
+      "action": "identical"
+    },
+    {
+      "name": "MMgr64.exe",
+      "action": "identical"
+    },
+    {
+      "name": "WowError.exe",
+      "action": "final_only"
+    },
+    {
+      "name": "d3d10core.dll",
+      "action": "final_only"
+    },
+    {
+      "name": "d3d11.dll",
+      "action": "final_only"
+    },
+    {
+      "name": "d3d8.dll",
+      "action": "final_only"
+    },
+    {
+      "name": "d3d9.dll",
+      "action": "final_only"
+    },
+    {
+      "name": "discord_game_sdk.dll",
+      "action": "final_only"
+    },
+    {
+      "name": "dxgi.dll",
+      "action": "final_only"
+    }
+  ]
+}

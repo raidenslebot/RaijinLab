@@ -1,0 +1,63 @@
+{
+  "product": "ascension-live",
+  "client_exe": "Ascension.exe",
+  "arch": "x86",
+  "image_base": "0x400000",
+  "build_hint": "3.3.5.12340-class",
+  "offsets_revision": 2,
+  "verified": {
+    "functions_static": true,
+    "object_fields_live": false,
+    "lua_capi_live": false
+  },
+  "source_notes": {
+    "example_code": "Workspace/Example Code is TurtleWoW-oriented; its absolute VAs do NOT match Ascension.exe (validated 2026-07-20).",
+    "ascension_om": "ClntObjMgr* at 0x4D3790/0x4D4DB0/0x4D4B30 match stock 12340 disassembly (TLS + g_TlsIndex 0xD439BC)."
+  },
+  "functions": {
+    "ClntObjMgrGetActivePlayer": "0x004D3790",
+    "ClntObjMgrObjectPtr": "0x004D4DB0",
+    "ClntObjMgrEnumVisibleObjects": "0x004D4B30",
+    "GetCamera": "0x004F5960",
+    "CGPlayer_C_ClickToMove": "0x00727400",
+    "CGWorldFrame_C_Intersect": "0x007A3B70",
+    "FrameScript_Execute": "0x00819210",
+    "FrameScript_GetText": "0x00819D40",
+    "FrameScript_RegisterFunction": "0x00817F90",
+    "lua_gettop": "0x0084DBD0",
+    "lua_tolstring": "0x0084E0E0",
+    "lua_tonumber": "0x0084E030",
+    "lua_pushstring": "0x0084E350",
+    "lua_pushboolean": "0x0084E4D0",
+    "lua_pushnumber": "0x0084E2A0",
+    "lua_pushcclosure": "0x0084E400",
+    "g_TlsIndex_ClntObjMgr": "0x00D439BC",
+    "g_WorldFramePtr": "0x00B7436C",
+    "g_FrameScript_LuaState": "0x00D3F78C"
+  },
+  "object": {
+    "Descriptor": "0x08",
+    "Type": "0x14",
+    "Position": "0x798",
+    "Facing": "0x7A0",
+    "Speed": "0x814",
+    "SpeedMod": "0x81C"
+  },
+  "descriptor": {
+    "Entry": "0x0C",
+    "Health": "0x58",
+    "MaxHealth": "0x70",
+    "Level": "0xD8",
+    "Flags": "0xEC",
+    "DynamicFlags": "0x13C"
+  },
+  "camera": {
+    "Position": "0x08"
+  },
+  "example_code_turtlewow_DO_NOT_USE": {
+    "GET_PLAYER_GUID": "0x00468550",
+    "GET_OBJECT_PTR": "0x00464870",
+    "ENUM_VISIBLE_OBJECTS": "0x00468380",
+    "note": "Invalid on Ascension — mid-function / wrong client"
+  }
+}

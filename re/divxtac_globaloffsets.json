@@ -1,0 +1,46 @@
+{
+  "enum_name": "GlobalOffsets",
+  "members": [],
+  "count": 0,
+  "source": "not_recoverable_from_DivxTac.dll",
+  "extraction_attempts": [
+    {
+      "method": "grep 'GlobalOffsets' across dnspy_out/DivxTac/*.cs",
+      "result": "6 hits, all template parameter mentions only (flat_hash_map<enum GlobalOffsets,unsigned char*,...>); no enum definition, no member names, no numeric values"
+    },
+    {
+      "method": "dnSpy.Console.exe -l 'IL with C#' -t GlobalOffsets DivxTac.dll",
+      "result": "ERROR: Type GlobalOffsets couldn't be found (native C++ enum -- absent from managed metadata)"
+    },
+    {
+      "method": "dnSpy.Console.exe full-assembly decompile to fresh output dir, then grep GlobalOffsets",
+      "result": "same 6 template-parameter hits; no TypeDef row exists for the enum"
+    },
+    {
+      "method": "Ghidra symbols scan for FunctionMap / raw_hash_set / emplace / try_emplace / Insert / RegisterDetour",
+      "result": "Only 4 relevant symbols exist: ??__E?FunctionMap@ManagedDetourMgr@ 0x10001028 (zero-init constructor), ??__F?FunctionMap@ManagedDetourMgr@ 0x10008654 (destructor), raw_hash_set<...>::destroy_slots @ 0x10004a54, LayoutImpl<...>::Offset<1,0> @ 0x1000479c. No insertion / population routine present."
+    },
+    {
+      "method": "const_xref.py DivxTac.dll 0x10019554 0x10019558 0x1001955c 0x10019560 0x10019568 (FunctionMap field base + inline sub-fields)",
+      "result": "Zero .text references. The FunctionMap static field is touched ONLY by its own ??__E init (zeroes it) and ??__F fini (frees it) -- no other code path reads or writes it."
+    },
+    {
+      "method": "Body inspection of ??__E?FunctionMap initializer via -Module-.cs lines 2844-2852",
+      "result": "Body is exclusively: FunctionMap = phmap.priv.EmptyGroup(); *(&FunctionMap + 4)=0; +8=0; +12=0; +20=0; _atexit_m(&??__F...). No emit_pair(enumval, ptr) sequence, no key/value inserts, no static pointer initializers."
+    },
+    {
+      "method": "Symbol lookup for FunctionMap$initializer$ token in symbols.txt",
+      "result": "No FUNC symbol with that name. dnSpy shows field ?FunctionMap$initializer$@ManagedDetourMgr@@0P6MXXZA at RVA 0x000091C4 (file 0x7DC4) but this is just a 4-byte delegate* slot in .rdata pointing to the ??__E stub above -- NOT a table of enum/ptr pairs."
+    },
+    {
+      "method": "Strings scan across DivxTac.dll all sections for API / hook target names (kernel32, ntdll, OpenProcess, ReadProcessMemory, LoadLibrary, VirtualAlloc, SetWindowsHook, NtQueryInformationProcess, etc.)",
+      "result": "Zero API-name strings. Only import kernel32.dll functions used are DeviceIoControl+CreateFileA (HDD serial) plus IsDebuggerPresent, Sleep, GetProcAddress, version APIs. No detour target inventory."
+    },
+    {
+      "method": "Cross-check Extensions.dll strings and symbols for 'GlobalOffset'",
+      "result": "No hits in either. The enum symbol is unique to DivxTac and does not participate in Extensions.dll's anti-debug sink."
+    }
+  ],
+  "static_pointer_initializers": [],
+  "conclusion": "The GlobalOffsets enum members and any static pointer values are NOT recoverable from DivxTac.dll. DivxTac's ManagedDetourMgr::FunctionMap is a phmap::flat_hash_map<GlobalOffsets, unsigned char*> whose static storage is created empty and freed at process exit, with no code path in DivxTac ever inserting a key/value pair. The container is a dead / stub artifact -- likely leftover scaffolding from an earlier design where detours would have been registered by enum tag. In the shipping build all runtime anti-cheat work happens in AntiCheatService.DetectHack{Processes,Modules,Titles} and DetectDebugger (per 11a_divxtac_ac_logic.md), none of which touch FunctionMap. The enum's member names and numeric values were compile-time template parameters only and, being a native C++ enum, were not emitted into the .NET metadata (dnSpy confirms no TypeDef row). The original enum definition would live in a C++ header that was not shipped with the binary; reconstructing it would require the DivxTac source header or an older build that actually populated the map."
+}

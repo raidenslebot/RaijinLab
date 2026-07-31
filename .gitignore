@@ -1,0 +1,101 @@
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+.vs/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+
+# ---- Build / CMake / compiler ----
+runtime/build_x86/
+runtime/build/
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/Makefile
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.idb
+*.tlog
+*.lastbuildstate
+
+# Built runtime artifacts (rebuild via tools/build_runtime.bat)
+runtime/dist/*.dll
+runtime/dist/*.exe
+runtime/dist/archive/
+# Keep README / notes under dist if any
+
+# ---- Toolchains & installers (multi-GB; never commit) ----
+tools/bin/
+tools/installers/
+tools/**/*.zip
+tools/**/*.7z
+tools/**/*.rar
+
+# ---- Reverse-engineering dumps & binaries ----
+# Game / AC PE dumps — large + sensitive; keep local only
+re/dumps/
+re/dumps_mid_download/
+re/**/*.exe
+re/**/*.dll
+re/**/*.pdb
+
+# Ghidra project databases & decompile dumps (regenerate locally)
+re/ghidra_proj/
+re/ghidra_projects/
+re/ghidra_out/
+re/ghidra_*.log
+
+# Extracted MPQ / client UI trees
+re/mpq_extract/
+re/samples/**/*.log
+re/samples/**/*.blp
+re/samples/**/*.mpq
+
+# ---- Nav / mesh build outputs (generated) ----
+build/nav/
+build/r4/
+build/*.log
+
+# ---- Logs / session noise ----
+*.log
+*.tmp
+*.temp
+logs/
+.session/
+*.dmp
+*.mdmp
+
+# ---- Local secrets / machine-specific ----
+*.pem
+*.key
+credentials.json
+.env.*
+local.json
+.local/
+
+# ---- Frida / probe scratch ----
+**/frida-*.log
+
+# ---- Optional local override ----
+.gitignore.local

@@ -1,0 +1,8 @@
+// Ascension Launcher - Resource Script
+// Embeds the DLL payloads into the exe
+
+#define IDR_LUA_UNLOCKER      101
+#define IDR_ROTATION_ENGINE   102
+
+IDR_LUA_UNLOCKER      DLL_PAYLOAD   "..\\bin\\lua_unlocker.dll"
+IDR_ROTATION_ENGINE   DLL_PAYLOAD   "..\\bin\\rotation_engine.dll"

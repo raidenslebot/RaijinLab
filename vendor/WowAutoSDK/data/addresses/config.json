@@ -1,0 +1,39 @@
+{
+  "wow_build": "12340",
+  "client_version": "3.3.5a",
+  "exe_name": "Ascension.exe",
+  "exe_path": "C:\\Ascension\\Launcher\\resources\\ascension-live\\Ascension.exe",
+  "game_dir": "C:\\Ascension\\Launcher\\resources\\ascension-live",
+  "image_base": "0x00400000",
+  "sdk_dir": "WowAutoSDK",
+  "anchor": {
+    "name": "FrameScript_Execute",
+    "address": "0x00819210"
+  },
+  "sections": {
+    "_note": "Populate from PE header analysis \u00e2\u20ac\u201d never hardcode",
+    ".text": {
+      "va_start": "0x00401000",
+      "va_end": "0x009DE3B3",
+      "raw_offset": "0x00000400",
+      "raw_size": "0x005DD400"
+    },
+    ".rdata": {
+      "va_start": "0x009DF000",
+      "va_end": "0x00AB5679",
+      "raw_offset": "0x005DD800",
+      "raw_size": "0x000D6800"
+    },
+    ".data": {
+      "va_start": "0x00AB6000",
+      "va_end": "0x00DD0508",
+      "raw_offset": "0x006B4000",
+      "raw_size": "0x00078E00"
+    }
+  },
+  "compiler": {
+    "toolchain": "MSVC x86",
+    "flags": "/LD /O2 /MT /EHa",
+    "output_dir": "WowAutoSDK/bin/"
+  }
+}

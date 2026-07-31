@@ -1,0 +1,127 @@
+{
+  "build": 12340,
+  "product": "ascension-live",
+  "revision": 3,
+  "notes": "Merged WowAutoSDK trust-chain data with RaijinLab static disasm of Ascension.exe. OM+CTM use RaijinLab-verified VAs (SDK had swaps).",
+  "anchors": {
+    "FrameScript_Execute": "0x00819210",
+    "g_luaState": "0x00D3F78C",
+    "g_TlsIndex_ClntObjMgr": "0x00D439BC"
+  },
+  "globals": {
+    "g_luaState": { "va": "0x00D3F78C", "confidence": 0.99, "source": "sdk+raijin" },
+    "g_InWorld": { "va": "0x00D3F60C", "confidence": 0.95, "source": "sdk" },
+    "g_TlsIndex_ClntObjMgr": { "va": "0x00D439BC", "confidence": 0.99, "source": "raijin-disasm" },
+    "g_WorldFrame": { "va": "0x00B7436C", "confidence": 0.9, "source": "raijin-disasm" },
+    "TaintContext": { "va": "0x00D4139C", "confidence": 0.9, "source": "sdk" },
+    "ExecCounter": { "va": "0x00D413A0", "confidence": 0.9, "source": "sdk" },
+    "CombatLockdown": { "va": "0x00D413A4", "confidence": 0.9, "source": "sdk" },
+    "EventHandlerPtr": { "va": "0x00D413B0", "confidence": 0.9, "source": "sdk" },
+    "HardwareEventFlag": { "va": "0x00BEAF4C", "confidence": 0.85, "source": "sdk" }
+  },
+  "framescript": {
+    "FrameScript_Execute": { "va": "0x00819210", "confidence": 0.99 },
+    "FrameScript_RegisterFunction": { "va": "0x00817F90", "confidence": 0.97 },
+    "FrameScript_UnregisterFunction": { "va": "0x00817FD0", "confidence": 0.95 },
+    "FrameScript_GetText": { "va": "0x0081A350", "confidence": 0.93 },
+    "FrameScript_SetGlobal": { "va": "0x008191F0", "confidence": 0.9 }
+  },
+  "lua": {
+    "lua_gettop": "0x0084DBD0",
+    "lua_settop": "0x0084DBF0",
+    "lua_insert": "0x0084DCC0",
+    "lua_type": "0x0084DEB0",
+    "lua_tonumber": "0x0084E030",
+    "lua_toboolean": "0x0084E0B0",
+    "lua_tolstring": "0x0084E0E0",
+    "lua_touserdata": "0x0084E1C0",
+    "lua_pushnil": "0x0084E280",
+    "lua_pushnumber": "0x0084E2A0",
+    "lua_pushinteger": "0x0084E2D0",
+    "lua_pushstring": "0x0084E350",
+    "lua_pushlstring": "0x0084E3D0",
+    "lua_pushcclosure": "0x0084E400",
+    "lua_pushboolean": "0x0084E4D0",
+    "lua_pushvalue": "0x0084DE50",
+    "lua_gettable": "0x0084E600",
+    "lua_getfield": "0x0084E670",
+    "lua_createtable": "0x0084E6E0",
+    "lua_settable": "0x0084E8D0",
+    "lua_rawset": "0x0084E970",
+    "lua_rawseti": "0x0084EA00",
+    "lua_pcall": "0x0084EC50",
+    "lua_setfield": "0x0084F7A0",
+    "luaL_loadbuffer": "0x0084F860",
+    "lua_isnumber": "0x0084DF20",
+    "lua_isstring": "0x0084DF60"
+  },
+  "object_manager": {
+    "ClntObjMgrGetActivePlayer": {
+      "va": "0x004D3790",
+      "confidence": 0.99,
+      "source": "raijin-disasm",
+      "notes": "SDK wrongly labeled 0x4D4DB0 as GetActivePlayer — that is ObjectPtr"
+    },
+    "ClntObjMgrObjectPtr": {
+      "va": "0x004D4DB0",
+      "confidence": 0.99,
+      "source": "raijin-disasm",
+      "notes": "SDK swapped with EnumVisibleObjects"
+    },
+    "ClntObjMgrEnumVisibleObjects": {
+      "va": "0x004D4B30",
+      "confidence": 0.99,
+      "source": "raijin-disasm",
+      "notes": "SDK had 0x4D3D50 (different helper) and swapped ObjectPtr"
+    },
+    "ClntObjMgrGetActivePlayerObj": {
+      "va": "0x004D4D70",
+      "confidence": 0.85,
+      "source": "sdk"
+    }
+  },
+  "game": {
+    "GetCamera": { "va": "0x004F5960", "confidence": 0.95, "source": "raijin-disasm" },
+    "CGPlayer_C_ClickToMove": {
+      "va": "0x00727400",
+      "confidence": 0.95,
+      "source": "raijin-disasm",
+      "notes": "SDK 0x468550 is INVALID on Ascension (mid-function)"
+    },
+    "CWorld_Intersect": { "va": "0x007A3B70", "confidence": 0.9, "source": "sdk+raijin" },
+    "CGObject_GetPosition": { "va": "0x00591560", "confidence": 0.85, "source": "sdk" },
+    "CGUnit_GetHealth": { "va": "0x0065CFF0", "confidence": 0.85, "source": "sdk" },
+    "CGUnit_GetMaxHealth": { "va": "0x0065D030", "confidence": 0.85, "source": "sdk" },
+    "CGUnit_GetLevel": { "va": "0x00736140", "confidence": 0.85, "source": "sdk" },
+    "Spell_C_CastSpell": { "va": "0x0080DA40", "confidence": 0.95, "source": "CastSpellByID xref disasm" }
+  },
+  "taint": {
+    "EventHandlerSet": { "va": "0x0052A95E", "confidence": 0.85 },
+    "EventHandlerClear": { "va": "0x0052A96C", "confidence": 0.85 },
+    "TaintErrorReporter": { "va": "0x00513530", "confidence": 0.9 },
+    "VMTaintSkip1": { "va": "0x00857493", "confidence": 0.9 },
+    "VMTaintSkip2": { "va": "0x00857317", "confidence": 0.9 },
+    "forceinsecure": { "va": "0x00816F00", "confidence": 0.9 },
+    "issecure_JNE": { "va": "0x00816DAA", "confidence": 0.9 }
+  },
+  "object_fields": {
+    "Descriptor": "0x08",
+    "Type": "0x14",
+    "Position": "0x798",
+    "Facing": "0x7A0"
+  },
+  "conflicts_resolved": [
+    {
+      "topic": "OM function labels",
+      "sdk_wrong": "GetActivePlayer=0x4D4DB0 ObjectPtr=0x4D4B30 Enum=0x4D3D50",
+      "raijin_correct": "GetActivePlayer=0x4D3790 ObjectPtr=0x4D4DB0 Enum=0x4D4B30",
+      "evidence": "Live disasm of Ascension.exe TLS patterns 2026-07-20"
+    },
+    {
+      "topic": "ClickToMove",
+      "sdk_wrong": "0x468550",
+      "raijin_correct": "0x727400",
+      "evidence": "0x468550 prologue invalid on Ascension"
+    }
+  ]
+}

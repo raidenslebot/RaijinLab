@@ -1,0 +1,45 @@
+{
+  "binary": "Extensions.dll (base 0x10000000, x86)",
+  "import": "KERNEL32.dll!VirtualProtect (IAT @ 0x10b1a058)",
+  "count": 4,
+  "sites": [
+    {
+      "va": "0x1000106b",
+      "fn": "FUN_10001000",
+      "role": "ScopedProtect::ctor (RAII, unprotect target -> PAGE_EXECUTE_READWRITE)",
+      "classification": "self-patch",
+      "context": "FUN_10001000(this=ecx, addr=[ebp+8], size=[ebp+0xc]):\n  this[0] = GetCurrentProcess()\n  this[4] = addr; this[8] = size; this[0xc] = 0\n  if (addr && size) {\n    if (FlushInstructionCache(this[0], addr, size)) {\n      VirtualProtect(addr, size, PAGE_EXECUTE_READWRITE=0x40, &this[0xc])   <-- site 0x1000106b\n    }\n  }\nStores oldProtect into this[0xc] so paired dtor (FUN_10001080) can restore. 2 direct callers, both inside FUN_10001170 (the hook installer) at 0x10001279 and 0x10001289, where two ScopedProtect objects are constructed back-to-back (over source and destination regions). Standard Detours/MinHook RAII scoped-write-permission primitive. No hashing, no VMProtect stub, no packed-body decode. Restores original protection via paired dtor — never leaves memory RWX."
+    },
+    {
+      "va": "0x100010e4",
+      "fn": "FUN_10001080",
+      "role": "ScopedProtect::dtor (RAII, restore original protection)",
+      "classification": "self-patch",
+      "context": "FUN_10001080(this=[ebp-8]):\n  push &this[0xc]  ; lpflOldProtect (dummy)\n  push this[0xc]   ; flNewProtect = SAVED old protect\n  push this[8]     ; dwSize\n  push this[4]     ; lpAddress\n  call VirtualProtect                                <-- site 0x100010e4\n  ret\nRestores whatever protection the target region had (typically PAGE_EXECUTE_READ 0x20 for .text). 12 direct callers, ALL inside FUN_10001170 (the hook installer) at 0x100012a6, 0x100012ae, 0x100012d1, 0x100012d9, 0x10001339, 0x10001341, 0x10001371, 0x10001379, 0x100013ae, 0x100013b6, 0x100013ca, 0x100013d2 — every early-return arm and the success arm calls dtor twice (one per ScopedProtect). Paired 1:1 with the ctor at 0x1000106b. No integrity update after restore."
+    },
+    {
+      "va": "0x100a0a10",
+      "fn": "FUN_100a09b0",
+      "role": "Trampoline-page unprotect (writable to install JMP rel32)",
+      "classification": "self-patch",
+      "context": "FUN_100a09b0 builds a JMP-rel32 trampoline stub in fresh memory:\n  edi = VirtualAllocEx(GetCurrentProcess(), NULL, 5, MEM_COMMIT|MEM_RESERVE=0x3000, PAGE_EXECUTE_READWRITE=0x40)\n  xchg [0x10bdc1b0], 1   ; set lock/flag\n  ebx = [0x10bca2d8]()   ; runtime-resolved API/helper ptr (populated in .data)\n  VirtualProtect(edi, 5, PAGE_EXECUTE_READWRITE=0x40, &oldprot)   <-- site 0x100a0a10\n  edi[0] = 0xE9                                       ; JMP opcode\n  edi[1..4] = [ebp+0x20] - edi - 5                    ; rel32 to caller-supplied dst\nTarget of write is the just-allocated page (edi), NOT Extensions.dll .text. Called once, from FUN_10191c00 at 0x10191cac, which passes a 32-byte stack-built descriptor + a dst address."
+    },
+    {
+      "va": "0x100a0a2e",
+      "fn": "FUN_100a09b0",
+      "role": "Trampoline-page reprotect (restore original protection after JMP written)",
+      "classification": "self-patch",
+      "context": "Continuation of FUN_100a09b0 after writing JMP rel32:\n  VirtualProtect(edi, 5, oldprot, &oldprot)          <-- site 0x100a0a2e\n  call [0x10bca0a4](ebx, edi, 0)                    ; likely FlushInstructionCache-alike\n  ...\nRestores whatever protection the freshly-allocated page had (allocated as PAGE_EXECUTE_READWRITE, so oldprot==0x40 — effectively a no-op reprotect). No hashing. Paired 1:1 with 0x100a0a10 within the same function."
+    }
+  ],
+  "call_graph": {
+    "FUN_10001000 (ctor)": "2 direct callers, both in FUN_10001170",
+    "FUN_10001080 (dtor)": "12 direct callers, all in FUN_10001170",
+    "FUN_10001170 (hook installer worker)": "1 caller: FUN_100010f0",
+    "FUN_100010f0 (hook installer wrapper — allocates 32-byte hook-descriptor via 0x10ae67a0 and calls FUN_10001170)": "353 direct callers spread across .text (0x100a06e5, 0x100a0762, 0x100d4f22, 0x100e0e12, 0x10111d7d, 0x1011440c, 0x1017056a, 0x101705c0, 0x10170616, 0x1017066c, ...) — this is the primary detour-install entrypoint in the DLL",
+    "FUN_100a09b0 (JMP trampoline stub builder)": "1 caller: FUN_10191c00 @ 0x10191cac"
+  },
+  "hook_installer_shape": "FUN_10001170(target, backup_20bytes, detour) — MinHook/Detours-style install: (1) construct ScopedProtect over 20-byte backup buffer at [ebp-0x14] via ctor(backup, 0x20); (2) construct ScopedProtect over target region at [ebp-0x28] via ctor(target, size); (3) run a length-disassembler loop (FUN_10001590) until >=5 stolen bytes are covered; (4) memcpy stolen bytes into backup (FUN_10001460); (5) store stolen-length at backup[0x1f]; (6) write JMP rel32 to detour at target (FUN_10001460 with rel32); (7) invoke both ScopedProtect dtors to restore original protection. On any early failure, both dtors still run.",
+  "vmprotect_relationship": "None of the 4 VirtualProtect sites live in or reference .vm_sec (0x10d6e000, 33KB). VMProtect stubs do not appear in the KERNEL32!VirtualProtect xref set for this binary.",
+  "self_hash_evidence": "no — none of the 4 VirtualProtect call sites are followed by any hashing/CRC/re-integrity operation. Sites 0x1000106b/0x100010e4 form a RAII pair that transiently switches a caller-supplied region to PAGE_EXECUTE_READWRITE for detour install, then restores whatever original protection was captured (typically PAGE_EXECUTE_READ 0x20 for .text) without recomputing any digest. Sites 0x100a0a10/0x100a0a2e operate on a freshly VirtualAllocEx'd 5-byte trampoline page (not Extensions.dll .text) and merely toggle protection around the JMP write. No self-unpack of Extensions's own .text is performed (no dst equals a .text VA fed as a literal; targets are always caller-supplied or newly-allocated). Conclusion: static .text patches applied to Extensions.dll on disk will not be detected or reverted by any of these 4 sites; if runtime integrity checking of Extensions.dll .text exists, it must live elsewhere (Warden server challenges, the 14 sub_100b5650 anti-debug vectors, or load-time CRC — none of which involve VirtualProtect)."
+}

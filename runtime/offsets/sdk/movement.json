@@ -1,0 +1,142 @@
+[
+  {
+    "name": "MoveForwardStart",
+    "address": "0x005FC200",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["FrameScript command table -> InputControl movement handlers"],
+    "notes": "FrameScript binding for MoveForwardStart"
+  },
+  {
+    "name": "MoveForwardStop",
+    "address": "0x005FC250",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to MoveForwardStart (+0x50)"],
+    "notes": "FrameScript binding for MoveForwardStop"
+  },
+  {
+    "name": "MoveBackwardStart",
+    "address": "0x005FC290",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to MoveForwardStop (+0x40)"],
+    "notes": "FrameScript binding for MoveBackwardStart"
+  },
+  {
+    "name": "MoveBackwardStop",
+    "address": "0x005FC2E0",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to MoveBackwardStart (+0x50)"],
+    "notes": "FrameScript binding for MoveBackwardStop"
+  },
+  {
+    "name": "TurnLeftStart",
+    "address": "0x005FC320",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to MoveBackwardStop (+0x40)"],
+    "notes": "FrameScript binding for TurnLeftStart"
+  },
+  {
+    "name": "TurnLeftStop",
+    "address": "0x005FC360",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TurnLeftStart (+0x40)"],
+    "notes": "FrameScript binding for TurnLeftStop"
+  },
+  {
+    "name": "TurnRightStart",
+    "address": "0x005FC3B0",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TurnLeftStop (+0x50)"],
+    "notes": "FrameScript binding for TurnRightStart"
+  },
+  {
+    "name": "TurnRightStop",
+    "address": "0x005FC3F0",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TurnRightStart (+0x40)"],
+    "notes": "FrameScript binding for TurnRightStop"
+  },
+  {
+    "name": "StrafeLeftStart",
+    "address": "0x005FC440",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to TurnRightStop (+0x50)"],
+    "notes": "FrameScript binding for StrafeLeftStart"
+  },
+  {
+    "name": "StrafeLeftStop",
+    "address": "0x005FC490",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to StrafeLeftStart (+0x50)"],
+    "notes": "FrameScript binding for StrafeLeftStop"
+  },
+  {
+    "name": "StrafeRightStart",
+    "address": "0x005FC4D0",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to StrafeLeftStop (+0x40)"],
+    "notes": "FrameScript binding for StrafeRightStart"
+  },
+  {
+    "name": "StrafeRightStop",
+    "address": "0x005FC520",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to StrafeRightStart (+0x50)"],
+    "notes": "FrameScript binding for StrafeRightStop"
+  },
+  {
+    "name": "JumpOrAscendStart",
+    "address": "0x005FBF80",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["FrameScript command table -> JumpOrAscendStart"],
+    "notes": "FrameScript binding for JumpOrAscendStart"
+  },
+  {
+    "name": "AscendStop",
+    "address": "0x005FC0A0",
+    "confidence": 0.80,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to JumpOrAscendStart (+0x120)"],
+    "notes": "FrameScript binding for AscendStop"
+  }
+]

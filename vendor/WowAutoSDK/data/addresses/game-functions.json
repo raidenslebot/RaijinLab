@@ -1,0 +1,152 @@
+[
+  {
+    "name": "ClntObjMgrEnumVisObjs",
+    "address": "0x004D3D50",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Known WoW 3.3.5a function, cross-referenced from object manager usage patterns"],
+    "notes": "EnumVisibleObjects callback-based object iterator"
+  },
+  {
+    "name": "ClntObjMgrObjectPtr",
+    "address": "0x004D4B30",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Near ClntObjMgrEnumVisObjs in .text"],
+    "notes": "GetObjectPtr(GUID, typeMask) -> void*"
+  },
+  {
+    "name": "ClntObjMgrGetActivePlayer",
+    "address": "0x004D4DB0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Near ClntObjMgrObjectPtr, returns player GUID"],
+    "notes": "Returns active player GUID"
+  },
+  {
+    "name": "ClntObjMgrGetActivePlayerObj",
+    "address": "0x004D4D70",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Near ClntObjMgrGetActivePlayer, returns player object pointer"],
+    "notes": "Returns active player object pointer"
+  },
+  {
+    "name": "CGObject_GetPosition",
+    "address": "0x00591560",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["thiscall, writes C3Vector to output param"],
+    "notes": "GetPosition(this, C3Vector* out)"
+  },
+  {
+    "name": "CGUnit_GetHealth",
+    "address": "0x0065CFF0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["CGUnit vtable cluster, near GetMaxHealth"],
+    "notes": "Returns unit current health"
+  },
+  {
+    "name": "CGUnit_GetMaxHealth",
+    "address": "0x0065D030",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to CGUnit_GetHealth (+0x40)"],
+    "notes": "Returns unit max health"
+  },
+  {
+    "name": "CGUnit_GetHealthPct",
+    "address": "0x0065D080",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Adjacent to CGUnit_GetMaxHealth (+0x50)"],
+    "notes": "Returns unit health percentage (0.0-1.0)"
+  },
+  {
+    "name": "CGUnit_GetLevel",
+    "address": "0x00736140",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["CGUnit member function cluster"],
+    "notes": "Returns unit level"
+  },
+  {
+    "name": "Spell_C_CastSpell",
+    "address": "0x006FDA00",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Spell_C cluster, xrefs from CastSpellByID FrameScript handler"],
+    "notes": "CastSpell(this, spellId, targetGUID*)"
+  },
+  {
+    "name": "CGPlayer_ClickToMove",
+    "address": "0x00468550",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["ClickToMove handler, xrefs from CGPlayer movement code"],
+    "notes": "ClickToMove(this, action, targetGUID*, targetPos, distance)"
+  },
+  {
+    "name": "Spell_C_GetSpellName",
+    "address": "0x006FBF60",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Spell_C cluster, near Spell_C_CastSpell"],
+    "notes": "GetSpellName(spellId) -> const char*"
+  },
+  {
+    "name": "CWorld_Intersect",
+    "address": "0x007A3B70",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["CWorld namespace, line-of-sight raycast"],
+    "notes": "Intersect(start, end, collFlags, hitPoint, dist, flags2) -> bool"
+  },
+  {
+    "name": "CGUnit_IsIndoors",
+    "address": "0x0071B7F0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["CGUnit member function"],
+    "notes": "IsIndoors(this) -> bool"
+  },
+  {
+    "name": "CGObject_GetObjectType",
+    "address": "0x004D3A40",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "trust_chain": ["Near ClntObjMgrEnumVisObjs, returns object type mask"],
+    "notes": "GetObjectType(this) -> type mask"
+  }
+]

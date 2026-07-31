@@ -1,0 +1,689 @@
+[
+  {
+    "name": "lua_gettop",
+    "address": "0x0084DBD0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 1,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called from FrameScript code region",
+        "method": "call_graph"
+      },
+      {
+        "level": 2,
+        "evidence": "46 callers, valid 55 8B EC prologue",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "46 callers. 55 8B EC prologue.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_settop",
+    "address": "0x0084DBF0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Adjacent to lua_gettop, 214 callers",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "214 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_insert",
+    "address": "0x0084DCC0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called by FrameScript_RegisterFunction (0x817F90)",
+        "method": "call_graph"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_type",
+    "address": "0x0084DEB0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "229 callers, Lua 5.1 API cluster",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "229 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_tonumber",
+    "address": "0x0084E030",
+    "confidence": 0.96,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "1166 callers \u2014 highest-use numeric accessor",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "1166 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_tolstring",
+    "address": "0x0084E0E0",
+    "confidence": 0.96,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "750 callers, 3 args (L, idx, len*)",
+        "method": "caller_count"
+      },
+      {
+        "level": 2,
+        "evidence": "DISTINCT from lua_tostring macro which is 2-arg wrapper",
+        "method": "disambiguation"
+      }
+    ],
+    "notes": "3 args: L, idx, len*. 750 callers. lua_tostring is a macro that calls this with len=NULL.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushnil",
+    "address": "0x0084E280",
+    "confidence": 0.96,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 1,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "1348 callers, Lua push cluster",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "1348 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushnumber",
+    "address": "0x0084E2A0",
+    "confidence": 0.97,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "2532 callers \u2014 most-used push function",
+        "method": "caller_count"
+      },
+      {
+        "level": 2,
+        "evidence": "FPU stack usage + type tag = 3 (LUA_TNUMBER)",
+        "method": "type_analysis"
+      }
+    ],
+    "notes": "2532 callers. Uses FPU, sets type=3.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushstring",
+    "address": "0x0084E350",
+    "confidence": 0.98,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called by FrameScript_RegisterFunction (0x817F90)",
+        "method": "call_graph"
+      },
+      {
+        "level": 2,
+        "evidence": "1008 callers, NULL->nil pattern distinguishes from pushlstring",
+        "method": "disambiguation"
+      }
+    ],
+    "notes": "2 args. 1008 callers. NULL input pushes nil. DISTINCT from lua_pushlstring (0x84E3D0, 3 args, 15 callers).",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushlstring",
+    "address": "0x0084E3D0",
+    "confidence": 0.93,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Adjacent to lua_pushstring, 15 callers, reads GC thresholds",
+        "method": "disambiguation"
+      }
+    ],
+    "notes": "3 args (L, s, len). 15 callers. Often confused with lua_pushstring.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushcclosure",
+    "address": "0x0084E400",
+    "confidence": 0.96,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called by FrameScript_RegisterFunction (0x817F90)",
+        "method": "call_graph"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushboolean",
+    "address": "0x0084E4D0",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "263 callers, setne+type=1 (LUA_TBOOLEAN)",
+        "method": "type_analysis"
+      }
+    ],
+    "notes": "263 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_createtable",
+    "address": "0x0084E6E0",
+    "confidence": 0.93,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "32 callers, 3 args (L, narr, nrec)",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "3 args: L, narr, nrec. 32 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_settable",
+    "address": "0x0084E8D0",
+    "confidence": 0.93,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "70 callers, Lua table cluster",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "70 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_rawset",
+    "address": "0x0084E970",
+    "confidence": 0.95,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called by FrameScript_RegisterFunction with GLOBALSINDEX",
+        "method": "call_graph"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_rawseti",
+    "address": "0x0084EA00",
+    "confidence": 0.92,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "23 callers, adjacent to lua_rawset",
+        "method": "caller_count"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pcall",
+    "address": "0x0084EC50",
+    "confidence": 0.97,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 4,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called directly from FrameScript_Execute",
+        "method": "call_graph"
+      },
+      {
+        "level": 2,
+        "evidence": "20 callers",
+        "method": "caller_count"
+      }
+    ],
+    "notes": "4 args. 20 callers. Called directly from anchor.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_getfield",
+    "address": "0x0084E670",
+    "confidence": 0.92,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called from FrameScript_Execute",
+        "method": "call_graph"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_setfield",
+    "address": "0x0084F7A0",
+    "confidence": 0.92,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 3,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called by FrameScript_SetGlobal (0x8191F0) with [0xD3F78C]",
+        "method": "call_graph"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "luaL_loadbuffer",
+    "address": "0x0084F860",
+    "confidence": 0.93,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 4,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Called from FrameScript_Execute, 7 callers",
+        "method": "call_graph"
+      }
+    ],
+    "notes": "7 callers.",
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushvalue",
+    "address": "0x0084DE50",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua 5.1 API cluster 0x84Dxxx-0x84Fxxx",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_isnumber",
+    "address": "0x0084DF20",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua 5.1 API cluster, adjacent to lua_type",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_isstring",
+    "address": "0x0084DF60",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua 5.1 API cluster, adjacent to lua_isnumber",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_toboolean",
+    "address": "0x0084E0B0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua 5.1 type conversion cluster",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_touserdata",
+    "address": "0x0084E1C0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua 5.1 type conversion cluster",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_pushinteger",
+    "address": "0x0084E2D0",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Adjacent to lua_pushnumber in push cluster",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  },
+  {
+    "name": "lua_gettable",
+    "address": "0x0084E600",
+    "confidence": 0.85,
+    "type": "function",
+    "section": ".text",
+    "build": "12340",
+    "args": 2,
+    "calling_convention": "__cdecl",
+    "trust_chain": [
+      {
+        "level": 0,
+        "evidence": "Anchor: FrameScript_Execute (0x819210)",
+        "method": "anchor"
+      },
+      {
+        "level": 1,
+        "evidence": "Lua table access cluster, adjacent to lua_getfield",
+        "method": "module_proximity"
+      }
+    ],
+    "discovered_date": "2026-04-13",
+    "last_verified": "2026-04-13"
+  }
+]

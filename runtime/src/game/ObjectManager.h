@@ -1,0 +1,127 @@
+#pragma once
+#include "Types.h"
+#include <cstdint>
+#include <vector>
+#include <string>
+
+namespace RL::Game::OM {
+
+struct Object {
+    uint64_t guid = 0;
+    uintptr_t ptr = 0;
+    ObjectType type = ObjectType::None;
+    int entry = 0;
+    Vec3 pos{};
+    float facing = 0.f;
+    int health = 0;
+    int maxHealth = 0;
+    int level = 0;
+    uint32_t unitFlags = 0;
+    uint32_t dynamicFlags = 0;
+    int faction = 0;          // UNIT_FIELD_FACTIONTEMPLATE
+    uint64_t unitTarget = 0;  // UNIT_FIELD_TARGET (who they are attacking)
+    float scale = 1.f;
+    std::string name; // optional, expensive
+};
+
+// Thread-safe snapshot with TTL cache
+void Invalidate();
+void Refresh(bool force = false);
+// True after EnumVisibleObjects AVed once this inject — enumvis stays off;
+// linked-list walk continues (list-only mode). Full OM is NOT killed.
+bool EnumIsDead();
+// Packed status for /raijin om and diagnostics:
+// "mode=full|list-only|cold|no-player|total=N|units=N|players=N|gos=N"
+std::string StatusPacked();
+// Dump type histogram + one sample per type to runtime.log.
+void LogTypeSamples(size_t n = 8);
+// Packed "count|guid:entry:x:y:z:dist;..." of Unit objects within maxRange.
+std::string NearbyUnitsPacked(float maxRange = 100.f, size_t maxN = 16);
+// Rotation hostiles (runtime-first, no nameplates / UnitCanAttack):
+// "n|0xGUID:entry:x:y:z:center:edge:flags:hp:mhp|..."
+// Snapshot fields only after Refresh — zero per-unit ObjectPtr from Lua.
+std::string NearbyHostilesPacked(float maxRange = 40.f, size_t maxN = 32);
+size_t Count();
+size_t Count(ObjectType type);
+const Object* At(size_t index1based);
+const Object* AtType(ObjectType type, size_t index1based);
+const Object* ByGuid(uint64_t guid);
+const std::vector<Object>& All();
+
+uint64_t LocalGuid();
+uintptr_t LocalPtr();
+bool InWorld();
+
+// Field accessors (work without full snapshot)
+uintptr_t Ptr(uint64_t guid);
+ObjectType Type(uint64_t guid);
+Vec3 Position(uint64_t guid);
+// Position from a raw CGObject* (no GUID round-trip). Multi-offset + movement scan.
+Vec3 PositionFromPtr(uintptr_t ptr);
+// Local-player pointer path: camera agreement + camera fallback (never freezes nav).
+Vec3 PositionLocalFromPtr(uintptr_t ptr);
+// Pack cached position-layout discovery into buf (for PosProbe).
+void PosLayoutDiag(char* buf, size_t bufN);
+float Facing(uint64_t guid);
+// Combat reach / bounding radius in yards (0 if unreadable).
+// Multi-path: unit field 0x7D4/0x7D0 + descriptor UNIT_FIELD_* (0x10C/0x108).
+float CombatReach(uint64_t guid);
+float BoundingRadius(uint64_t guid);
+float CombatReachFromPtr(uintptr_t ptr);
+float BoundingRadiusFromPtr(uintptr_t ptr);
+int Entry(uint64_t guid);
+int Health(uint64_t guid);
+int MaxHealth(uint64_t guid);
+int Level(uint64_t guid);
+uint32_t UnitFlags(uint64_t guid);
+uint32_t DynamicFlags(uint64_t guid);
+uint32_t ObjectFlags(uint64_t guid);
+uint32_t GameObjectBytes1(uint64_t guid);
+uint32_t Field(uint64_t guid, uint32_t byteOffset);
+// CGObject instance field (NOT descriptor). DialogStatus is InstanceField(g, 0x90).
+uint32_t InstanceField(uint64_t guid, uint32_t byteOffset);
+// UNIT_NPC_FLAGS (descriptor). QUESTGIVER bit = 0x2. Separate from dialog status.
+uint32_t NpcFlags(uint64_t guid);
+// Real client dialog status (DialogStatus enum): field CGObject+0x90, written by
+// CGObject_C::SetQuestGiverStatus (0x744400) from SMSG_QUESTGIVER_STATUS
+// (CGPlayer_C::OnQuestGiverStatus @ 0x6D11C0). Same field CGUnit_C::GetQuestInteractType
+// (0x744640) reads. 0 = none / not yet received; 7/8 = available (!); 9/10 = reward (?).
+int QuestGiverStatus(uint64_t guid);
+// Packed diagnostic: ptr|raw90|st|interact|npcf|type|entry|qtot|...
+std::string QuestGiverDiag(uint64_t guid);
+float Scale(uint64_t guid);
+bool Exists(uint64_t guid);
+
+// Geometry helpers
+float Distance(uint64_t a, uint64_t b);
+float DistancePos(const Vec3& a, const Vec3& b);
+// arcRadians = HALF-angle. Default π/2 = WotLK unit-target face (full 180° front).
+bool IsFacing(uint64_t a, uint64_t b, float arcRadians = 1.5707963f);
+bool IsBehind(uint64_t a, uint64_t b);
+
+// Movement
+void MoveTo(const Vec3& pos);
+void FaceDirection(float radians);
+void ClickPosition(const Vec3& pos);
+
+// Spell cast via native Spell_C_CastSpell (NOT FrameScript — avoids Blizzard UI taint).
+// targetGuid 0 = no explicit target (self / current). Returns true if call did not AV.
+bool CastSpell(int spellId, uint64_t targetGuid = 0);
+
+// Camera / world
+Vec3 CameraPosition();
+int TraceLineEx(const Vec3& start, const Vec3& end, Vec3* hit, uint32_t flags);
+bool TraceLine(const Vec3& start, const Vec3& end, Vec3* hit, uint32_t flags);
+bool WorldToScreen(const Vec3& world, float* sx, float* sy);
+
+// Raw camera fields for a Lua-side world->screen projection (calibratable
+// without a C++ rebuild). 12340 CGCamera layout: +0x08 position, +0x14 the 3x3
+// view matrix (3 rows), +0x40 FOV. `ok` is false when the camera isn't readable.
+struct CamData { Vec3 pos, fwd, right, up; float fov; bool ok; };
+CamData CameraData();
+
+// AFK / input
+void ResetAfk();
+bool GetKeyState(int vkey);
+
+} // namespace RL::Game::OM

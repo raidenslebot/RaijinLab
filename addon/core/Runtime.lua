@@ -159,9 +159,22 @@ function RL:ArmRuntimeSystems()
     if self.Actions and self.Actions.ensure then
         pcall(function() self.Actions.ensure() end)
     end
-    if self.GetObjManagerFrame and self.InitObjectManager
-        and not self:GetObjManagerFrame() then
-        pcall(function() self:InitObjectManager() end)
+    -- Lua OM OnUpdate (GetObjectCount fan) is heavy and crash-prone. Rotation
+    -- uses Runtime AuraSearch/NearbyHostiles only — do NOT start the Lua fan
+    -- unless quest tracking actually needs object_list.
+    do
+        local need_lua_om = false
+        local db = RaijinLabDB
+        if db then
+            if db.track_quest_objects then need_lua_om = true end
+            if db.modules and (db.modules.quest or db.modules.gather or db.modules.grind) then
+                need_lua_om = true
+            end
+        end
+        if need_lua_om and self.GetObjManagerFrame and self.InitObjectManager
+            and not self:GetObjManagerFrame() then
+            pcall(function() self:InitObjectManager() end)
+        end
     end
     -- Watchdog: cheap 1Hz.
     if self.Watchdog and self.Watchdog.start then

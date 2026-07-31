@@ -933,6 +933,26 @@ void Invalidate() {
     // Do NOT clear g_enumDead - once the enum AVs, it stays off until re-inject.
 }
 
+// Static warm/settle state shared with Refresh (reset on /reload).
+static ULONGLONG g_omFirstLocalMs = 0;
+static bool g_omWarmDone = false;
+static bool g_omWasOn = false;
+static int g_omListOnlyLeft = 12;
+static ULONGLONG g_omEnableAt = 0;
+
+void OnLuaReload() {
+    // Called from worker when lua_State pointer changes after a successful
+    // prior Register. Must not walk OM; FrameXML is mid-load.
+    g_omFirstLocalMs = 0;
+    g_omWarmDone = false;
+    g_omWasOn = false;
+    g_omListOnlyLeft = 12;
+    g_omEnableAt = 0;
+    Invalidate();
+    // Soft hostiles path uses its own statics — force a quiet period via enable=0
+    // (caller sets om.enable=0). SoftRefresh checks om.enable.
+}
+
 bool EnumIsDead() { return g_enumDead; }
 
 std::string StatusPacked() {
@@ -1202,17 +1222,20 @@ static int SoftPodsSeh() {
 // NEVER EnumVisibleObjects. MUST use the same hard settle as Refresh —
 // walking the object list during world load hard-crashes (CRASH_LESSONS).
 static void SoftRefreshListOnlyForHostiles() {
-    static ULONGLONG s_firstLocal = 0;
     static ULONGLONG s_last = 0;
     ULONGLONG now = GetTickCount64();
     uint64_t local = SafeGetActive();
     if (!local) {
-        s_firstLocal = 0; // reset settle if we lose player (load/logout)
         return;
     }
-    if (!s_firstLocal) s_firstLocal = now;
-    // Same 6s hard settle as Refresh — not 500ms (crash on world entry).
-    if ((now - s_firstLocal) < 6000ull) return;
+    // Share settle / warm clocks with Refresh — never walk during warm-up.
+    if (!g_omFirstLocalMs) g_omFirstLocalMs = now;
+    if ((now - g_omFirstLocalMs) < 6000ull) return;
+    if (!g_omWarmDone) {
+        if (!g_omEnableAt) g_omEnableAt = now;
+        if ((now - g_omEnableAt) < 1500ull) return;
+        g_omWarmDone = true;
+    }
     if ((now - s_last) < 100ull) return;            // ~10 Hz max
     s_last = now;
     std::lock_guard<std::mutex> lock(g_mu);
@@ -1592,51 +1615,60 @@ void Refresh(bool force) {
     // Policy: long hard settle (no walk), long list-only warm-up, then enum.
     // Single-GUID ObjectPtr/Position still work (no full walk).
     // ============================================================
-    static ULONGLONG s_firstLocal = 0;
-    if (!s_firstLocal) s_firstLocal = now;
-    // Hard settle: NO list walk, NO enum. Empty snapshot is correct here.
+    if (!g_omFirstLocalMs) g_omFirstLocalMs = now;
+    // Hard settle after first local / after reload reset: NO list walk, NO enum.
     constexpr ULONGLONG kOmSettleMs = 6000ull;
-    if ((now - s_firstLocal) < kOmSettleMs) {
+    if ((now - g_omFirstLocalMs) < kOmSettleMs) {
         g_lastRefresh = now;
         return;
     }
 
     // om.enable=0: no walk this call (caller may soft-refresh instead).
-    // CRITICAL: do NOT restart warm-up on every 0→1 edge. Suite thrash used to
-    // flip enable off then on after "delays" — each rising edge re-walked and
-    // hard-crashed ~4–6s after master ON. Warm once per inject after settle.
-    static bool s_wasOmOn = false;
-    static bool s_warmDone = false;
-    static int s_listOnlyLeft = 12;
-    static ULONGLONG s_omEnableAt = 0;
+    // CRITICAL: do NOT restart warm-up on every 0→1 edge within a session.
+    // OnLuaReload() clears g_omWarmDone so post-reload re-enable warms once.
     constexpr int kListOnlyFrames = 12;
-    constexpr ULONGLONG kListOnlyMs = 1500ull; // brief list-only before first enum try
+    constexpr ULONGLONG kListOnlyMs = 1500ull;
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
     if (!omOn) {
-        s_wasOmOn = false;
-        // Keep s_warmDone / s_listOnlyLeft — re-enable must not re-warm from zero.
+        g_omWasOn = false;
         g_lastRefresh = now;
         return;
     }
-    if (!s_wasOmOn) {
-        if (!s_warmDone) {
-            s_omEnableAt = now;
-            s_listOnlyLeft = kListOnlyFrames;
-            RL::Log::Warn("OM first enable -> list-only warm-up (%d frames / %llums)",
-                          kListOnlyFrames, (unsigned long long)kListOnlyMs);
+    if (!g_omWasOn) {
+        if (!g_omWarmDone) {
+            g_omEnableAt = now;
+            g_omListOnlyLeft = kListOnlyFrames;
+            RL::Log::Warn("OM first enable -> idle warm-up (no walk %llums)",
+                          (unsigned long long)kListOnlyMs);
         } else {
             RL::Log::Info("OM re-enable (warm already done, no restart)");
         }
     }
-    s_wasOmOn = true;
+    g_omWasOn = true;
 
-    const bool listOnlyClock = omOn && !s_warmDone && s_omEnableAt
-        && (now - s_omEnableAt) < kListOnlyMs;
-    const bool allowEnum = !g_enumDead && s_listOnlyLeft <= 0 && !listOnlyClock;
-    if (allowEnum || g_enumDead)
-        s_warmDone = true;
+    // WARM-UP: return empty WITHOUT list walk or enum. Live crash 2026-07-31
+    // 14:09: rotation ON the same second as first SafeWalkObjectList after
+    // rebind → ERROR #132 null EIP. Walking while the world/list is still
+    // settling corrupts the client even when SEH "succeeds".
+    const bool listOnlyClock = omOn && !g_omWarmDone && g_omEnableAt
+        && (now - g_omEnableAt) < kListOnlyMs;
+    if (!g_omWarmDone && (listOnlyClock || g_omListOnlyLeft > 0)) {
+        if (g_omListOnlyLeft > 0)
+            --g_omListOnlyLeft;
+        if (!listOnlyClock && g_omListOnlyLeft <= 0)
+            g_omWarmDone = true;
+        g_lastRefresh = now;
+        return; // keep prior snapshot / empty — do not walk
+    }
+    g_omWarmDone = true;
 
-    // MERGE: list walk always (after settle); enum only after warm-up.
+    // Enum is optional and crash-prone on Ascension; default list-only after warm.
+    // Only attempt enum if explicitly enabled and not already latched dead.
+    const bool wantEnum = !g_enumDead
+        && RL::Config::Get("om.enum", "0") == "1";
+    const bool allowEnum = wantEnum;
+
+    // List walk only (after warm). Enum only if om.enum=1.
     g_podCount = 0;
     int listRc = SafeWalkObjectList();
     size_t listCount = g_podCount;
@@ -1670,15 +1702,8 @@ void Refresh(bool force) {
             enumRc = g_lastEnumRc ? g_lastEnumRc : enumRc;
         }
     } else {
-        // List-only warm-up or enum latched off.
-        if (s_listOnlyLeft > 0) {
-            --s_listOnlyLeft;
-            if ((s_listOnlyLeft % 4) == 0) {
-                RL::Log::Info("OM warm-up list-only remaining=%d list=%zu clock=%d",
-                              s_listOnlyLeft, listN, listOnlyClock ? 1 : 0);
-            }
-        }
-        enumRc = g_enumDead ? (g_lastEnumRc ? g_lastEnumRc : (int)0xC0000005) : 1;
+        // Default: list-only (enum off). Restore list pods after optional enum path.
+        enumRc = 1;
         g_podCount = 0;
     }
 

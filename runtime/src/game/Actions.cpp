@@ -361,10 +361,15 @@ static float SpellReadyRemOne(lua_State* L, int id) {
 }
 
 // Live remaining cooldown/GCD (seconds). 0 = ready/unknown. No invent pads.
+// Only treat as "on CD" when rem is in a sane combat band — garbage from a
+// bad nested GetSpellCooldown must never freeze the rotation forever.
 static float SpellReadyRem(lua_State* L, int spellId) {
     float best = SpellReadyRemOne(L, spellId);
     float gcd = SpellReadyRemOne(L, 61304);
-    return (gcd > best) ? gcd : best;
+    float rem = (gcd > best) ? gcd : best;
+    if (rem < 0.05f) return 0.f;
+    if (rem > 30.f) return 0.f; // nonsense → treat as ready (fail open)
+    return rem;
 }
 
 // Run a tiny script ONLY when we are NOT already inside Lua.
@@ -605,9 +610,12 @@ static bool LosClear(uint64_t guid) {
     a.z += 2.f;
     b.z += 2.f;
     Vec3 hit{};
-    // TraceLine returns true if BLOCKED on our OM API.
-    bool blocked = OM::TraceLine(a, b, &hit, 0x100111u);
-    return !blocked;
+    // OM::TraceLineEx: 1 = CLEAR, 0 = BLOCKED, -1 = unknown.
+    // (bool TraceLine returns true on CLEAR — NOT "blocked". 1.10.36 bug:
+    // LosClear treated clear as blocked → every unit cast refused "los".)
+    int rc = OM::TraceLineEx(a, b, &hit, 0x100111u);
+    if (rc < 0) return true;  // unknown: do not invent a wall
+    return rc == 1;           // clear
 }
 
 CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
@@ -616,7 +624,6 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
     uint64_t me = ActiveGuid();
     if (!me) { r.reason = "no_player"; return r; }
 
-    // Live readiness (no invent pads).
     if (g_currentL) {
         float rem = SpellReadyRem(g_currentL, spellId);
         if (rem > 0.05f) { r.reason = "not_ready"; return r; }
@@ -636,18 +643,14 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        // Unit casts: always refuse MEASURED not-facing (never spam client UI).
-        // Undetermined (-1) allows — positions unavailable.
-        if (face == 0) {
+        if (face == 0 && (flags & kCastSkipIfNotFacing)) {
             r.reason = "facing";
             return r;
         }
-        // Unit casts: always LoS when measurable.
-        if (!LosClear(targetGuid)) {
+        if ((flags & kCastCheckLos) && !LosClear(targetGuid)) {
             r.reason = "los";
             return r;
         }
-        (void)flags;
     }
 
     r.ok = true;
@@ -664,11 +667,11 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // RUNTIME AUTHORITY (perfection path):
-    //   1) Live GetSpellCooldown — refuse not_ready before Spell_C (no client UI spam)
-    //   2) Unit face: optional turn, then always refuse measured not-facing
-    //   3) Unit LoS: always refuse measured blocked
-    // No invent delays — only refuse when client state is known-bad.
+    // RUNTIME AUTHORITY:
+    //   1) Live GetSpellCooldown — refuse not_ready before Spell_C
+    //   2) Face: turn if FACE_IF_NEEDED; refuse measured not-facing when SKIP set
+    //   3) LoS: refuse measured blocked when CHECK_LOS set
+    // Fail open on undetermined (no invent walls / freezes).
     if (g_currentL) {
         float rem = SpellReadyRem(g_currentL, spellId);
         if (rem > 0.05f) {
@@ -683,13 +686,12 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        // Always refuse measured not-facing for unit GUID casts (flags optional
-        // for face-turn; skip is default now — never wire a face-fail cast).
-        if (face == 0) {
+        // SKIP_IF_NOT_FACING (default from Lua unit casts): refuse measured only.
+        if (face == 0 && (flags & kCastSkipIfNotFacing)) {
             r.reason = "facing";
             return r;
         }
-        if (!LosClear(targetGuid)) {
+        if ((flags & kCastCheckLos) && !LosClear(targetGuid)) {
             r.reason = "los";
             return r;
         }

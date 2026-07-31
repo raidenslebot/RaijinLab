@@ -1070,6 +1070,32 @@ local _CAST_TO_DISEASE = {
     [49909] = 55095, [49910] = 55095,
 }
 
+-- Drop expired aura bags so long sessions cannot grow without bound.
+local function _prune_aura_bags(now)
+    now = now or ((GetTime and GetTime()) or 0)
+    local n = 0
+    for g, bag in pairs(World._aura_by_guid) do
+        local alive = false
+        if type(bag) == "table" then
+            for k, e in pairs(bag) do
+                if type(e) == "table" then
+                    if (tonumber(e.exp) or 0) <= now then
+                        bag[k] = nil
+                    else
+                        alive = true
+                    end
+                end
+            end
+        end
+        if not alive then
+            World._aura_by_guid[g] = nil
+        else
+            n = n + 1
+        end
+        if n > 256 then break end -- soft cap walk
+    end
+end
+
 function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     local gkey = _guid_key(guid)
     if not gkey then return end
@@ -1078,15 +1104,27 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     if dur < 1 then dur = 15 end
     if dur > 120 then dur = 60 end
     stacks = tonumber(stacks) or 1
-    World._aura_search_cache = nil -- next search must see the applied aura
+    local now = (GetTime and GetTime()) or 0
+    local key = _aura_key(spellId, spellName)
+    -- Only invalidate pack cache when the note is new or meaningfully refreshed.
+    -- Same-guid re-seed every tick was a lag spike (empty cache → full AuraSearch).
+    local prior = key and World._aura_by_guid[gkey] and World._aura_by_guid[gkey][key]
+    local material = true
+    if prior and type(prior) == "table" then
+        local rem = (tonumber(prior.exp) or 0) - now
+        if rem > 2.0 and (tonumber(prior.stacks) or 1) == stacks then
+            material = false
+        end
+    end
+    if material then
+        World._aura_search_cache = nil
+    end
     -- RUNTIME is the authority. Lua cache is diagnostic only.
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
         pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura", gkey, sid, stacks, dur)
     end
-    local key = _aura_key(spellId, spellName)
     if not key then return end
-    local now = (GetTime and GetTime()) or 0
     World._aura_by_guid[gkey] = World._aura_by_guid[gkey] or {}
     World._aura_by_guid[gkey][key] = {
         exp = now + dur,
@@ -1098,6 +1136,12 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     if sid > 0 and spellName and tostring(spellName) ~= "" then
         local nk = "nm:" .. string.lower(tostring(spellName))
         World._aura_by_guid[gkey][nk] = World._aura_by_guid[gkey][key]
+    end
+    -- Periodic prune (not every note).
+    World._aura_prune_t = World._aura_prune_t or 0
+    if now - World._aura_prune_t > 8 then
+        World._aura_prune_t = now
+        pcall(_prune_aura_bags, now)
     end
 end
 
@@ -1121,10 +1165,19 @@ end
 
 -- Push client-visible debuffs (target/focus/mouseover) into runtime notes so
 -- AuraSearch does not re-cast Plague Strike on a unit that already has BP.
+-- Throttled: running this every rotation tick + NoteUnitAura gen-bump was the
+-- main combat lag spike (1.10.34 regression).
 function World.seed_visible_aura_notes(spell_id, aura_name)
     local sid = tonumber(spell_id) or 0
     local nm = tostring(aura_name or "")
     if sid <= 0 and nm == "" then return end
+    local tnow = (GetTime and GetTime()) or 0
+    World._seed_aura_t = World._seed_aura_t or {}
+    local sk = tostring(sid) .. ":" .. string.lower(nm)
+    if World._seed_aura_t[sk] and (tnow - World._seed_aura_t[sk]) < 0.45 then
+        return
+    end
+    World._seed_aura_t[sk] = tnow
     if nm == "" and sid > 0 and GetSpellInfo then
         local ok, n = pcall(GetSpellInfo, sid)
         if ok and n then nm = tostring(n) end
@@ -1148,6 +1201,8 @@ function World.seed_visible_aura_notes(spell_id, aura_name)
                         elseif duration and tonumber(duration) and tonumber(duration) > 0 then
                             rem = tonumber(duration)
                         end
+                        -- Always note on match so runtime pack knows after retarget.
+                        -- NoteUnitAura is free when stacks/exp unchanged (no gen bump).
                         World.note_aura_on_guid(g, sid, name, count or 1, rem)
                         break
                     end
@@ -1185,10 +1240,9 @@ function World.guid_aura_state(guid, spell_id, aura_name)
                         if expirationTime and GetTime then
                             rem = math.max(0, (tonumber(expirationTime) or 0) - GetTime())
                         end
-                        -- Seed runtime so multi-dot pack stays coherent after retarget.
-                        if sid > 0 and rem > 0.5 then
-                            pcall(World.note_aura_on_guid, guid, sid, name, count or 1, rem)
-                        end
+                        -- Do NOT note_aura_on_guid here every eval — that was a
+                        -- gen-bump / pack-cache thrash under multi-dot. Seeding
+                        -- is throttled in seed_visible_aura_notes only.
                         return true, math.max(1, tonumber(count) or 1), rem
                     end
                 end
@@ -2633,18 +2687,18 @@ function World.find_aura_search_targets(opts)
         return {}
     end
 
-    -- Seed runtime notes from client-visible units BEFORE AuraSearch so a
-    -- target that already has Blood Plague is never returned as "missing".
-    if World.seed_visible_aura_notes then
-        pcall(World.seed_visible_aura_notes, spell_id, aura_name)
-    end
-
-    -- Lua-side cache (~80ms) — Engine evaluates aura_search every tick per slot.
+    -- Lua-side cache (~120ms) — Engine evaluates aura_search every tick per slot.
     local tnow = (GetTime and GetTime()) or 0
     local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
     local ac = World._aura_search_cache
-    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.08 and ac.list then
+    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.12 and ac.list then
         return ac.list
+    end
+
+    -- Seed only on cache miss (throttled inside). Never before cache hit —
+    -- that forced NoteUnitAura + gen-bump every frame (1.10.34 lag regression).
+    if World.seed_visible_aura_notes then
+        pcall(World.seed_visible_aura_notes, spell_id, aura_name)
     end
 
     local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "AuraSearch",

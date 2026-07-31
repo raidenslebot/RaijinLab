@@ -241,14 +241,26 @@ void FillPod(Pod* o) {
 
     // Position during enum/list: FIXED offsets only. Full ReadPosOffsets brute
     // scan (0x40..0x900) on every object at world entry AVs/lags character load.
-    // Single-guid Position() still uses the full multi-method path.
+    // Single-guid Position() still uses the multi-method path (no NPC brute).
     if (t == (int)ObjectType::Unit || t == (int)ObjectType::Player ||
         t == (int)ObjectType::GameObject || t == (int)ObjectType::Corpse ||
         t == (int)ObjectType::DynamicObject) {
         float x = Mem::Read<float>(o->ptr + Offsets::O().Position);
         float y = Mem::Read<float>(o->ptr + Offsets::O().Position + 4);
         float z = Mem::Read<float>(o->ptr + Offsets::O().Position + 8);
-        if (x == 0.f && y == 0.f) {
+        // Ascension: many units store XYZ at obj+0xE8 (live scan). Prefer when
+        // classic Position is zero/garbage so multi-dot packs have real yards.
+        auto looks = [](float px, float py) -> bool {
+            return (px != 0.f || py != 0.f) && px > -20000.f && px < 20000.f
+                && py > -20000.f && py < 20000.f;
+        };
+        if (!looks(x, y)) {
+            float ex = Mem::Read<float>(o->ptr + 0xE8);
+            float ey = Mem::Read<float>(o->ptr + 0xEC);
+            float ez = Mem::Read<float>(o->ptr + 0xF0);
+            if (looks(ex, ey)) { x = ex; y = ey; z = ez; }
+        }
+        if (!looks(x, y)) {
             // MovementInfo* +0xD8 common layout (no scan).
             uintptr_t mov = Mem::Read<uintptr_t>(o->ptr + 0xD8);
             if (mov && Mem::Readable(mov)) {
@@ -779,8 +791,10 @@ Vec3 ReadPosOffsets(uintptr_t ptr, bool isLocal) {
     };
 
     // 1) Classic unit field caches (live player: 0x798 works on 1.8.14+ PosProbe).
+    // 0xE8: Ascension live units often store XYZ here (brute scan found it first;
+    // trying it early avoids 700-read scans that hitch frames and stress SEH).
     const uintptr_t fieldOffs[] = {
-        0x798, 0x790, 0x7A0, 0x9B8, 0x808, 0x7E0, 0xA00, 0x8F0, 0x6E0
+        0x798, 0x790, 0x7A0, 0xE8, 0x9B8, 0x808, 0x7E0, 0xA00, 0x8F0, 0x6E0
     };
     for (uintptr_t off : fieldOffs) {
         if (TryReadXYZ(ptr, off, &x, &y, &z) && accept(x, y, z)) {
@@ -825,42 +839,45 @@ Vec3 ReadPosOffsets(uintptr_t ptr, bool isLocal) {
         }
     }
 
-    // 4) Brute scan ONLY as last resort, and NEVER latch it globally (object-
-    // specific garbage offsets were thrashing the shared cache). Log once.
-    // Prefer a hit that agrees with the camera when reading the local player.
+    // 4) Brute scan ONLY as last resort. Cap frequency hard: full 0x40..0x900
+    // walks (~700 SEH reads) on many objects = lag spikes and random AVs under load.
+    // Non-local: skip brute entirely after field/mov paths fail (pod fill uses fixed
+    // offsets; multi-dot does not need per-NPC Position() brute). Local player:
+    // allow a rare scan (rate-limited) then camera fallback.
     static int s_scanLogs = 0;
-    float bestX = 0, bestY = 0, bestZ = 0;
-    uintptr_t bestOff = 0;
-    float camBestX = 0, camBestY = 0, camBestZ = 0;
-    uintptr_t camBestOff = 0;
-    for (uintptr_t off = 0x40; off + 12 <= 0x900; off += 4) {
-        if (!TryReadXYZ(ptr, off, &x, &y, &z)) continue;
-        if (!bestOff) { bestX = x; bestY = y; bestZ = z; bestOff = off; }
-        if (isLocal && AgreesWithCamera(x, y, z)) {
-            camBestX = x; camBestY = y; camBestZ = z; camBestOff = off;
-            break;
-        }
-        if (!isLocal) break; // first continental hit for NPCs
-    }
-    if (camBestOff) {
-        p.x = camBestX; p.y = camBestY; p.z = camBestZ;
-        // Pin only camera-agreed player layouts.
-        g_posMode = 1; g_posA = camBestOff; g_posB = g_posC = 0;
-        if (s_scanLogs < 8) {
-            RL::Log::Warn("ReadPosOffsets: player scan pin obj+0x%X = %.2f,%.2f,%.2f (cam-ok)",
-                          (unsigned)camBestOff, camBestX, camBestY, camBestZ);
-            s_scanLogs++;
-        }
+    static ULONGLONG s_lastBruteMs = 0;
+    ULONGLONG nowBrute = GetTickCount64();
+    if (!isLocal) {
+        // No brute for NPCs — avoid thrashing. Caller keeps last-good snapshot.
         return p;
     }
-    if (bestOff && !isLocal) {
-        p.x = bestX; p.y = bestY; p.z = bestZ;
-        if (s_scanLogs < 8) {
-            RL::Log::Warn("ReadPosOffsets: one-shot scan obj+0x%X = %.2f,%.2f,%.2f (not pinned)",
-                          (unsigned)bestOff, bestX, bestY, bestZ);
-            s_scanLogs++;
+    if (s_lastBruteMs && (nowBrute - s_lastBruteMs) < 500ull) {
+        // Cooldown: fall through to camera fallback below.
+    } else {
+        s_lastBruteMs = nowBrute;
+        float bestX = 0, bestY = 0, bestZ = 0;
+        uintptr_t bestOff = 0;
+        float camBestX = 0, camBestY = 0, camBestZ = 0;
+        uintptr_t camBestOff = 0;
+        for (uintptr_t off = 0x40; off + 12 <= 0x900; off += 4) {
+            if (!TryReadXYZ(ptr, off, &x, &y, &z)) continue;
+            if (!bestOff) { bestX = x; bestY = y; bestZ = z; bestOff = off; }
+            if (AgreesWithCamera(x, y, z)) {
+                camBestX = x; camBestY = y; camBestZ = z; camBestOff = off;
+                break;
+            }
         }
-        return p;
+        if (camBestOff) {
+            p.x = camBestX; p.y = camBestY; p.z = camBestZ;
+            g_posMode = 1; g_posA = camBestOff; g_posB = g_posC = 0;
+            if (s_scanLogs < 4) {
+                RL::Log::Warn("ReadPosOffsets: player scan pin obj+0x%X = %.2f,%.2f,%.2f (cam-ok)",
+                              (unsigned)camBestOff, camBestX, camBestY, camBestZ);
+                s_scanLogs++;
+            }
+            return p;
+        }
+        (void)bestX; (void)bestY; (void)bestZ; (void)bestOff;
     }
 
     // 5) LOCAL PLAYER LAST RESORT: camera position itself. Follow camera is
@@ -946,7 +963,7 @@ static ULONGLONG g_rebindQuietUntil = 0;
 static bool g_omWasOn = false;
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
 static constexpr ULONGLONG kRebindQuietMs = 600ull;   // FrameXML flicker only
-static constexpr ULONGLONG kWalkMinIntervalMs = 80ull; // ~12 Hz max
+static constexpr ULONGLONG kWalkMinIntervalMs = 100ull; // ~10 Hz max (lag: 80→50Hz thrash)
 // EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
 // List-only until this many successful list walks OR this ms after first player
 // IN THE CURRENT WARM EPOCH (must restart after every /reload).
@@ -1510,13 +1527,22 @@ void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
     if (durationSec > 120.f) durationSec = 60.f;
     ULONGLONG now = GetTickCount64();
     ULONGLONG exp = now + (ULONGLONG)(durationSec * 1000.f);
-    g_auraSearchGen++;
+    // Only bump g_auraSearchGen on a REAL change. Seed-every-tick + always-bump
+    // killed the 80ms AuraSearch pack cache → SoftRefresh every rotation frame
+    // (lag spikes + OM thrash / random hard kills). Refreshing an existing note
+    // with similar stacks/exp must be free.
     std::lock_guard<std::mutex> lock(g_auraMu);
     AuraPruneLocked(now);
     for (size_t i = 0; i < g_auraN; ++i) {
         if (g_auras[i].guid == guid && g_auras[i].spellId == spellId) {
+            const bool stacksChg = (g_auras[i].stacks != stacks);
+            // >2s remaining change = meaningful refresh/refresh lag; ignore jitter.
+            const long long dExp = (long long)exp - (long long)g_auras[i].expMs;
+            const bool expChg = (dExp > 2000ll || dExp < -2000ll);
             g_auras[i].stacks = stacks;
-            g_auras[i].expMs = exp;
+            if (exp > g_auras[i].expMs) g_auras[i].expMs = exp; // never shorten on seed
+            else if (expChg) g_auras[i].expMs = exp;
+            if (stacksChg || expChg) g_auraSearchGen++;
             return;
         }
     }
@@ -1526,6 +1552,7 @@ void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
         --g_auraN;
     }
     g_auras[g_auraN++] = { guid, spellId, stacks, exp };
+    g_auraSearchGen++;
 }
 
 void ClearUnitAura(uint64_t guid, int spellId) {
@@ -1571,18 +1598,20 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     if (s_cacheSid == spellId && s_cacheMissing == (wantMissing ? 1 : 0)
         && std::fabs(s_cacheRange - maxRange) < 0.5f && s_cacheMaxN == maxN
         && s_cacheGen == g_auraSearchGen
-        && s_cacheT && (now - s_cacheT) < 80ull && !s_cacheOut.empty()
+        && s_cacheT && (now - s_cacheT) < 120ull && !s_cacheOut.empty()
         && s_cacheOut != "0") {
         return s_cacheOut;
     }
 
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
-    // Always run soft list refresh for multi-dot (does not depend on om.enable).
-    // If om is on, Refresh also runs — soft path is the reliability backbone.
+    // Soft list is the multi-dot backbone (works with om.enable 0 or 1).
+    // Do NOT also force Refresh on the same call — SoftRefresh already ran the
+    // same BuildUnitSnapshotLocked; double walks were a combat lag spike.
     SoftRefreshListOnlyForHostiles();
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
-    if (omOn && (!g_lastRefresh || (now - g_lastRefresh) >= 80ull))
+    // Only Refresh if soft path was quiet for a while (e.g. om just turned on).
+    if (omOn && (!g_lastRefresh || (now - g_lastRefresh) >= 250ull))
         Refresh(false);
 
     Vec3 playerPos = Position(localGuid);

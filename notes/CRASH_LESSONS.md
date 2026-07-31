@@ -151,6 +151,24 @@ FrameXML was still settling after `/reload`.
 authorize enum. Keep `g_everWalkedOk` so multi-dot list soft-path does not
 re-enter the 2s cold settle.
 
+## AuraSearch gen thrash / lag spikes (1.10.35-stable)
+
+**Symptom:** Random hard kills + constant lag spikes while multi-dot runs;
+not tied to /reload.
+
+**Cause:** `seed_visible_aura_notes` + `NoteUnitAura` always bumped
+`g_auraSearchGen`, which invalidated the 80ms AuraSearch pack cache every
+rotation tick → SoftRefresh + full pack rebuild at 40–60Hz. Combined with
+NPC `ReadPosOffsets` brute scans (~700 SEH reads/object) this looks like a
+memory leak and can AV under load.
+
+**Rule:**
+- `NoteUnitAura` bumps gen only on **new** notes or material stacks/exp change
+- Seed visible auras only on cache miss, throttled (~0.45s)
+- Never brute-scan positions for non-local objects
+- SoftRefresh interval ≥100ms; AuraSearch must not double SoftRefresh+Refresh
+  on the same call
+
 ## WorldReadyStrong OR-bug (1.10.27-strong-fix) — FATAL
 
 **Proof:** 2026-07-31 15:00 inject during load. Register `via=strong` with

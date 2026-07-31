@@ -3057,7 +3057,8 @@ local function adaptive_tick_interval()
         end
     end
     local nc = Executor._needs_cache
-    if nc and nc.aura then return 0.016 end -- ~60Hz multi-dot OOC packs
+    -- Multi-dot OOC: ~25Hz is enough; 60Hz + SoftRefresh was pure lag.
+    if nc and nc.aura then return 0.04 end
     return 0.05 -- OOC no target, no aura_search
 end
 

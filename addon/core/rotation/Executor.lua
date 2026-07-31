@@ -1819,66 +1819,83 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Ensure face+LoS then wire. NEVER CastSpell if facing fails (no UI spam).
+    -- Wire via runtime CastSpellEx when available: native face (if Auto Face),
+    -- skip if not facing, optional LoS. NEVER spam the client with refused casts.
     local ok, wire_guid = false, nil
     local last_why = "no_candidate"
+    local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
+    local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
+    local LOS  = (Act.CAST_CHECK_LOS or 8)
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
         if not cg then
             -- skip
         elseif Executor.guid_blacklisted(cg) then
-            last_why = "facing" -- blacklisted (often prior face fail)
+            last_why = "facing"
         else
             if not skip_face_cast and needs_enemy then
-                local facing_ok = true
-                if W and W.is_facing_guid then
-                    facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                end
-                if not facing_ok and want_auto_face then
-                    -- Opt-in Auto Face condition only: turn toward GUID (no TargetUnit).
-                    if W and W.face_guid then pcall(W.face_guid, cg) end
+                local flags = SKIP + LOS
+                if want_auto_face then flags = flags + FACE end
+                local reason = nil
+                if Act.CastSpellEx then
+                    if preserve_selection and Act.CastSpellPreserveSelection then
+                        ok, reason = Act.CastSpellPreserveSelection(cast_sid, cg, flags)
+                    else
+                        ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
+                    end
+                else
+                    -- Legacy runtime: Lua face + hard skip.
+                    local facing_ok = true
                     if W and W.is_facing_guid then
                         facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
                     end
-                end
-                if not facing_ok then
-                    -- No Auto Face, or still not facing after one turn: do NOT wire
-                    -- (avoids "in front of you" spam). Fall through to next candidate/slot.
-                    blacklist_guid(cg, 1.25, "facing_prewire")
-                    last_why = "facing"
-                else
-                    if W and W.is_los_guid and W.is_los_guid(cg) == false then
-                        blacklist_guid(cg, 1.0, "los_prewire")
-                        last_why = "los"
+                    if not facing_ok and want_auto_face and W and W.face_guid then
+                        pcall(W.face_guid, cg)
+                        facing_ok = W.is_facing_guid and W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                    end
+                    if not facing_ok then
+                        ok, reason = false, "facing"
+                    elseif W and W.is_los_guid and W.is_los_guid(cg) == false then
+                        ok, reason = false, "los"
                     else
-                        -- Wire this GUID.
                         if preserve_selection and Act.CastSpellPreserveSelection then
                             ok = Act.CastSpellPreserveSelection(cast_sid, cg)
                         else
                             ok = Act.CastSpell(cast_sid, cg)
                         end
-                        wire_guid = cg
-                        guid = cg
-                        if search then
-                            search.guid = cg
-                            search.token = cand.token
-                            if ctx then ctx.aura_search_hit = search end
-                        end
-                        if ok then break end
-                        last_why = "cast_failed"
-                        blacklist_guid(cg, 0.4, "cast_failed")
+                        reason = ok and "ok" or "cast_fail"
                     end
                 end
-            else
-                if preserve_selection and Act.CastSpellPreserveSelection then
-                    ok = Act.CastSpellPreserveSelection(cast_sid, cg)
-                else
-                    ok = Act.CastSpell(cast_sid, cg)
+                if ok then
+                    wire_guid = cg
+                    guid = cg
+                    if search then
+                        search.guid = cg
+                        search.token = cand.token
+                        if ctx then ctx.aura_search_hit = search end
+                    end
+                    break
                 end
-                wire_guid = cg
-                guid = cg
-                if ok then break end
+                last_why = reason or "cast_fail"
+                if last_why == "facing" or last_why == "los" then
+                    blacklist_guid(cg, 1.25, last_why)
+                else
+                    blacklist_guid(cg, 0.4, last_why)
+                end
+            else
+                local cok = false
+                if preserve_selection and Act.CastSpellPreserveSelection then
+                    cok = Act.CastSpellPreserveSelection(cast_sid, cg)
+                else
+                    cok = Act.CastSpell(cast_sid, cg)
+                end
+                if cok then
+                    ok = true
+                    wire_guid = cg
+                    guid = cg
+                    break
+                end
                 last_why = "cast_failed"
             end
         end

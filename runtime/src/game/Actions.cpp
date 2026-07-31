@@ -358,6 +358,156 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
 
 void SetCurrentLuaState(void* L) { g_currentL = reinterpret_cast<lua_State*>(L); }
 
+// Normalize angle delta into (-pi, pi].
+static float NormPi(float d) {
+    const float pi = 3.14159265f;
+    const float two = 6.2831853f;
+    while (d > pi) d -= two;
+    while (d < -pi) d += two;
+    return d;
+}
+
+bool IsFacingGuid(uint64_t guid, float halfArcRad) {
+    if (!guid) return false;
+    if (halfArcRad <= 0.f) halfArcRad = 1.5707963f;
+    uint64_t me = ActiveGuid();
+    if (!me) return false;
+    // Fail-closed: OM::IsFacing returns false when positions missing.
+    return OM::IsFacing(me, guid, halfArcRad);
+}
+
+bool FaceTowardGuid(uint64_t guid) {
+    if (!guid) return false;
+    SoftHardwareUnlock();
+    if (!Taint::HardwareGatesApplied())
+        Taint::ApplyHardwareGatesOnly();
+    MainThread::PulseFromMainThread();
+
+    uint64_t me = ActiveGuid();
+    if (!me) return false;
+    Vec3 pa = OM::Position(me);
+    Vec3 pb = OM::Position(guid);
+    if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
+        return false;
+
+    // Live facing (0x7AC), not stale 0x7A4.
+    float face = PlayerFacing();
+    if (face > 1e8f || face != face) {
+        face = OM::Facing(me);
+        if (face != face || face < -0.01f || face > 12.f)
+            return false;
+    }
+
+    float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
+    float diff = NormPi(ang - face);
+    if (std::fabs(diff) <= 0.12f)
+        return true; // already on-angle enough for cast cone
+
+    // One TurnByDelta step (capped). Real client turn + CommitMovement.
+    if (diff > 1.4f) diff = 1.4f;
+    if (diff < -1.4f) diff = -1.4f;
+    return TurnByDelta(diff);
+}
+
+static bool LosClear(uint64_t guid) {
+    uint64_t me = ActiveGuid();
+    if (!me || !guid) return true; // undetermined: do not hard-block
+    Vec3 a = OM::Position(me);
+    Vec3 b = OM::Position(guid);
+    if ((a.x == 0.f && a.y == 0.f) || (b.x == 0.f && b.y == 0.f))
+        return true;
+    a.z += 2.f;
+    b.z += 2.f;
+    Vec3 hit{};
+    // TraceLine returns true if BLOCKED on our OM API.
+    bool blocked = OM::TraceLine(a, b, &hit, 0x100111u);
+    return !blocked;
+}
+
+CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
+    CastGateResult r{ false, "no_spell" };
+    if (spellId <= 0) return r;
+    uint64_t me = ActiveGuid();
+    if (!me) { r.reason = "no_player"; return r; }
+
+    if (targetGuid != 0) {
+        Vec3 pb = OM::Position(targetGuid);
+        Vec3 pa = OM::Position(me);
+        if ((pb.x != 0.f || pb.y != 0.f) && (pa.x != 0.f || pa.y != 0.f)) {
+            float dx = pb.x - pa.x, dy = pb.y - pa.y;
+            float dist = std::sqrt(dx * dx + dy * dy);
+            // Soft OOR: classic ~40yd unit casts. Exact range needs spell DB.
+            if (dist > 45.f) { r.reason = "oor"; return r; }
+        }
+
+        bool facing = IsFacingGuid(targetGuid, 1.5707963f);
+        if (!facing && (flags & kCastFaceIfNeeded)) {
+            FaceTowardGuid(targetGuid);
+            facing = IsFacingGuid(targetGuid, 1.5707963f);
+        }
+        if (!facing) {
+            r.reason = "facing";
+            return r;
+        }
+        if (flags & kCastCheckLos) {
+            if (!LosClear(targetGuid)) {
+                r.reason = "los";
+                return r;
+            }
+        }
+    }
+
+    r.ok = true;
+    r.reason = "ok";
+    return r;
+}
+
+CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
+    CastGateResult r{ false, "no_spell" };
+    if (spellId <= 0) return r;
+
+    SoftHardwareUnlock();
+    if (!Taint::HardwareGatesApplied())
+        Taint::ApplyHardwareGatesOnly();
+    MainThread::PulseFromMainThread();
+
+    // Pre-wire gates (face / los). Never call Spell_C when we know the client
+    // will refuse with "in front of you" — that spam freezes the executor.
+    if (targetGuid != 0) {
+        bool facing = IsFacingGuid(targetGuid, 1.5707963f);
+        if (!facing && (flags & kCastFaceIfNeeded)) {
+            FaceTowardGuid(targetGuid);
+            facing = IsFacingGuid(targetGuid, 1.5707963f);
+        }
+        if (!facing && (flags & kCastSkipIfNotFacing)) {
+            r.reason = "facing";
+            RL::Log::Info("CastSpellEx refuse facing id=%d guid=0x%llX",
+                          spellId, (unsigned long long)targetGuid);
+            return r;
+        }
+        if (!facing && !(flags & kCastSkipIfNotFacing) && !(flags & kCastFaceIfNeeded)) {
+            // Default for GUID casts: still skip if not facing (no spam).
+            r.reason = "facing";
+            return r;
+        }
+        if (flags & kCastCheckLos) {
+            if (!LosClear(targetGuid)) {
+                r.reason = "los";
+                return r;
+            }
+        }
+    }
+
+    bool ok = CastSpell(spellId, targetGuid);
+    if (ok) {
+        r.ok = true;
+        r.reason = "ok";
+    } else {
+        r.reason = "cast_fail";
+    }
+    return r;
+}
+
 bool MoveTo(float x, float y, float z) {
     // Forbidden: click-to-move. OM::MoveTo now refuses; kept for ABI only.
     (void)x; (void)y; (void)z;
@@ -367,7 +517,17 @@ bool MoveTo(float x, float y, float z) {
 
 bool FaceDirection(float radians) {
     SoftHardwareUnlock();
+    // Write LIVE facing (0x7AC) AND orientation field (0x7A4). Old code only
+    // wrote 0x7A4 which this client ignores for cast/movement.
+    uintptr_t p = OM::LocalPtr();
+    if (p) {
+        __try {
+            *reinterpret_cast<float*>(p + 0x7AC) = radians;
+            *reinterpret_cast<float*>(p + 0x7A4) = radians;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     OM::FaceDirection(radians);
+    CommitMovement();
     return true;
 }
 

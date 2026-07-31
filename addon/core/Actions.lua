@@ -65,6 +65,25 @@ end
 ------------------------------------------------------------
 -- Spells
 ------------------------------------------------------------
+-- Cast flags (match runtime Actions.h)
+A.CAST_FACE_IF_NEEDED    = 1
+A.CAST_NO_TARGET_CHANGE  = 2
+A.CAST_SKIP_IF_NOT_FACING = 4
+A.CAST_CHECK_LOS         = 8
+
+local function parse_cast_result(res)
+    if res == true or res == 1 or res == "true" then
+        return true, "ok"
+    end
+    if type(res) == "string" then
+        local okb, reason = res:match("^(%d+)|(.+)$")
+        if okb then
+            return okb == "1", reason or "?"
+        end
+    end
+    return false, "cast_fail"
+end
+
 function A.CastSpell(spellId, unitOrGuid)
     if not A.ensure() then
         print("|cff7ec8e3RaijinLab|r CastSpell: no runtime (inject in-world first)")
@@ -82,6 +101,52 @@ function A.CastSpell(spellId, unitOrGuid)
     end
     if res == true or res == 1 or res == "true" then return true end
     return false
+end
+
+-- Authoritative cast: optional native face + skip if not facing + LoS.
+-- Returns ok, reason ("ok"|"facing"|"los"|"oor"|"cast_fail"|...).
+-- flags: A.CAST_FACE_IF_NEEDED | A.CAST_SKIP_IF_NOT_FACING | A.CAST_CHECK_LOS
+function A.CastSpellEx(spellId, unitOrGuid, flags)
+    if not A.ensure() then return false, "no_runtime" end
+    spellId = tonumber(spellId) or 0
+    if spellId <= 0 then return false, "no_spell" end
+    flags = tonumber(flags) or 0
+    local g = guid_of(unitOrGuid)
+    local res = rt("CastSpellEx", spellId, g or 0, flags)
+    if type(res) ~= "string" then
+        -- Old runtime: fall back to plain CastSpell
+        local ok = A.CastSpell(spellId, unitOrGuid)
+        return ok, ok and "ok" or "cast_fail"
+    end
+    return parse_cast_result(res)
+end
+
+function A.CanCast(spellId, unitOrGuid, flags)
+    if not A.ensure() then return false, "no_runtime" end
+    spellId = tonumber(spellId) or 0
+    if spellId <= 0 then return false, "no_spell" end
+    flags = tonumber(flags) or 0
+    local g = guid_of(unitOrGuid)
+    local res = rt("CanCast", spellId, g or 0, flags)
+    if type(res) ~= "string" then return true, "ok" end -- unknown API: allow
+    return parse_cast_result(res)
+end
+
+function A.FaceTowardGuid(unitOrGuid)
+    if not A.ensure() then return false end
+    local g = guid_of(unitOrGuid)
+    if not g then return false end
+    local res = rt("FaceTowardGuid", g)
+    return res == true or res == 1 or res == "true"
+end
+
+function A.IsFacingGuid(unitOrGuid, halfArc)
+    if not A.ensure() then return nil end
+    local g = guid_of(unitOrGuid)
+    if not g then return false end
+    local res = rt("IsFacingGuid", g, halfArc or 1.5707963)
+    if res == nil then return nil end
+    return res == true or res == 1 or res == "true"
 end
 
 function A.CastSpellByName(name, unitOrGuid)
@@ -157,11 +222,17 @@ end
 -- Snapshot + cast + restore selection when preserveSelection is true.
 -- Used by multi-dot with acquire_target OFF so the client target never sticks
 -- on the cast victim.
-function A.CastSpellPreserveSelection(spellId, unitOrGuid)
+function A.CastSpellPreserveSelection(spellId, unitOrGuid, flags)
     local had = UnitExists and UnitExists("target")
     local prev = (had and UnitGUID and UnitGUID("target")) or nil
-    local ok = A.CastSpell(spellId, unitOrGuid)
-    if not ok then return false end
+    local ok, reason
+    if flags ~= nil and A.CastSpellEx then
+        ok, reason = A.CastSpellEx(spellId, unitOrGuid, flags)
+    else
+        ok = A.CastSpell(spellId, unitOrGuid)
+        reason = ok and "ok" or "cast_fail"
+    end
+    if not ok then return false, reason end
     -- Immediate restore (Spell_C may select mid-call).
     if had and prev then
         local cur = (UnitExists and UnitExists("target") and UnitGUID and UnitGUID("target")) or nil
@@ -182,7 +253,7 @@ function A.CastSpellPreserveSelection(spellId, unitOrGuid)
             A.ClearTarget()
         end
     end
-    return true
+    return true, reason or "ok"
 end
 
 function A.Attack()

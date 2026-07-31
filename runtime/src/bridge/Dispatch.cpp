@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.4-regfix";
+const char* kVersion = "1.10.5-cancast";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1005,6 +1005,41 @@ static int Handle(lua_State* L, const char* name) {
         Actions::SetCurrentLuaState(nullptr);
         RL::Log::Info("CastSpell result id=%d ok=%d", spellId, (int)ok);
         return PushBool(L, ok);
+    }
+    // Structured cast path: "1|ok" or "0|facing|los|oor|cast_fail|..."
+    // flags: 1=FACE_IF_NEEDED, 4=SKIP_IF_NOT_FACING, 8=CHECK_LOS
+    if (!std::strcmp(name, "CastSpellEx") || !std::strcmp(name, "CastSpellGuid")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        uint64_t g = parseGuidArg(3);
+        uint32_t flags = (uint32_t)optnumber(L, 4, 0.0);
+        if (spellId <= 0) return PushString(L, "0|no_spell");
+        RL::Game::MainThread::PulseFromMainThread();
+        Actions::SetCurrentLuaState(L);
+        auto r = Actions::CastSpellEx(spellId, g, flags);
+        Actions::SetCurrentLuaState(nullptr);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
+        RL::Log::Info("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
+                      spellId, (unsigned long long)g, (unsigned)flags, buf);
+        return PushString(L, buf);
+    }
+    if (!std::strcmp(name, "CanCast")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        uint64_t g = parseGuidArg(3);
+        uint32_t flags = (uint32_t)optnumber(L, 4, 0.0);
+        auto r = Actions::CanCast(spellId, g, flags);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
+        return PushString(L, buf);
+    }
+    if (!std::strcmp(name, "FaceTowardGuid") || !std::strcmp(name, "FaceGuid")) {
+        uint64_t g = parseGuidArg(2);
+        return PushBool(L, g && Actions::FaceTowardGuid(g));
+    }
+    if (!std::strcmp(name, "IsFacingGuid")) {
+        uint64_t g = parseGuidArg(2);
+        float arc = (float)optnumber(L, 3, 1.5707963);
+        return PushBool(L, g && Actions::IsFacingGuid(g, arc));
     }
     // Diagnostic: player guid/ptr for cast debugging
     if (!std::strcmp(name, "DiagPlayer")) {

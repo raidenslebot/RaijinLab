@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.9-worldready";
+const char* kVersion = "1.10.13-recover";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -617,21 +617,22 @@ static int Handle(lua_State* L, const char* name) {
         return PushString(L, buf);
     }
     if (!std::strcmp(name, "NearbyUnits")) {
-        if (!OmEnabled()) return PushString(L, "0");
+        // NEVER gate on OmEnabled — rotation multi-dot must see units with no
+        // client target even while suite freezes om.enable. Soft list-only inside.
         float range = (float)optnumber(L, 2, 80.0);
         double maxN = optnumber(L, 3, 12.0);
         if (range < 5.f) range = 5.f;
         if (range > 200.f) range = 200.f;
         if (maxN < 1) maxN = 1;
         if (maxN > 32) maxN = 32;
-        OM::Refresh(false);
         auto s = OM::NearbyUnitsPacked(range, (size_t)maxN);
         return PushString(L, s.c_str());
     }
     // Rotation hostiles: one call, snapshot fields, no nameplates / Unit*.
     // Format: n|0xGUID:entry:x:y:z:center:edge:flags:hp:mhp|...
+    // CRITICAL: do NOT gate on OmEnabled — that made multi-dot blind and forced
+    // mouseover/target Unit* crutches (instant only while hovering).
     if (!std::strcmp(name, "NearbyHostiles") || !std::strcmp(name, "GetNearbyHostiles")) {
-        if (!OmEnabled()) return PushString(L, "0");
         float range = (float)optnumber(L, 2, 40.0);
         double maxN = optnumber(L, 3, 32.0);
         if (range < 3.f) range = 3.f;
@@ -640,6 +641,44 @@ static int Handle(lua_State* L, const char* name) {
         if (maxN > 48) maxN = 48;
         auto s = OM::NearbyHostilesPacked(range, (size_t)maxN);
         return PushString(L, s.c_str());
+    }
+    // Runtime-first multi-dot: units that pass basic castability + aura filter.
+    // Args: range, spellId, state(0=missing 1=present), maxN
+    // Format: n|0xGUID:entry:center:edge:face:hp:mhp|...
+    if (!std::strcmp(name, "AuraSearch") || !std::strcmp(name, "FindAuraSearch")) {
+        float range = (float)optnumber(L, 2, 40.0);
+        int spellId = (int)optnumber(L, 3, 0.0);
+        int state = (int)optnumber(L, 4, 0.0); // 0 missing, 1 present
+        double maxN = optnumber(L, 5, 8.0);
+        if (range < 3.f) range = 3.f;
+        if (range > 100.f) range = 100.f;
+        if (maxN < 1) maxN = 1;
+        if (maxN > 16) maxN = 16;
+        auto s = OM::AuraSearchPacked(range, spellId, state == 0, (size_t)maxN);
+        return PushString(L, s.c_str());
+    }
+    // CLEU / cast evidence → runtime aura table (GUID authority for multi-dot).
+    if (!std::strcmp(name, "NoteUnitAura")) {
+        uint64_t g = GuidArg(L, 2);
+        int spellId = (int)optnumber(L, 3, 0.0);
+        int stacks = (int)optnumber(L, 4, 1.0);
+        float dur = (float)optnumber(L, 5, 21.0);
+        if (g && spellId > 0) OM::NoteUnitAura(g, spellId, stacks, dur);
+        return PushBool(L, true);
+    }
+    if (!std::strcmp(name, "ClearUnitAura")) {
+        uint64_t g = GuidArg(L, 2);
+        int spellId = (int)optnumber(L, 3, 0.0);
+        if (g && spellId > 0) OM::ClearUnitAura(g, spellId);
+        return PushBool(L, true);
+    }
+    if (!std::strcmp(name, "HasUnitAura")) {
+        uint64_t g = GuidArg(L, 2);
+        int spellId = (int)optnumber(L, 3, 0.0);
+        int stacks = 0;
+        bool has = g && spellId > 0 && OM::HasUnitAura(g, spellId, &stacks);
+        if (!has) return PushNumber(L, 0);
+        return PushNumber(L, stacks > 0 ? stacks : 1);
     }
     if (!std::strcmp(name, "ObjectFacing"))
         // Facing needs NO OM enumeration, exactly like ObjectPosition: OM::Facing

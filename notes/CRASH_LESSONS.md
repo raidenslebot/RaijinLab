@@ -27,26 +27,38 @@ run on the same frames as:
 2. Suite master ON
 3. Inject / re-register
 
+## Suite-on force-enable (2026-07-31, CRITICAL)
+
+**Cause:** `Master.start_all` correctly set `om.enable=0` and scheduled arm, then
+`start_module("quest")` → `Suite.start()` **immediately** called
+`SetSystemVar("om.enable","1")` on the same frame. PEW `ArmRuntimeSystems`
+delayed timers could also re-enable mid-warm. Client hard-crashed.
+
+**Rule:** Only `Master.start_all` timers may re-enable OM after suite-on.
+- `Suite.start` must NEVER set `om.enable` or `InitObjectManager`
+- `Suite.ensure_om` / `tick` fail-closed while `Master.in_suite_warm()`
+- PEW `enable_om` timers must check `in_suite_warm` / `_om_gen`
+- Runtime rising-edge `om.enable` always restarts list-only warm-up
+
 ## Mandatory stagger (current policy)
 
 | When | What is allowed |
 |------|-----------------|
 | Inject | `om.enable=0`, no walks |
-| First 5s after local GUID | Runtime `Refresh` returns empty (no list/enum) |
-| PEW | Soft-arm only after **6s** (HW gates, no OM walk) |
-| Soft-arm | `om.enable` still 0 for **3s**, Lua OM frame after **5s** |
-| Suite ON | Force `om.enable=0`, destroy Lua OM frame |
-| Suite +4s | `om.enable=1` (native list-only warm-up begins) |
-| Suite +5.5s | Lua `InitObjectManager` |
-| Suite +8s | Surveyor |
-| After om.enable | **16** list-only frames **and** **4s** wall-clock before enum |
+| First 6s after local GUID | Runtime `Refresh` returns empty (no list/enum) |
+| PEW soft-arm | HW gates; `om.enable` still 0 for **5s**, Lua OM after **7s** |
+| Suite ON | Force `om.enable=0`, destroy Lua OM frame, bump `_om_gen` |
+| Suite +6s | `om.enable=1` (native list-only warm-up begins) |
+| Suite +8s | Lua `InitObjectManager` |
+| Suite +12s | Surveyor |
+| After om.enable | **24** list-only frames **and** **6s** wall-clock before enum |
 
 ## Never
 
-- `om.enable=1` on the suite-on frame
+- `om.enable=1` on the suite-on frame (including Suite.start / ChatHandler)
 - `InitObjectManager` on the suite-on frame
 - `Refresh(true)` / force enum from suite start
-- `Suite.ensure_om()` bypassing the warm window
+- `Suite.ensure_om()` bypassing `in_suite_warm`
 - Auto selftest on the arm frame (delay ≥12s)
 - Reading unit descriptor tails on GO/item/container pods
 - VirtualQuery in ObjectPtr hot path
@@ -76,3 +88,25 @@ Runtime now owns:
 
 Auto Face remains an opt-in slot condition (sets FACE_IF_NEEDED). Without it,
 SKIP_IF_NOT_FACING still prevents spam — slot waits until you face.
+
+## Multi-dot / aura_search (1.10.11–1.10.12) — FUNDAMENTAL
+
+**Symptom:** Icy Touch only fired with a client target; acquire-off snapped
+selection; rotation froze after failed IT; enemies_in_range went dead.
+
+**Root causes (fixed):**
+1. **Dispatch gated NearbyHostiles on om.enable** — soft list never ran; only
+   mouseover/Unit* worked (instant while hovering).
+2. **Empty hostiles packs were cached** — enemies_in_range stayed 0.
+3. **Spell_C returns true without land** — long pending/GCD locked ALL lower
+   slots (IT priority loop freeze).
+4. **Long GUID blacklists / not_ready holds** — multi-dot could not recover.
+
+**Rules (permanent):**
+- Rotation discovery / hostility / face / cast-by-GUID = **runtime only**
+- Acquire OFF → Spell_C(guid) + restore selection; never Act.Target
+- Multi-dot wire without evidence → provisional GCD ≤ **80ms**, FAIL frees now,
+  phantom frees next tick (never multi-second list freeze)
+- Cast fail → **same-tick priority fallthrough** (clear provisional GCD)
+- Never cache empty NearbyHostiles packs
+- GUID blacklist cap **0.6s**

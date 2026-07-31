@@ -154,15 +154,30 @@ function RL:ArmRuntimeSystems()
         pcall(function() self.Actions.ensure() end)
     end
     -- Stagger: enable native OM pack, then Lua object_list OnUpdate.
+    local arm_gen = (self.Master and self.Master._om_gen) or 0
+    local function suite_owns_om()
+        -- Master.start_all freezes OM and schedules its own arm. Any PEW-arm
+        -- timer that fires during that window must NOT re-enable om.enable —
+        -- that race hard-crashed suite enable (2026-07-31).
+        local M = self.Master
+        if not M then return false end
+        if M.in_suite_warm and M.in_suite_warm() then return true end
+        -- Generation bumped on each start_all; stale PEW timers see mismatch.
+        if M._om_gen and arm_gen ~= 0 and M._om_gen ~= arm_gen then
+            return true
+        end
+        return false
+    end
     local function enable_om()
         if not self:HasRuntime() then return end
+        if suite_owns_om() then return end
         pcall(function()
             self:RuntimeCall("SetSystemVar", "om.enable", "1")
         end)
     end
     local function start_lua_om()
         if not self:HasRuntime() then return end
-        -- If suite just started, Master owns the stagger — do not double-start.
+        if suite_owns_om() then return end
         local M = self.Master
         if M and M.enabled and M.enabled() and M.suite_om_safe
             and not M.suite_om_safe() then
@@ -174,11 +189,11 @@ function RL:ArmRuntimeSystems()
         end
     end
     if C_Timer and C_Timer.After then
-        C_Timer.After(3.0, enable_om)
-        C_Timer.After(5.0, start_lua_om)
+        -- Longer PEW delays so a quick suite-on after inject never races.
+        C_Timer.After(5.0, enable_om)
+        C_Timer.After(7.0, start_lua_om)
     else
-        enable_om()
-        start_lua_om()
+        -- No timer: leave OM off (single-GUID still works). Safer than crash.
     end
     -- Watchdog: cheap 1Hz; OK after soft arm.
     if self.Watchdog and self.Watchdog.start then

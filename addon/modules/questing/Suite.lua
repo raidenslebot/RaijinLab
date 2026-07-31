@@ -176,20 +176,22 @@ local function set_state(s)
 end
 
 -- ---- object manager: make sure it is enumerating -------------------------
--- NEVER force om.enable / InitObjectManager during suite-on warm window.
--- That path hard-crashed the client after login (OM walk + Lua enum same frame).
+-- CRASH LESSON (suite-on, permanent): never force om.enable / InitObjectManager
+-- while Master is still in the suite-on warm window. Suite.start used to call
+-- SetSystemVar("om.enable","1") on the same frame Master froze OM — that was
+-- the hard-crash after enabling the suite. Master owns staggered arm only.
 local function ensure_om()
     if not RaijinLab then return end
     local M = RaijinLab.Master
-    if M and M.suite_om_safe and not M.suite_om_safe() then
-        return -- Master owns the staggered arm
-    end
+    -- Fail-closed during suite-on warm: Master owns staggered arm only.
+    if M and M.in_suite_warm and M.in_suite_warm() then return end
+    if M and M.suite_om_safe and not M.suite_om_safe() then return end
     if RaijinLab.RuntimeCall then
-        RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
+        pcall(function() RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1") end)
     end
     if RaijinLab.GetObjManagerFrame and RaijinLab.InitObjectManager
         and not RaijinLab:GetObjManagerFrame() then
-        RaijinLab:InitObjectManager()
+        pcall(function() RaijinLab:InitObjectManager() end)
     end
 end
 
@@ -2398,6 +2400,14 @@ function Suite.tick()
     if not has_runtime() then
         return set_state("need_runtime: inject tools\\inject.bat in-world, then /reload")
     end
+
+    -- Suite-on warm: idle quietly. Empty world is SUCCESS, not a bug.
+    local M = RaijinLab.Master
+    if M and M.in_suite_warm and M.in_suite_warm() then
+        local eta = M.suite_om_eta and M.suite_om_eta() or 0
+        return set_state(string.format("warming_om: %.0fs (no world walk yet)", eta or 0))
+    end
+
     local px = ppos()
     if not px then
         return set_state("need_position: ObjectPosition(player) nil - wait for OM arm or re-inject")
@@ -2599,6 +2609,11 @@ end
 
 -- ---- lifecycle -----------------------------------------------------------
 function Suite.start()
+    -- Re-entrancy: Master.start_all -> start_module("quest") -> Suite.start.
+    -- Must never call start_all again from here (infinite loop + double arm).
+    if Suite._starting then return end
+    Suite._starting = true
+
     -- Do not call Suite.stop() first when already running - that printed OFF
     -- then ON and briefly zeroed modules.quest, which looked like a no-op.
     if Suite._t or Suite._f then
@@ -2613,13 +2628,26 @@ function Suite.start()
     RaijinLabDB = RaijinLabDB or {}
     RaijinLabDB.modules = RaijinLabDB.modules or {}
     RaijinLabDB.modules.quest = true
-    -- Master OFF suppresses every tick. quest on must raise the gate.
-    RaijinLabDB.master = true
     cfg().enabled = true
-    ensure_om()
-    if RaijinLab.RuntimeCall then
-        pcall(function() RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1") end)
+
+    -- Master OFF suppresses every tick. Raise the gate ONLY via Master.start_all
+    -- so the suite-on OM warm window is installed. Never flip master=true raw
+    -- and never force om.enable=1 here (that hard-crashed on suite enable).
+    local M = RaijinLab.Master
+    if M and M.suppressed and M.suppressed() and M.start_all then
+        Suite._starting = false
+        pcall(M.start_all, "quest_suite_start")
+        -- start_all -> start_module("quest") re-enters Suite.start when master is on.
+        -- If ticker already exists, we are done. Otherwise fall through only if
+        -- master is now on (start_all partially ran without re-entering us).
+        if Suite._t or Suite._f then return end
+        if M.suppressed and M.suppressed() then
+            print("|cffff5555RaijinLab|r quest start aborted: master still OFF")
+            return
+        end
+        Suite._starting = true
     end
+
     -- Always have a disk log for the session (Debug tab alone is not enough).
     if RaijinLab.DevLog and RaijinLab.DevLog.start then pcall(RaijinLab.DevLog.start) end
     if RaijinLab.Scheduler and RaijinLab.Scheduler.start then pcall(RaijinLab.Scheduler.start) end
@@ -2646,6 +2674,7 @@ function Suite.start()
     ef:SetScript("OnEvent", on_event)
     Suite._events = ef
     -- Drive tick. 0.3 s is responsive without hammering the OM queries.
+    -- First ticks during suite warm call ensure_om (no-op) and skip heavy OM.
     if C_Timer and C_Timer.NewTicker then
         Suite._t = C_Timer.NewTicker(0.3, Suite.tick)
     else
@@ -2660,11 +2689,14 @@ function Suite.start()
     qlog("start", {
         runtime = tostring(RaijinLab.RuntimeVersion and RaijinLab:RuntimeVersion() or "?"),
         master = tostring(RaijinLabDB.master ~= false),
+        om_safe = tostring(M and M.suite_om_safe and M.suite_om_safe() or false),
     })
-    local master_on = not (RaijinLab.Master and RaijinLab.Master.suppressed and RaijinLab.Master.suppressed())
+    local master_on = not (M and M.suppressed and M.suppressed())
     print("|cff7ec8e3RaijinLab|r questing |cff55ff55ON|r  master="
-        .. (master_on and "|cff55ff55ON|r" or "|cffff5555OFF|r"))
+        .. (master_on and "|cff55ff55ON|r" or "|cffff5555OFF|r")
+        .. "  (OM warms ~6s — empty world is normal until then)")
     print("|cff7ec8e3RaijinLab|r /raijin quest status  |  log: Logs/raijinlab_dev.log")
+    Suite._starting = false
 end
 
 function Suite.stop()

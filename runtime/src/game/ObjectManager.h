@@ -40,7 +40,18 @@ std::string NearbyUnitsPacked(float maxRange = 100.f, size_t maxN = 16);
 // Rotation hostiles (runtime-first, no nameplates / UnitCanAttack):
 // "n|0xGUID:entry:x:y:z:center:edge:flags:hp:mhp|..."
 // Snapshot fields only after Refresh — zero per-unit ObjectPtr from Lua.
+// NEVER requires om.enable (soft list-only when frozen).
 std::string NearbyHostilesPacked(float maxRange = 40.f, size_t maxN = 32);
+
+// Runtime aura table (CLEU/cast notes). Multi-dot MUST NOT use UnitDebuff tokens.
+void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec);
+void ClearUnitAura(uint64_t guid, int spellId);
+bool HasUnitAura(uint64_t guid, int spellId, int* outStacks = nullptr);
+
+// Runtime-first multi-dot discovery (no mouseover / UnitExists / UnitCanAttack):
+// living attackable units in range matching aura missing (wantMissing) or present.
+// "n|0xGUID:entry:center:edge:face:hp:mhp|..." sorted face then dist.
+std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN = 8);
 size_t Count();
 size_t Count(ObjectType type);
 const Object* At(size_t index1based);

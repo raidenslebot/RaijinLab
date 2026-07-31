@@ -1007,12 +1007,18 @@ void LogTypeSamples(size_t n) {
     }
 }
 
+// Forward: defined below with hostiles soft path (list-only, no enum).
+static void SoftRefreshListOnlyForHostiles();
+
 // Packed nearby units for /raijin nearby: "n|guid:entry:x:y:z:dist|..."
 std::string NearbyUnitsPacked(float maxRange, size_t maxN) {
-    // Resolve local player BEFORE taking g_mu (LocalGuid/Position take no g_mu, but
-    // Refresh does - call Refresh first, then lock only for snapshot read).
-    Refresh(false);
+    // Soft list-only when om frozen — same rule as hostiles (rotation needs units).
     uint64_t localGuid = SafeGetActive();
+    if (!localGuid) return "0";
+    if (RL::Config::Get("om.enable", "1") != "0")
+        Refresh(false);
+    else
+        SoftRefreshListOnlyForHostiles();
     Vec3 playerPos{};
     bool havePlayer = false;
     if (localGuid) {
@@ -1175,18 +1181,66 @@ static bool SnapshotLooksHostileNpc(const Object& o, uint64_t localGuid) {
     return false;
 }
 
+// List-only soft refresh for rotation discovery when om.enable=0.
+// NEVER EnumVisibleObjects. Fast: 0.5s settle after first local, ~20Hz.
+static void SoftRefreshListOnlyForHostiles() {
+    static ULONGLONG s_firstLocal = 0;
+    static ULONGLONG s_last = 0;
+    ULONGLONG now = GetTickCount64();
+    uint64_t local = SafeGetActive();
+    if (!local) return;
+    if (!s_firstLocal) s_firstLocal = now;
+    if ((now - s_firstLocal) < 500ull) return;      // brief settle only
+    if ((now - s_last) < 50ull) return;             // ~20 Hz multi-dot
+    s_last = now;
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_podCount = 0;
+    int listRc = SafeWalkObjectList();
+    if (listRc != 1 || g_podCount == 0) {
+        return; // keep prior snapshot
+    }
+    PodsToVectors();
+    g_lastRefresh = now;
+}
+
+// ---- Runtime aura table (multi-dot authority; no UnitDebuff tokens) ----
+struct AuraNote {
+    uint64_t guid = 0;
+    int spellId = 0;
+    int stacks = 1;
+    ULONGLONG expMs = 0;
+};
+static constexpr size_t kAuraCap = 512;
+static AuraNote g_auras[kAuraCap];
+static size_t g_auraN = 0;
+static std::mutex g_auraMu;
+
+static void AuraPruneLocked(ULONGLONG now) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_auraN; ++i) {
+        if (g_auras[i].expMs > now && g_auras[i].guid && g_auras[i].spellId > 0)
+            g_auras[w++] = g_auras[i];
+    }
+    g_auraN = w;
+}
+
 std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     // ONE Refresh, then pure snapshot math. Lua must not ObjectPtr/ObjectHealth
     // each unit — that path crashed and lagged the client.
-    // NEVER force Refresh. Empty during settle/warm is correct — multi-dot
-    // falls back to current target until the pack is live.
+    //
+    // FUNDAMENTAL multi-dot rule: hostiles pack MUST work without a client
+    // target. Returning empty whenever om.enable=0 made aura_search blind and
+    // forced the user to manually select a mob before Icy Touch would fire.
+    // Soft path: list-only walk after settle even when suite froze om.enable
+    // (never EnumVisibleObjects while disabled — that is the crash vector).
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
-    // If OM is disabled, answer empty without walking (suite-on may briefly
-    // hold om.enable=0 while modules start).
-    if (RL::Config::Get("om.enable", "1") == "0")
-        return "0";
-    Refresh(false);
+    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    if (omOn) {
+        Refresh(false);
+    } else {
+        SoftRefreshListOnlyForHostiles();
+    }
     // Still empty after settle skip — safe empty answer (no force Refresh).
     {
         std::lock_guard<std::mutex> lock(g_mu);
@@ -1299,6 +1353,155 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     return std::string(out);
 }
 
+void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
+    if (!guid || spellId <= 0) return;
+    if (stacks < 1) stacks = 1;
+    if (durationSec < 1.f) durationSec = 15.f;
+    if (durationSec > 120.f) durationSec = 60.f;
+    ULONGLONG now = GetTickCount64();
+    ULONGLONG exp = now + (ULONGLONG)(durationSec * 1000.f);
+    std::lock_guard<std::mutex> lock(g_auraMu);
+    AuraPruneLocked(now);
+    for (size_t i = 0; i < g_auraN; ++i) {
+        if (g_auras[i].guid == guid && g_auras[i].spellId == spellId) {
+            g_auras[i].stacks = stacks;
+            g_auras[i].expMs = exp;
+            return;
+        }
+    }
+    if (g_auraN >= kAuraCap) {
+        // Drop oldest
+        for (size_t i = 1; i < g_auraN; ++i) g_auras[i - 1] = g_auras[i];
+        --g_auraN;
+    }
+    g_auras[g_auraN++] = { guid, spellId, stacks, exp };
+}
+
+void ClearUnitAura(uint64_t guid, int spellId) {
+    if (!guid || spellId <= 0) return;
+    std::lock_guard<std::mutex> lock(g_auraMu);
+    size_t w = 0;
+    for (size_t i = 0; i < g_auraN; ++i) {
+        if (g_auras[i].guid == guid && g_auras[i].spellId == spellId)
+            continue;
+        g_auras[w++] = g_auras[i];
+    }
+    g_auraN = w;
+}
+
+bool HasUnitAura(uint64_t guid, int spellId, int* outStacks) {
+    if (outStacks) *outStacks = 0;
+    if (!guid || spellId <= 0) return false;
+    ULONGLONG now = GetTickCount64();
+    std::lock_guard<std::mutex> lock(g_auraMu);
+    AuraPruneLocked(now);
+    for (size_t i = 0; i < g_auraN; ++i) {
+        if (g_auras[i].guid == guid && g_auras[i].spellId == spellId) {
+            if (outStacks) *outStacks = g_auras[i].stacks;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN) {
+    // RUNTIME-FIRST multi-dot. No mouseover, no UnitExists, no UnitCanAttack.
+    // Pool = living attackable units from OM (same basic hostility as hostiles pack).
+    // Aura filter uses runtime NoteUnitAura table only.
+    if (spellId <= 0) return "0";
+    uint64_t localGuid = SafeGetActive();
+    if (!localGuid) return "0";
+    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    if (omOn) Refresh(false);
+    else SoftRefreshListOnlyForHostiles();
+
+    Vec3 playerPos{};
+    bool havePlayer = false;
+    s_playerFaction = 0;
+    playerPos = Position(localGuid);
+    if (playerPos.x != 0.f || playerPos.y != 0.f) havePlayer = true;
+    uintptr_t pp = Ptr(localGuid);
+    if (pp && AcceptObjPtr(pp)) {
+        uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
+        if (d && AcceptObjPtr(d))
+            s_playerFaction = Mem::Read<int>(d + Offsets::D().FactionTemplate);
+    }
+    float playerFace = Facing(localGuid);
+    bool haveFace = LooksLikeFacingEarly(playerFace);
+
+    struct Hit {
+        uint64_t g; int entry;
+        float center, edge;
+        int face, hp, mhp;
+    };
+    std::vector<Hit> cands;
+    cands.reserve(48);
+
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        auto consider = [&](const Object& o) {
+            if (o.guid == localGuid) return;
+            if (!SnapshotLooksHostileNpc(o, localGuid)) return;
+            // Dead / zero hp
+            if (o.maxHealth > 0 && o.health <= 0) return;
+            if (o.unitFlags & kUF_NOT_SELECTABLE) return;
+            float cx = 999.f, edge = 999.f;
+            int face = 1;
+            if (havePlayer) {
+                float dx = o.pos.x - playerPos.x;
+                float dy = o.pos.y - playerPos.y;
+                cx = std::sqrt(dx * dx + dy * dy);
+                if (cx > maxRange + 1.f) return;
+                edge = cx - 3.f;
+                if (edge < 0.f) edge = 0.f;
+                if (haveFace)
+                    face = IsFacingPos(playerFace, playerPos.x, playerPos.y,
+                                       o.pos.x, o.pos.y, kDefaultCastFaceArc) ? 1 : 0;
+            }
+            // Aura filter: missing = no runtime note; present = has note.
+            int stacks = 0;
+            bool has = HasUnitAura(o.guid, spellId, &stacks);
+            // HasUnitAura locks g_auraMu — cannot call while holding g_mu if
+            // nested order wrong. HasUnitAura takes g_auraMu only; OK.
+            if (wantMissing) {
+                if (has) return;
+            } else {
+                if (!has) return;
+            }
+            cands.push_back({ o.guid, o.entry, cx, edge, face, o.health, o.maxHealth });
+        };
+        for (const auto& o : g_byType[(int)ObjectType::Unit])
+            consider(o);
+        if (g_byType[(int)ObjectType::Unit].empty()) {
+            for (const auto& o : g_all)
+                if (o.type == ObjectType::Unit || o.type == ObjectType::Player)
+                    consider(o);
+        }
+    }
+
+    size_t nh = cands.size();
+    if (nh > maxN) nh = maxN;
+    if (nh > 16) nh = 16;
+    if (nh > 0) {
+        std::partial_sort(cands.begin(), cands.begin() + (std::ptrdiff_t)nh, cands.end(),
+                          [](const Hit& a, const Hit& b) {
+                              if (a.face != b.face) return a.face > b.face;
+                              return a.center < b.center;
+                          });
+    }
+    char out[4096];
+    size_t off = 0;
+    off += (size_t)snprintf(out + off, sizeof(out) - off, "%zu", nh);
+    for (size_t i = 0; i < nh && off + 80 < sizeof(out); ++i) {
+        const Hit& h = cands[i];
+        off += (size_t)snprintf(out + off, sizeof(out) - off,
+                                "|0x%llX:%d:%.2f:%.2f:%d:%d:%d",
+                                (unsigned long long)h.g, h.entry,
+                                h.center, h.edge, h.face, h.hp, h.mhp);
+    }
+    return std::string(out);
+}
+
 void Refresh(bool force) {
     std::lock_guard<std::mutex> lock(g_mu);
     // NOTE: do NOT early-return on g_enumDead. EnumVisibleObjects can AV once and
@@ -1333,40 +1536,38 @@ void Refresh(bool force) {
     static ULONGLONG s_firstLocal = 0;
     if (!s_firstLocal) s_firstLocal = now;
     // Hard settle: NO list walk, NO enum. Empty snapshot is correct here.
-    constexpr ULONGLONG kOmSettleMs = 5000ull;
+    constexpr ULONGLONG kOmSettleMs = 6000ull;
     if ((now - s_firstLocal) < kOmSettleMs) {
         g_lastRefresh = now;
         return;
     }
 
     // om.enable=0: freeze walks entirely (suite-on holds this for several seconds).
-    if (RL::Config::Get("om.enable", "1") == "0") {
+    // Rising edge 0->1 ALWAYS restarts list-only warm-up (suite freeze re-enable).
+    static bool s_wasOmOn = false;
+    static int s_listOnlyLeft = 24;
+    static ULONGLONG s_omEnableAt = 0;
+    constexpr int kListOnlyFrames = 24;
+    constexpr ULONGLONG kListOnlyMs = 6000ull;
+    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    if (!omOn) {
+        s_wasOmOn = false;
+        s_omEnableAt = 0;
+        s_listOnlyLeft = kListOnlyFrames;
         g_lastRefresh = now;
         return;
     }
-
-    // Warm-up after om.enable: list-only for many frames AND wall-clock floor.
-    // EnumVisibleObjects on the first suite tick hard-crashed (2026-07-31).
-    static int s_listOnlyLeft = 16;
-    static ULONGLONG s_omEnableAt = 0;
-    static ULONGLONG s_lastOmEnableWatch = 0;
-    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
-    if (omOn) {
-        if (s_lastOmEnableWatch == 0) {
-            s_lastOmEnableWatch = now;
-            s_omEnableAt = now;
-            s_listOnlyLeft = 16; // reset warm-up every re-enable edge
-            RL::Log::Info("OM enable edge -> list-only warm-up (16 frames / 4s)");
-        }
-    } else {
-        s_lastOmEnableWatch = 0;
-        s_omEnableAt = 0;
-        s_listOnlyLeft = 16;
+    if (!s_wasOmOn) {
+        s_omEnableAt = now;
+        s_listOnlyLeft = kListOnlyFrames;
+        RL::Log::Warn("OM enable edge -> list-only warm-up (%d frames / %llums)",
+                      kListOnlyFrames, (unsigned long long)kListOnlyMs);
     }
+    s_wasOmOn = true;
 
-    // Wall-clock: at least 4s list-only after enable, regardless of refresh rate.
+    // Wall-clock: at least 6s list-only after enable, regardless of refresh rate.
     const bool listOnlyClock = omOn && s_omEnableAt
-        && (now - s_omEnableAt) < 4000ull;
+        && (now - s_omEnableAt) < kListOnlyMs;
     const bool allowEnum = !g_enumDead && s_listOnlyLeft <= 0 && !listOnlyClock;
 
     // MERGE: list walk always (after settle); enum only after warm-up.

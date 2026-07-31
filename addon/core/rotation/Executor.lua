@@ -147,7 +147,11 @@ Executor._guid_bl = Executor._guid_bl or {}
 local function blacklist_guid(guid, sec, why)
     guid = guid and tostring(guid) or nil
     if not guid or guid == "" then return end
-    sec = tonumber(sec) or 3.0
+    -- Cap multi-dot face/cast blacklist — long holds left Icy Touch stuck for
+    -- 10–20s when every nearby unit was briefly "facing" blacklisted.
+    sec = tonumber(sec) or 0.35
+    if sec > 0.6 then sec = 0.6 end
+    if sec < 0.05 then sec = 0.05 end
     Executor._guid_bl[guid] = (now()) + sec
 end
 
@@ -255,16 +259,16 @@ local function apply_pending_refuse(reason, fail_name)
     Executor._next_gap = 0
 
     if refuse_is_not_ready(rl) then
-        -- Server still on GCD/CD. Hold the list until live remaining says ready.
+        -- Server still on GCD/CD. Hold to live remaining, but NEVER invent a
+        -- long freeze when remaining is ~0 (that stuck the whole rotation).
         local hold = spell_ready_remaining(sid, name)
-        if hold < 0.35 then hold = 0.35 end
-        if hold > 1.6 then hold = 1.6 end
+        if hold < 0.05 then hold = 0.08 end
+        if hold > 1.5 then hold = 1.5 end
         Executor._gcd_until = now() + hold
         Executor._gcd_provisional = true
         Executor._gcd_src = "not_ready_hold"
         Executor._recent = Executor._recent or {}
         if sid then Executor._recent[sid] = now() + hold end
-        -- Do NOT request_retick — wait for GCD; retick would re-spam.
         log_cast("refused", sid, name or fail_name, "not_ready_hold:" .. string.format("%.2f", hold), cast_t)
         return true
     end
@@ -275,15 +279,15 @@ local function apply_pending_refuse(reason, fail_name)
     Executor._gcd_src = "refuse_instant"
     clear_sid_soft_locks(sid)
     if refuse_looks_bad_target(rl) then
-        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 3.0, rl)
+        -- Cap 0.6s via blacklist_guid; was 3s and killed multi-dot recovery.
+        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 0.45, rl)
         Executor._recent = Executor._recent or {}
         if sid then Executor._recent[sid] = now() + 0.08 end
     end
-    -- Facing / LoS: longer GUID cool so we do not re-wire the same unit every
-    -- frame (was 0.35s → spam loop of "in front of you").
+    -- Facing / LoS: short GUID cool (cap 0.6) so next mob can be tried soon.
     if rl:find("in front", 1, true) or rl:find("facing", 1, true)
         or rl:find("line of sight", 1, true) or rl:find("not in line", 1, true) then
-        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 1.25, rl)
+        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 0.35, rl)
     end
     if rl:find("corpse") then
         local WW = RaijinLab and RaijinLab.World
@@ -1606,12 +1610,17 @@ function Executor.attempt_action(action, ctx)
         if ctx then ctx.aura_search_hit = search end
     end
     -- Strict truthy only. Anything else (nil/false/"false"/0) = acquire OFF.
+    -- HARD RULE: acquire OFF means NEVER call Act.Target for this cast.
     local want_acquire = false
     if search then
         local a = search.acquire_target
-        local r = search.retarget -- legacy key
+        -- Intentionally IGNORE search.retarget alone if acquire_target is false
+        -- (legacy key was re-set to acquire in Conditions; still force-off).
         want_acquire = (a == true or a == 1 or a == "true")
-            or (r == true or r == 1 or r == "true")
+        if search.acquire_target == false or search.acquire_target == 0
+            or search.acquire_target == "false" then
+            want_acquire = false
+        end
     end
     local want_reset_after = false
     if want_acquire and search then
@@ -1630,18 +1639,7 @@ function Executor.attempt_action(action, ctx)
         if W and W.sync_ctx_target and ctx then pcall(W.sync_ctx_target, ctx) end
         if ctx then ctx._aura_search_retargeted = true end
     end
-    -- HARD ASSERT: acquire off must never have just targeted the search unit.
-    if not want_acquire and search and search.guid and UnitGUID and UnitExists
-        and UnitExists("target") then
-        local cur = UnitGUID("target")
-        -- Do not "fix" by targeting — leave as-is; post-cast restore handles Spell_C.
-        if cur and tostring(cur) == tostring(search.guid)
-            and pre_target_guid and tostring(pre_target_guid) ~= tostring(search.guid) then
-            -- Selection already drifted before cast (shouldn't) — restore now.
-            if Act.TargetLastTarget then pcall(Act.TargetLastTarget)
-            elseif Act.Target then pcall(Act.Target, pre_target_guid) end
-        end
-    end
+    -- Acquire OFF: never Target, period. Runtime CastSpell restores after Spell_C.
 
     -- Auto Face is opt-in only via the "Auto Face" slot condition (not always on).
     local want_auto_face = action.auto_face == true
@@ -1855,8 +1853,11 @@ function Executor.attempt_action(action, ctx)
                 else
                     -- CAST. Prefer plain Spell_C path — CastSpellEx only to opt face.
                     local reason = nil
+                    -- Multi-dot: ALWAYS cast by GUID. Acquire OFF → NO_TARGET_CHANGE.
+                    local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
                     if want_auto_face and Act.CastSpellEx then
-                        local flags = FACE + SKIP -- face if needed; skip only if still measured bad
+                        local flags = FACE + SKIP
+                        if not want_acquire then flags = flags + NOTGT end
                         if preserve_selection and Act.CastSpellPreserveSelection then
                             ok, reason = Act.CastSpellPreserveSelection(cast_sid, cg, flags)
                         else
@@ -1864,8 +1865,13 @@ function Executor.attempt_action(action, ctx)
                         end
                     else
                         -- No auto-face: wire GUID cast; undetermined facing is OK.
-                        if preserve_selection and Act.CastSpellPreserveSelection then
-                            ok = Act.CastSpellPreserveSelection(cast_sid, cg)
+                        if not want_acquire then
+                            -- Runtime restores selection; Lua preserve is belt-and-suspenders.
+                            if Act.CastSpellPreserveSelection then
+                                ok = Act.CastSpellPreserveSelection(cast_sid, cg, NOTGT)
+                            else
+                                ok = Act.CastSpell(cast_sid, cg)
+                            end
                         else
                             ok = Act.CastSpell(cast_sid, cg)
                         end
@@ -1943,12 +1949,19 @@ function Executor.attempt_action(action, ctx)
         Ou.settle(oid, evidence and 1.0 or 0.2, evidence and tostring(how) or "wire_ok")
     end
 
-    -- GCD after wire:
-    --   confirmed evidence -> real GCD
-    --   wire-only -> short provisional (cap ~180ms). FAIL frees now.
+    -- GCD after wire (FAILURE RECOVERY rules):
+    --   1) evidence (CD/cast bar) -> real GCD
+    --   2) multi-dot wire, same-frame no evidence -> SHORT provisional only
+    --      (Spell_C often returns true before GetSpellCooldown updates; treating
+    --      that as hard fail broke multi-dot. Treating it as a long pending
+    --      froze the whole list. Cap at ~80ms; FAIL event frees immediately;
+    --      phantom grace frees and allows lower slots next tick.)
+    --   3) other wire-only -> short provisional
     local tnow = now()
     local off_gcd = action.slot and action.slot.off_gcd and true or false
     local grace = net_grace()
+    local is_multidot = search and search.guid and true or false
+
     Executor._gcd_provisional = false
     if not off_gcd then
         if evidence and after and after.cd_dur and after.cd_dur > 0 and after.cd_dur <= 1.6 then
@@ -1960,8 +1973,24 @@ function Executor.attempt_action(action, ctx)
             if Executor.gcd_fallback then dur = select(1, Executor.gcd_fallback()) end
             Executor._gcd_until = tnow + dur
             Executor._gcd_src = "evidence"
+        elseif is_multidot then
+            -- Multi-dot: never hold the list longer than one network frame.
+            local g = 0.08
+            Executor._gcd_until = tnow + g
+            Executor._gcd_src = "multidot_wire"
+            Executor._gcd_provisional = true
+            Executor._pending = {
+                sid = sid, cast_t = tnow, deadline = tnow + g, grace = g,
+                before_cd = before and before.cd_start or 0,
+                name = action._cast_name or name,
+                off_gcd = false,
+                guid = guid,
+                multidot = true,
+            }
+            Executor._recent = Executor._recent or {}
+            Executor._recent[sid] = tnow + g
         else
-            Executor._gcd_until = tnow + grace
+            Executor._gcd_until = tnow + math.min(grace, 0.12)
             Executor._gcd_src = "wire_pending"
             Executor._gcd_provisional = true
         end
@@ -1999,12 +2028,10 @@ function Executor.attempt_action(action, ctx)
     Executor._cast_count = (Executor._cast_count or 0) + 1
     local Prot = RaijinLab and RaijinLab.Protection
     local school = Prot and Prot.guess_school and Prot.guess_school(sid, name, action.school)
-    -- Auto-attack only when we actually have a client target (never force target).
     if Act.Attack and school == "physical" and needs_enemy
         and UnitExists and UnitExists("target") then
         pcall(Act.Attack)
     end
-    -- Immediate evidence: learn range + clear sticky.
     if evidence then
         local G = gate()
         if G and G.note_landed then
@@ -2115,9 +2142,8 @@ local function gcd_end(sid, anchor_t)
     return anchor_t + dur
 end
 
--- Spell-level cast rejections apply to ONE slot, so the priority loop should
--- exclude that slot and try the next. Target-level rejections (no target /
--- dead / not attackable / no runtime) mean nothing will cast, so abort the tick.
+-- Spell-level cast rejections apply to ONE slot: exclude and try next THIS tick.
+-- Multi-dot / aura_search failures are ALWAYS slot-level (never freeze the list).
 local function slot_level_fail(reason)
     reason = tostring(reason or "")
     return reason:find("^unusable") ~= nil
@@ -2126,6 +2152,7 @@ local function slot_level_fail(reason)
         or reason:find("^no_corpse") ~= nil
         or reason:find("^user_busy") ~= nil
         or reason:find("^cast_failed") ~= nil
+        or reason:find("cast_fail", 1, true) ~= nil
         or reason:find("^sticky") ~= nil
         or reason:find("^not_ready") ~= nil
         or reason:find("^facing") ~= nil
@@ -2133,6 +2160,11 @@ local function slot_level_fail(reason)
         or reason:find("^los") ~= nil
         or reason:find("^bad_target") ~= nil
         or reason:find("^immune") ~= nil
+        or reason:find("^no_confirm") ~= nil
+        or reason:find("^no_candidate") ~= nil
+        or reason:find("^blacklisted") ~= nil
+        or reason:find("no_target", 1, true) ~= nil
+        or reason:find("cooldown", 1, true) ~= nil
 end
 
 -- Diagnostic only. NEVER force range/usable/cooldown false across ticks.
@@ -2302,7 +2334,6 @@ function Executor._tick_body()
             log_cast("landed", conf_sid, p.name, "poll", conf_cast_t)
         elseif t >= (p.deadline or 0) or (t - (p.cast_t or 0)) >= (p.grace or net_grace()) then
             -- Grace expired with no SUCCESS and no FAIL event.
-            -- If GCD/casting started, treat as land. Else free once (not spam).
             local sid = p.sid
             if cast_confirmed(sid, p.before_cd) then
                 Executor._gcd_until = p.off_gcd and 0 or gcd_end(sid, p.cast_t)
@@ -2312,24 +2343,35 @@ function Executor._tick_body()
                 Executor._unconf = nil
                 Executor._recent = Executor._recent or {}
                 Executor._recent[sid] = t + micro_lock()
+                -- Multi-dot land: note aura now (optimistic note was deferred).
+                if p.multidot and p.guid then
+                    local W = RaijinLab and RaijinLab.World
+                    if W and W.note_aura_on_guid then
+                        pcall(W.note_aura_on_guid, p.guid, sid, p.name, 1, 21)
+                    end
+                end
                 log_cast("landed", sid, p.name, "grace_confirm", p.cast_t)
             else
-                local pguid = p.guid
+                -- PHANTOM / FAILED RECOVERY: free the list completely so lower
+                -- priority slots can cast next evaluation. Multi-dot only
+                -- micro-locks this spell; never a multi-second freeze.
                 Executor._pending = nil
                 Executor._gcd_until = 0
                 Executor._gcd_provisional = false
+                Executor._gcd_src = "phantom_free"
                 Executor._next_gap = 0
                 Executor._idle_until = nil
                 Executor._unconf = nil
                 clear_sid_soft_locks(sid)
-                -- Ghost cast (no SUCCESS/FAIL): hold spell briefly; do not
-                -- blacklist GUID (might have landed without event).
                 Executor._recent = Executor._recent or {}
-                Executor._recent[sid] = t + 0.12
+                Executor._recent[sid] = t + (p.multidot and 0.12 or 0.08)
+                if p.multidot and p.guid then
+                    blacklist_guid(p.guid, 0.20, "phantom")
+                end
                 log_cast("refused", sid, p.name, "phantom_grace", p.cast_t)
             end
         end
-        -- else: still inside grace — GCD provisional holds the list
+        -- else: still inside grace — short provisional only
     end
 
     local gap = Executor._next_gap or 0
@@ -2471,6 +2513,29 @@ function Executor._tick_body()
     if pend then
         ctx.pending_sid = pend.sid
         if not pend.off_gcd then gcd_active = true end
+        -- Stuck recovery: pending past 2.5x grace with no event — free hard.
+        local age = t - (pend.cast_t or t)
+        local grace = pend.grace or 0.18
+        if age > (grace * 2.5 + 0.15) then
+            Executor._pending = nil
+            Executor._gcd_until = 0
+            Executor._gcd_provisional = false
+            Executor._gcd_src = "stuck_recover"
+            clear_sid_soft_locks(pend.sid)
+            gcd_active = false
+            pend = nil
+            ctx.pending_sid = nil
+        end
+    end
+    -- Provisional GCD with no pending must not freeze the rotation forever.
+    if not pend and Executor._gcd_provisional and (Executor._gcd_until or 0) > t then
+        local left = (Executor._gcd_until or 0) - t
+        if left > 0.45 or (Executor._gcd_src == "wire_pending" and left > 0.25) then
+            Executor._gcd_until = 0
+            Executor._gcd_provisional = false
+            Executor._gcd_src = "prov_cap"
+            gcd_active = false
+        end
     end
     ctx.gcd_active = gcd_active
     ctx.live_gcd_remaining = math.max(0, (Executor._gcd_until or 0) - t)
@@ -2525,44 +2590,24 @@ function Executor._tick_body()
         ctx.aura_search_hit = nil
         ctx._aura_search_retargeted = nil
         if ok then break end
-        -- Same-tick fallthrough: wire/preflight failed; try next priority.
-        -- ALWAYS fall through on slot-level fails (never abort the list).
-        if slot_level_fail(how) or (how and tostring(how):find("^already_attacking"))
-            or (how and tostring(how):find("cast_failed", 1, true))
-            or (how and tostring(how):find("^oor", 1, true))
-            or (how and tostring(how):find("no_target", 1, true))
-            or (how and tostring(how):find("not_enemy", 1, true))
-            or (how and tostring(how):find("unusable", 1, true))
-            or (how and tostring(how):find("no_resource", 1, true))
-            or (how and tostring(how):find("cooldown", 1, true))
-            or (how and tostring(how):find("facing", 1, true))
-            or (how and tostring(how):find("los", 1, true))
-            or (how and tostring(how):find("line of sight", 1, true))
-            or (how and tostring(how):find("in front", 1, true))
-            or (how and tostring(how):find("^facing", 1, true))
-            or (how and tostring(how):find("^los", 1, true)) then
-            if rot_detail() then
-                dlog("fallthrough", "#%s %s  %s",
-                    tostring(action.index), tostring(action.name), tostring(how))
-            end
-            exclude = exclude or {}
-            exclude[action.index] = true
-            -- Restore live readiness; do not keep optimistic range from failed slot.
-            fill_live_spell_state(ctx, spell_ids)
-            apply_slot_policy_overrides(ctx, rotation)
-            action = nil
-        else
-            -- Unknown failure: still fall through rather than freeze the list.
-            if rot_detail() then
-                dlog("fallthrough", "#%s %s  %s (unknown)",
-                    tostring(action.index), tostring(action.name), tostring(how))
-            end
-            exclude = exclude or {}
-            exclude[action.index] = true
-            fill_live_spell_state(ctx, spell_ids)
-            apply_slot_policy_overrides(ctx, rotation)
-            action = nil
+        -- FAILURE RECOVERY: cast fail → next priority THIS tick. Never abort.
+        -- Clear provisional locks from the failed attempt so lower slots run.
+        Executor._pending = nil
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "fallthrough_clear"
+        ctx.gcd_active = false
+        ctx.pending_sid = nil
+        ctx.live_gcd_remaining = 0
+        if rot_detail() then
+            dlog("fallthrough", "#%s %s  %s",
+                tostring(action.index), tostring(action.name), tostring(how))
         end
+        exclude = exclude or {}
+        exclude[action.index] = true
+        fill_live_spell_state(ctx, spell_ids)
+        apply_slot_policy_overrides(ctx, rotation)
+        action = nil
     end
     Executor._last_action = action
     Executor._last_trace = trace
@@ -2590,23 +2635,30 @@ function Executor._tick_body()
             Executor._recent[sid] = t + 0.05
         elseif not is_aa then
             local cast_guid = Executor._last_cast and Executor._last_cast.guid
-            Executor._pending = {
-                sid = sid, cast_t = t, deadline = t + grace, grace = grace,
-                before_cd = before_snap and before_snap.cd_start or 0,
-                name = action._cast_name or action.name,
-                off_gcd = false,
-                policy = action.target_policy or slot_policy(action.slot),
-                guid = cast_guid,
-            }
-            -- Hold GCD + same-spell micro lock for the full grace window so
-            -- lag cannot re-wire 5x before SUCCESS/FAIL. Real FAIL frees now.
-            if (Executor._gcd_until or 0) < t + grace then
-                Executor._gcd_until = t + grace
-                Executor._gcd_provisional = true
-                Executor._gcd_src = "pending_grace"
+            local is_md = action.aura_search_hit and action.aura_search_hit.guid
+            -- Multi-dot may already have set a short pending in attempt_action.
+            if not (Executor._pending and Executor._pending.multidot
+                and tonumber(Executor._pending.sid) == sid) then
+                local g = is_md and math.min(grace, 0.10) or grace
+                Executor._pending = {
+                    sid = sid, cast_t = t, deadline = t + g, grace = g,
+                    before_cd = before_snap and before_snap.cd_start or 0,
+                    name = action._cast_name or action.name,
+                    off_gcd = false,
+                    policy = action.target_policy or slot_policy(action.slot),
+                    guid = cast_guid,
+                    multidot = is_md and true or false,
+                }
+                if (Executor._gcd_until or 0) < t + g then
+                    Executor._gcd_until = t + g
+                    Executor._gcd_provisional = true
+                    Executor._gcd_src = "pending_grace"
+                end
+                Executor._recent = Executor._recent or {}
+                if not Executor._recent[sid] or Executor._recent[sid] < t then
+                    Executor._recent[sid] = t + (is_md and 0.08 or g)
+                end
             end
-            Executor._recent = Executor._recent or {}
-            Executor._recent[sid] = t + grace
         end
         Executor._idle_until = nil
         Executor._idle_had_target = ctx.target_exists and true or false

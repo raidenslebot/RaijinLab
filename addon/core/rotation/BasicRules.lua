@@ -123,21 +123,25 @@ local function check_caster_busy(ctx, sid, slot)
 end
 
 local function check_gcd_cd(ctx, sid, slot)
-    -- Pending same spell
+    local off = (slot and slot.off_gcd) or (ctx and ctx.slot_off_gcd)
+    -- Pending same spell: wait.
     if ctx and ctx.pending_sid and tonumber(ctx.pending_sid) == sid then
         return false, "pending"
     end
-    -- GCD (off_gcd slots bypass)
-    local off = (slot and slot.off_gcd) or (ctx and ctx.slot_off_gcd)
+    -- GCD: off_gcd slots bypass. Provisional multi-dot wires are short;
+    -- still honor gcd_active so we do not double-cast on real GCD.
     if ctx and ctx.gcd_active and not off then
         return false, "gcd"
     end
+    -- Pending OTHER spell: only hard-block when a real (non-provisional) cast
+    -- is in flight. Multi-dot wire provisional must not starve lower slots
+    -- for more than the short grace (handled by gcd_active clearing).
     if ctx and ctx.pending_sid and not off then
         if tonumber(ctx.pending_sid) ~= sid then
             return false, "pending_other"
         end
     end
-    -- Per-spell CD from live snapshot
+    -- Per-spell CD from live snapshot (+ Executor._recent via ctx.cooldowns)
     local cds = ctx and ctx.cooldowns or {}
     local rem = cds[sid]
     if rem == nil then rem = cds[tostring(sid)] end

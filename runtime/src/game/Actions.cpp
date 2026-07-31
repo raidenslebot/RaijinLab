@@ -291,6 +291,49 @@ void ArmUnlock() {
     }
 }
 
+// Forward decls — restore helpers are defined later in this file.
+bool ClearTarget();
+bool TargetGuid(uint64_t guid);
+bool TargetLastTarget();
+
+// Live client selection via UNIT_FIELD_TARGET on the local player descriptor.
+// Used so multi-dot Spell_C can restore selection without Lua TargetUnit races.
+static uint64_t ReadClientTargetGuid() {
+    uintptr_t p = PlayerPtr();
+    if (!p) return 0;
+    __try {
+        uintptr_t d = *reinterpret_cast<uintptr_t*>(p + Offsets::O().Descriptor);
+        if (!d || d < 0x10000u) return 0;
+        // UNIT_FIELD_TARGET = descriptor + 0x48 (proven in ObjectManager fill).
+        return *reinterpret_cast<uint64_t*>(d + 0x48);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// Restore selection after Spell_C (which often sticks the cast victim as target).
+static void RestoreSelectionAfterCast(uint64_t prevTarget, uint64_t castVictim) {
+    uint64_t now = ReadClientTargetGuid();
+    if (prevTarget == 0) {
+        // Had no target: never leave sticky multi-dot victim selected.
+        if (now != 0)
+            ClearTarget();
+        return;
+    }
+    if (now == prevTarget)
+        return; // already correct
+    // Prefer TargetLastTarget (native stack), then GUID restore.
+    if (!TargetLastTarget()) {
+        TargetGuid(prevTarget);
+    }
+    now = ReadClientTargetGuid();
+    if (now != prevTarget) {
+        ClearTarget();
+        TargetGuid(prevTarget);
+    }
+    (void)castVictim;
+}
+
 bool CastSpell(int spellId, uint64_t targetGuid) {
     if (spellId <= 0) return false;
     SoftHardwareUnlock();
@@ -307,11 +350,20 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
     // the client's current target — that forced TargetUnit for every multi-dot
     // and made casts look "mouseover/target only". Never call those with a GUID.
     if (targetGuid != 0) {
+        // Default multi-dot safe: Spell_C often selects the victim. Snapshot
+        // and restore unless caller opts into keep-selection via CastSpellEx
+        // without NO_TARGET_CHANGE (acquire_target path uses TargetGuid first).
+        uint64_t prev = ReadClientTargetGuid();
         int nrc = SafeNativeCast(spellId, targetGuid);
         if (nrc > 0) {
+            // Always restore unless the player ALREADY had this unit selected
+            // (they intentionally multi-dot on their current target).
+            if (prev != targetGuid)
+                RestoreSelectionAfterCast(prev, targetGuid);
             g_cast_ok++;
-            RL::Log::Info("CastSpell path=native_guid id=%d guid=0x%llX ok_total=%d",
-                          spellId, (unsigned long long)targetGuid, g_cast_ok);
+            RL::Log::Info("CastSpell path=native_guid id=%d guid=0x%llX prev=0x%llX ok_total=%d",
+                          spellId, (unsigned long long)targetGuid,
+                          (unsigned long long)prev, g_cast_ok);
             return true;
         }
         if (nrc < 0)
@@ -513,8 +565,16 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         }
     }
 
+    // Acquire-OFF multi-dot: NO_TARGET_CHANGE. CastSpell already restores when
+    // prev != victim. When acquire is ON, Lua Targets first so prev==victim and
+    // restore is a no-op — selection stays on the match.
+    uint64_t prev = (targetGuid != 0) ? ReadClientTargetGuid() : 0;
     bool ok = CastSpell(spellId, targetGuid);
     if (ok) {
+        // Explicit restore pass for NO_TARGET_CHANGE (double-ensure after native).
+        if ((flags & kCastNoTargetChange) && targetGuid != 0) {
+            RestoreSelectionAfterCast(prev, targetGuid);
+        }
         r.ok = true;
         r.reason = "ok";
     } else {

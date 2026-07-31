@@ -415,23 +415,24 @@ function World.unit_is_attacking_player(token_or_guid)
 end
 
 -- enemies_in_range / WW pack: hitbox-aware AoE gap <= range.
+-- precise=false units still count if we have a yard number (runtime pack).
 local function dist_within(u, range)
     range = tonumber(range) or 8
-    if not u or not u.precise then return false end
-    return (tonumber(u.dist_aoe or u.dist) or 999) <= range
+    if not u then return false end
+    local d = tonumber(u.dist_aoe or u.dist_center or u.dist)
+    if d == nil then return false end
+    return d <= range
 end
 
--- SINGLE authority for combat hostiles. Cached ~100ms. No Blizzard unit tokens.
+-- SINGLE authority for combat hostiles. Runtime NearbyHostiles only.
+-- NEVER cache empty packs (that zeroed enemies_in_range for 100ms+ forever
+-- when OM was still warming — condition looked permanently broken).
 function World.collect_nearby_enemies(max_range)
     max_range = tonumber(max_range) or 40
     local now = (GetTime and GetTime()) or 0
-    -- Suite warm: still allow NearbyHostiles if OM is already enabled — multi-dot
-    -- with no client target was completely blind when we forced target-only.
-    -- Only skip the native pack when om is off / runtime missing (handled below).
     local c = World._hostiles_cache
-    if c and c.list and c.range and c.range >= max_range
-        and (now - (c.t or 0)) < 0.10 then
-        -- Filter cached list to requested range (cache holds wider scan).
+    if c and c.list and #c.list > 0 and c.range and c.range >= max_range
+        and (now - (c.t or 0)) < 0.08 then
         if c.range == max_range then return c.list end
         local slim = {}
         for i = 1, #c.list do
@@ -446,31 +447,17 @@ function World.collect_nearby_enemies(max_range)
     local out = {}
     if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime()) then
-        -- No runtime: best-effort current target only (never nameplates).
-        if UnitExists and UnitExists("target")
-            and UnitCanAttack and UnitCanAttack("player", "target")
-            and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
-            local guid = UnitGUID and UnitGUID("target")
-            local center, edge, aoe = unit_distances(guid, "target")
-            if center then
-                out[1] = {
-                    guid = guid, token = "target",
-                    dist = aoe or center, dist_aoe = aoe or center,
-                    dist_center = center, dist_edge = edge or center,
-                    precise = true, source = "target_only",
-                }
-            end
-        end
         return out
     end
 
-    -- Request slightly wider than needed so count_enemies_within(8..40) shares cache.
     local scan = max_range
     if scan < 40 then scan = 40 end
-    local packed = RaijinLab:RuntimeCall("NearbyHostiles", scan, 40)
-    out = parse_nearby_hostiles(packed)
+    local okp, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "NearbyHostiles", scan, 48)
+    if okp and type(packed) == "string" then
+        out = parse_nearby_hostiles(packed)
+    end
 
-    -- Optional: if client has a living target not in list, merge once (no scan).
+    -- Merge living client target if present (optional; not required).
     if UnitExists and UnitExists("target")
         and UnitCanAttack and UnitCanAttack("player", "target")
         and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
@@ -498,11 +485,14 @@ function World.collect_nearby_enemies(max_range)
         end
     end
 
-    local by = {}
-    for i = 1, #out do
-        by[tostring(out[i].guid)] = out[i]
+    -- Only cache NON-empty results. Empty must re-query next tick.
+    if #out > 0 then
+        local by = {}
+        for i = 1, #out do by[tostring(out[i].guid)] = out[i] end
+        World._hostiles_cache = { t = now, range = scan, list = out, by_guid = by }
+    else
+        World._hostiles_cache = nil
     end
-    World._hostiles_cache = { t = now, range = scan, list = out, by_guid = by }
 
     if max_range >= scan then return out end
     local slim = {}
@@ -1048,22 +1038,28 @@ end
 
 function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     if not guid then return end
-    local key = _aura_key(spellId, spellName)
-    if not key then return end
-    local now = (GetTime and GetTime()) or 0
+    local sid = tonumber(spellId) or 0
     local dur = tonumber(duration) or 21
     if dur < 1 then dur = 15 end
     if dur > 120 then dur = 60 end
+    stacks = tonumber(stacks) or 1
+    -- RUNTIME is the authority. Lua cache is diagnostic only.
+    if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura", guid, sid, stacks, dur)
+    end
+    local key = _aura_key(spellId, spellName)
+    if not key then return end
+    local now = (GetTime and GetTime()) or 0
     World._aura_by_guid[guid] = World._aura_by_guid[guid] or {}
     World._aura_by_guid[guid][key] = {
         exp = now + dur,
-        stacks = tonumber(stacks) or 1,
+        stacks = stacks,
         name = tostring(spellName or ""),
-        sid = tonumber(spellId) or 0,
+        sid = sid,
         t = now,
     }
-    -- Also index by name when we have an id (Ascension id drift).
-    if (tonumber(spellId) or 0) > 0 and spellName and tostring(spellName) ~= "" then
+    if sid > 0 and spellName and tostring(spellName) ~= "" then
         local nk = "nm:" .. string.lower(tostring(spellName))
         World._aura_by_guid[guid][nk] = World._aura_by_guid[guid][key]
     end
@@ -1071,6 +1067,11 @@ end
 
 function World.clear_aura_on_guid(guid, spellId, spellName)
     if not guid then return end
+    local sid = tonumber(spellId) or 0
+    if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "ClearUnitAura", guid, sid)
+    end
     local bag = World._aura_by_guid[guid]
     if not bag then return end
     local key = _aura_key(spellId, spellName)
@@ -1078,26 +1079,30 @@ function World.clear_aura_on_guid(guid, spellId, spellName)
     if spellName and tostring(spellName) ~= "" then
         bag["nm:" .. string.lower(tostring(spellName))] = nil
     end
-    if (tonumber(spellId) or 0) > 0 then
-        bag["id:" .. tostring(spellId)] = nil
-    end
+    if sid > 0 then bag["id:" .. tostring(sid)] = nil end
 end
 
--- has, stacks, remaining — pure GUID path (CLEU + optimistic cast marks).
+-- has, stacks, remaining — RUNTIME HasUnitAura first, Lua cache fallback.
 function World.guid_aura_state(guid, spell_id, aura_name)
     if not guid then return false, 0, 0 end
+    local sid = tonumber(spell_id) or 0
+    if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", guid, sid)
+        stacks = (ok and tonumber(stacks)) or 0
+        if stacks and stacks > 0 then
+            return true, stacks, 0
+        end
+        -- Runtime says missing; do not invent present from stale Lua cache.
+        return false, 0, 0
+    end
     local bag = World._aura_by_guid[guid]
     if not bag then return false, 0, 0 end
     local now = (GetTime and GetTime()) or 0
     local keys = {}
-    local sid = tonumber(spell_id) or 0
     if sid > 0 then keys[#keys + 1] = "id:" .. tostring(sid) end
     local nm = tostring(aura_name or "")
     if nm ~= "" then keys[#keys + 1] = "nm:" .. string.lower(nm) end
-    if sid > 0 and (nm == "" or not nm) and GetSpellInfo then
-        local ok, n = pcall(GetSpellInfo, sid)
-        if ok and n then keys[#keys + 1] = "nm:" .. string.lower(n) end
-    end
     for i = 1, #keys do
         local e = bag[keys[i]]
         if e then
@@ -2451,125 +2456,75 @@ local function aura_search_tokens()
 end
 
 -- Find nearby units matching aura present/missing.
--- Returns list of {token, guid, dist, face_err} sorted best-first (face then dist).
--- NEVER requires nameplates or TargetUnit. Never changes client selection.
--- opts.max_n = max candidates (default 5) for same-tick fallthrough.
+-- RUNTIME-FIRST: discovery, hostility, face, and aura notes all live in the
+-- inject DLL. Lua never uses mouseover/UnitExists/UnitCanAttack for multi-dot
+-- (that made Icy Touch instant only while hovering and 10–20s otherwise).
+-- Returns list of {guid, dist, face_err, facing} sorted best-first.
 function World.find_aura_search_targets(opts)
     opts = opts or {}
     World.arm_combat_log()
-    local kind = string.lower(tostring(opts.kind or "debuff"))
     local state = string.lower(tostring(opts.state or "missing"))
     local spell_id = tonumber(opts.spell_id) or 0
     local aura_name = tostring(opts.name or "")
     if spell_id <= 0 and (aura_name == "" or not aura_name) then
         return {}
     end
-    if spell_id > 0 and (aura_name == "" or not aura_name) and GetSpellInfo then
-        local ok, n = pcall(GetSpellInfo, spell_id)
-        if ok and n then aura_name = n end
+    if spell_id <= 0 and aura_name ~= "" and GetSpellInfo then
+        -- Name-only: resolve to id when possible; runtime filters by id.
+        -- Without id, fall back to empty (cannot key aura table by name alone).
+        return {}
     end
     local range = tonumber(opts.range) or 40
-    local max_n = tonumber(opts.max_n) or 5
+    local max_n = tonumber(opts.max_n) or 8
     if max_n < 1 then max_n = 1 end
-    if max_n > 8 then max_n = 8 end
-    local hostile_only = opts.hostile_only
-    if hostile_only == nil then hostile_only = true end
-    local include_players = opts.include_players and true or false
-    local min_st = tonumber(opts.min_stacks) or 1
-    local max_st = tonumber(opts.max_stacks) or 0
+    if max_n > 16 then max_n = 16 end
     local want_missing = (state == "missing" or state == "absent" or state == "lacks")
-    local half = World.CAST_FACE_HALF_ARC
+    local state_n = want_missing and 0 or 1
 
-    local function aura_matches(has, stacks)
-        if want_missing then return not has end
-        if not has then return false end
-        if stacks < min_st then return false end
-        if max_st > 0 and stacks > max_st then return false end
-        return true
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime()) then
+        return {}
     end
 
-    local function aura_ok_on_token(token)
-        if not token or (UnitExists and not UnitExists(token)) then return false end
-        if UnitIsDeadOrGhost and UnitIsDeadOrGhost(token) then return false end
-        if UnitIsUnit and UnitIsUnit(token, "player") then return false end
-        if not include_players and UnitIsPlayer and UnitIsPlayer(token) then return false end
-        if hostile_only and UnitCanAttack and not UnitCanAttack("player", token) then
-            return false
-        end
-        local has, stacks = World.unit_aura_probe(token, kind, spell_id, aura_name)
-        return aura_matches(has, stacks)
+    local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "AuraSearch",
+        range, spell_id, state_n, max_n)
+    if not ok or type(packed) ~= "string" or packed == "" or packed == "0" then
+        return {}
     end
 
-    local function aura_ok_on_guid(guid)
-        local has, stacks = World.guid_aura_state(guid, spell_id, aura_name)
-        return aura_matches(has, stacks)
-    end
-
-    local seen = {}
     local Ex = RaijinLab and RaijinLab.RotationExecutor
-    local candidates = {}
-
-    local function add_cand(token, guid, dist)
-        if not guid then return end
-        local g = tostring(guid)
-        if seen[g] then return end
-        if Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid) then return end
-        seen[g] = true
-        -- LoS hard fail drops candidate (cannot auto-fix through walls).
-        if World.is_los_guid and World.is_los_guid(guid) == false then return end
-        -- Live face error for sort; face-fail is NOT dropped here so auto-face
-        -- can still try the nearest missing-debuff unit.
-        local ferr = World.heading_error_to_guid(guid)
-        local abs_err = (ferr ~= nil) and math.abs(ferr) or 99
-        -- Prefer measured face; undetermined counts as "ok enough" for sort
-        -- (still included — do not drop candidates on unknown facing).
-        local facing = true
-        if ferr ~= nil then
-            facing = abs_err <= half
-        end
-        candidates[#candidates + 1] = {
-            token = token, guid = guid, dist = tonumber(dist) or 999,
-            face_err = abs_err, facing = facing,
-        }
-    end
-
-    if UnitExists and UnitExists("target") and aura_ok_on_token("target") then
-        local tg = UnitGUID and UnitGUID("target")
-        if tg then
-            local d = World.token_distance("target")
-            if d == nil or d >= 900 then d = 0 end
-            if d <= range + 5 then
-                add_cand("target", tg, d)
-            else
-                seen[tostring(tg)] = true
-            end
-        end
-    end
-
-    local enemies = World.collect_nearby_enemies(range)
-    for i = 1, math.min(#enemies, 40) do
-        local e = enemies[i]
-        if e.guid and not seen[tostring(e.guid)] then
-            local d = tonumber(e.dist_center) or 999
-            if d <= range and aura_ok_on_guid(e.guid) then
-                add_cand(e.token, e.guid, d)
-            end
-        end
-    end
-
-    -- Prefer already-facing, then nearest.
-    table.sort(candidates, function(a, b)
-        local fa = a.facing and 0 or 1
-        local fb = b.facing and 0 or 1
-        if fa ~= fb then return fa < fb end
-        local ea, eb = a.face_err or 99, b.face_err or 99
-        if math.abs(ea - eb) > 0.05 then return ea < eb end
-        return (a.dist or 999) < (b.dist or 999)
-    end)
-
     local out = {}
-    for i = 1, math.min(#candidates, max_n) do
-        out[i] = candidates[i]
+    local first = true
+    for part in string.gmatch(packed, "[^|]+") do
+        if first then
+            first = false
+        else
+            -- 0xGUID:entry:center:edge:face:hp:mhp
+            local guid, entry, center, edge, face, hp, mhp = string.match(part,
+                "^(0[xX]%x+):(-?%d+):([%-%d%.]+):([%-%d%.]+):(%d+):(-?%d+):(-?%d+)$")
+            if not guid then
+                guid, entry, center, edge, face, hp, mhp = string.match(part,
+                    "^(%x+):(-?%d+):([%-%d%.]+):([%-%d%.]+):(%d+):(-?%d+):(-?%d+)$")
+                if guid then guid = "0x" .. guid end
+            end
+            if guid then
+                if not (Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid)) then
+                    local d = tonumber(center) or 999
+                    local facing = (tonumber(face) or 1) ~= 0
+                    out[#out + 1] = {
+                        guid = guid,
+                        token = nil, -- never client tokens for multi-dot
+                        dist = d,
+                        face_err = facing and 0 or 1.6,
+                        facing = facing,
+                        entry = tonumber(entry),
+                        hp = tonumber(hp),
+                        mhp = tonumber(mhp),
+                        edge = tonumber(edge),
+                    }
+                end
+            end
+        end
     end
     return out
 end

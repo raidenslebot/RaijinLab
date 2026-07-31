@@ -92,9 +92,18 @@ function A.CastSpell(spellId, unitOrGuid)
     spellId = tonumber(spellId) or 0
     if spellId <= 0 then return false end
     local g = guid_of(unitOrGuid)
-    -- Native Spell_C_CastSpell only (no ExecSecure - re-enters Lua and crashed client)
+    -- Native Spell_C_CastSpell only (no ExecSecure - re-enters Lua and crashed client).
+    -- GUID path: runtime ALWAYS restores client selection after Spell_C (multi-dot
+    -- must never stick the victim as "target" when acquire is off).
     local res
     if g then
+        -- Prefer CastSpellEx with NO_TARGET_CHANGE so restore is double-ensured.
+        local flags = A.CAST_NO_TARGET_CHANGE or 2
+        local ex = rt("CastSpellEx", spellId, g, flags)
+        if type(ex) == "string" then
+            local okb = ex:match("^(%d+)|")
+            return okb == "1"
+        end
         res = rt("CastSpell", spellId, g)
     else
         res = rt("CastSpell", spellId)

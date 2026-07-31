@@ -1087,7 +1087,7 @@ end
 Conditions.register("aura_search", {
     name = "Aura Search",
     category = "Auras",
-    description = "Hunt nearby units (OM GUID, no nameplates) for a buff/debuff present or missing. Casts via Spell_C_CastSpell(guid). Default leaves your current target alone. Enable Acquire target to select the match; Reset after (only with Acquire) restores your previous target after the cast.",
+    description = "Runtime multi-dot: finds living attackable units (OM) missing/having an aura. Casts Spell_C(guid). Does NOT use mouseover/target. Acquire target is optional selection; default leaves your target alone. Hostility/dead/range are runtime basic gates — use other slot conditions for extra policy, not a separate Hostile toggle.",
     params = {
         { key = "kind",            type = "string", default = "debuff",  label = "Kind",  cycle = KIND_CYCLE },
         { key = "state",           type = "string", default = "missing", label = "State", cycle = STATE_CYCLE },
@@ -1098,15 +1098,15 @@ Conditions.register("aura_search", {
         { key = "max_stacks",      type = "number", default = 0, min = 0, max = 99, label = "Max stacks (0=any)", step = 1, show_if = aura_is_present },
         { key = "acquire_target",  type = "bool",   default = false, label = "Acquire target" },
         { key = "reset_after",     type = "bool",   default = false, label = "Reset after", show_if = show_if_acquire_target },
-        { key = "hostile_only",    type = "bool",   default = true,  label = "Hostile units only" },
-        { key = "include_players", type = "bool",   default = false, label = "Include players" },
+        -- Legacy keys kept so old saved rotations load; ignored (runtime basic gates).
+        { key = "hostile_only",    type = "bool",   default = false, label = "Hostile only (legacy/ignored)" },
+        { key = "include_players", type = "bool",   default = false, label = "Include players (legacy)" },
     },
     eval = function(ctx, args)
         args = args or {}
         local W = RaijinLab and RaijinLab.World
-        if not W or not W.find_aura_search_target then return false end
+        if not W or not W.find_aura_search_targets then return false end
 
-        local kind  = string.lower(tostring(args.kind or "debuff"))
         local state = string.lower(tostring(args.state or "missing"))
         local id = num(args.spell_id, 0)
         local nm = args.name or ""
@@ -1117,57 +1117,34 @@ Conditions.register("aura_search", {
             return false
         end
 
-        -- Default OFF: cast by GUID, leave client target alone.
-        -- Force-clear stale saved keys: prefer_current must never affect cast.
         if args.prefer_current ~= nil then args.prefer_current = nil end
         local acquire = aura_search_acquire_on(args)
         local reset_after = aura_search_reset_after_on(args)
-        -- Belt-and-suspenders: if acquire is off, retarget cannot be true.
         if not acquire then
             args.retarget = false
             args.acquire_target = false
             args.reset_after = false
         end
-        local hostile = args.hostile_only
-        if hostile == nil then hostile = true end
-        hostile = hostile == true or hostile == 1 or hostile == "true"
-        local players = args.include_players == true or args.include_players == 1
-            or args.include_players == "true"
 
-        local list
-        if W.find_aura_search_targets then
-            list = W.find_aura_search_targets({
-                kind = kind,
-                state = state,
-                spell_id = id,
-                name = nm,
-                range = num(args.range, 40),
-                min_stacks = num(args.min_stacks, 1),
-                max_stacks = num(args.max_stacks, 0),
-                hostile_only = hostile,
-                include_players = players,
-                max_n = 5,
-            })
-        else
-            local token, guid, dist = W.find_aura_search_target({
-                kind = kind, state = state, spell_id = id, name = nm,
-                range = num(args.range, 40),
-                min_stacks = num(args.min_stacks, 1),
-                max_stacks = num(args.max_stacks, 0),
-                hostile_only = hostile, include_players = players,
-            })
-            list = (guid or token) and { { token = token, guid = guid, dist = dist } } or {}
-        end
+        -- RUNTIME AuraSearch only — no Unit* discovery.
+        local list = W.find_aura_search_targets({
+            kind = string.lower(tostring(args.kind or "debuff")),
+            state = state,
+            spell_id = id,
+            name = nm,
+            range = num(args.range, 40),
+            min_stacks = num(args.min_stacks, 1),
+            max_stacks = num(args.max_stacks, 0),
+            max_n = 8,
+        })
         if not list or #list == 0 then
             ctx.aura_search_hit = nil
             return false
         end
 
         local best = list[1]
-        -- PURE: record match + full candidate list for same-tick face fallthrough.
-        -- TargetUnit only if acquire_target=true and this slot wins.
         ctx.aura_search_hit = {
-            token = best.token,
+            token = nil,
             guid = best.guid,
             dist = best.dist,
             facing = best.facing,

@@ -72,15 +72,22 @@ function Brain.act(state)
 
     if state.recommendation == "engage" then
         -- Natural target acquisition ONLY for hostiles that are attacking us.
-        -- NEVER touch selection while rotation multi-dot is active (GUID cast
-        -- with acquire off must leave the client's target alone completely).
+        -- NEVER touch selection while rotation multi-dot / aura_search is active.
+        -- Force-Target was the "acquire off but still snaps target" bug.
         if RaijinLabDB and RaijinLabDB.rotation_enabled then
             local Ex = RaijinLab.RotationExecutor
             local multi = Ex and Ex._last_cast and Ex._last_cast.guid
                 and (GetTime and (GetTime() - (Ex._last_cast.t or 0)) < 2.5)
             if multi then return state end
-            -- Any aura_search-driven cast path: do not auto-TargetNearest.
             if Ex and Ex._last_action and Ex._last_action.aura_search_hit then
+                return state
+            end
+            -- Any loaded rotation with aura_search: never Brain-Target.
+            local W = RaijinLab.World
+            local rot = RaijinLabDB.rotations and RaijinLabDB.active_rotation
+                and RaijinLabDB.rotations[RaijinLabDB.active_rotation]
+            if W and W.rotation_needs_aura_search and rot
+                and W.rotation_needs_aura_search(rot) then
                 return state
             end
         end

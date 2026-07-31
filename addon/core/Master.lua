@@ -100,16 +100,32 @@ function M.enabled()
     return d.master ~= false
 end
 
--- The single line every ticker uses: `if RaijinLab.Master and RaijinLab.Master.suppressed() then return end`
--- True when native/Lua OM heavy paths are safe after suite-on (not mid-arm).
--- Modules that would call NearbyHostiles / full object walks must gate on this.
+-- True while Master.start_all is holding OM frozen (native + Lua fans must idle).
+function M.in_suite_warm()
+    local t0 = M._suite_on_t
+    if not t0 then return false end
+    local now = (GetTime and GetTime()) or 0
+    return (now - t0) < 8.0
+end
+
+-- True when suite-driven heavy OM is allowed.
+-- Master OFF  -> false (suite tickers already gated; don't poke OM for them).
+-- Warm window -> false (fail-closed: this is the crash window).
+-- Otherwise   -> true  (normal play / PEW arm / post-warm suite).
 function M.suite_om_safe()
     if not M.enabled or not M.enabled() then return false end
+    if M.in_suite_warm() then return false end
+    return true
+end
+
+-- Wall-clock remaining until suite OM is safe (for status / UI). nil if N/A.
+function M.suite_om_eta()
+    if not M.in_suite_warm or not M.in_suite_warm() then return 0 end
     local t0 = M._suite_on_t
-    if not t0 then return true end
     local now = (GetTime and GetTime()) or 0
-    -- Match Master.start_all stagger: native OM at 4s, Lua frame at 5.5s.
-    return (now - t0) >= 5.5
+    local left = 8.0 - (now - t0)
+    if left < 0 then return 0 end
+    return left
 end
 
 function M.suppressed()
@@ -243,14 +259,21 @@ function M.start_all(reason)
 
     -- ================================================================
     -- CRASH LESSON (permanent): suite-on the same frame as OM walk/enum
-    -- after login hard-crashes the client. Sequence must be:
-    --   0.0s  freeze OM (om.enable=0), start lightweight modules only
-    --   4.0s  re-enable om.enable (native list-only warm-up begins)
-    --   5.5s  start Lua OM OnUpdate (GetUnitCount fan)
-    --   8.0s  Surveyor raycast fan
+    -- after login hard-crashes the client. 2026-07-31 suite enable crash
+    -- was Suite.start forcing om.enable=1 while this freeze was active.
+    -- Sequence (lengthened after live crash):
+    --   0.0s  freeze OM (om.enable=0), kill Lua OM frame, start modules
+    --   6.0s  re-enable om.enable (native list-only warm-up begins)
+    --   8.0s  start Lua OM OnUpdate (GetUnitCount fan)
+    --  12.0s  Surveyor raycast fan
     -- Single-GUID casts / current-target rotation work the whole time.
+    -- Modules MUST NOT re-enable om during the warm window (Suite/Chat/Menu).
     -- ================================================================
     local R = RaijinLab
+    -- Cancel any prior PEW ArmRuntimeSystems delayed OM enable that would
+    -- fire mid-warm and re-open the crash window.
+    M._om_gen = (M._om_gen or 0) + 1
+    local om_gen = M._om_gen
     pcall(function()
         if RaijinLab.RuntimeCall then
             RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "0")
@@ -262,35 +285,45 @@ function M.start_all(reason)
         end
     end)
 
+    local function still_this_arm()
+        return RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
+            and RaijinLab.Master.enabled()
+            and RaijinLab.Master._om_gen == om_gen
+    end
+
     local function arm_om_native()
-        if not (RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
-            and RaijinLab.Master.enabled()) then return end
+        if not still_this_arm() then return end
         pcall(function()
-            if RaijinLab.ArmRuntimeSystems then
-                -- May already be armed from PEW; idempotent.
+            -- Soft-arm HW gates only if never armed. Do NOT let ArmRuntimeSystems
+            -- schedule a competing +3s om.enable (it checks suite gen via
+            -- Runtime.lua enable_om).
+            if RaijinLab.ArmRuntimeSystems and not RaijinLab._runtime_armed then
                 RaijinLab:ArmRuntimeSystems()
             end
             if RaijinLab.RuntimeCall then
                 RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
             end
+            local DL = RaijinLab.DevLog
+            if DL and DL.log then DL.log("master", "OM native enable (suite +6s)") end
         end)
     end
     local function arm_om_lua_frame()
-        if not (RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
-            and RaijinLab.Master.enabled()) then return end
+        if not still_this_arm() then return end
         pcall(function()
             if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
                 and not RaijinLab:GetObjManagerFrame() then
                 RaijinLab:InitObjectManager()
             end
+            local DL = RaijinLab.DevLog
+            if DL and DL.log then DL.log("master", "OM lua frame (suite +8s)") end
         end)
     end
     if C_Timer and C_Timer.After then
-        C_Timer.After(4.0, arm_om_native)
-        C_Timer.After(5.5, arm_om_lua_frame)
+        C_Timer.After(6.0, arm_om_native)
+        C_Timer.After(8.0, arm_om_lua_frame)
     else
-        arm_om_native()
-        arm_om_lua_frame()
+        -- No timer API: keep OM frozen rather than crash. Single-GUID still works.
+        print("|cffffd200RaijinLab|r no C_Timer — OM stays off until you /raijin om on")
     end
     -- Pathfinder jobs run on the Scheduler OnUpdate (cheap when idle).
     if R and R.Scheduler and R.Scheduler.start then pcall(R.Scheduler.start) end
@@ -298,16 +331,14 @@ function M.start_all(reason)
     if R and R.Surveyor and R.Surveyor.start
         and (not R.Surveyor.needed or R.Surveyor.needed()) then
         if C_Timer and C_Timer.After then
-            C_Timer.After(8.0, function()
-                if RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
-                    and RaijinLab.Master.enabled()
+            C_Timer.After(12.0, function()
+                if still_this_arm()
                     and RaijinLab.Surveyor and RaijinLab.Surveyor.start then
                     pcall(RaijinLab.Surveyor.start)
                 end
             end)
-        else
-            pcall(R.Surveyor.start)
         end
+        -- No C_Timer: leave surveyor off (safer than crash).
     end
 
     -- The one exception, by explicit user rule: the main button turns the

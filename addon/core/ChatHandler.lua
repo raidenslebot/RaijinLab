@@ -1591,13 +1591,18 @@ function RaijinLab:RunCommand(msg)
         elseif a == "givers" then
             -- Dump nearby NPC dialog status (CGObject+0x90). A zero this frame
             -- may still query the server; run twice a few seconds apart.
-            -- Enum list needs om.enable=1; status reads themselves no longer do.
-            if RaijinLab.RuntimeCall then
-                RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
-            end
-            if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
-                and not RaijinLab:GetObjManagerFrame() then
-                pcall(function() RaijinLab:InitObjectManager() end)
+            -- Enum list needs om.enable=1 after warm; never force during suite warm.
+            local Mw = RaijinLab.Master
+            if not (Mw and Mw.in_suite_warm and Mw.in_suite_warm()) then
+                if RaijinLab.RuntimeCall then
+                    pcall(function() RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1") end)
+                end
+                if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
+                    and not RaijinLab:GetObjManagerFrame() then
+                    pcall(function() RaijinLab:InitObjectManager() end)
+                end
+            else
+                SendSystemMessage("|cffffd200RaijinLab|r OM warming after suite-on — wait ~8s")
             end
             local om = RaijinLab.om and RaijinLab.om.object_list
             local ver = RaijinLab.RuntimeCall and RaijinLab:RuntimeCall("GetRuntimeVersion")
@@ -1725,8 +1730,14 @@ function RaijinLab:RunCommand(msg)
         end
     elseif cmd == "om" then
         -- Live object-manager probe + ensure the world list is running.
-        -- OM is default-on after PEW arm (1.8.13); this command is diagnostic
-        -- and a manual re-enable if someone set om.enable=0.
+        -- Never force-enable during suite-on warm (hard-crash path).
+        local Mw = RaijinLab.Master
+        if Mw and Mw.in_suite_warm and Mw.in_suite_warm() then
+            SendSystemMessage(string.format(
+                "|cffffd200RaijinLab|r OM warming (%.0fs left) — not forcing enable",
+                Mw.suite_om_eta and Mw.suite_om_eta() or 0))
+            return true
+        end
         RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
         RaijinLab:RuntimeCall("SetSystemVar", "om.probe", "1")
         if not RaijinLab:GetObjManagerFrame() and RaijinLab.InitObjectManager then

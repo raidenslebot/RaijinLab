@@ -404,6 +404,13 @@ local function om_period()
 end
 
 local function ObjectManagerOnUpdate(self, elapsed)
+    -- Suite-on warm window: skip entire Lua OM fan (GetUnitCount + per-object).
+    -- Master freezes native OM and tears this frame down; if a stale frame
+    -- survives, still fail-closed here.
+    local M = RaijinLab.Master
+    if M and M.in_suite_warm and M.in_suite_warm() then
+        return
+    end
     if not self.last_time then
         self.last_time = 0
     end
@@ -415,6 +422,17 @@ local function ObjectManagerOnUpdate(self, elapsed)
 end
 
 function RaijinLab:InitObjectManager()
+    -- Never start Lua OM mid suite-on warm (caller may race timers).
+    local M = RaijinLab.Master
+    if M and M.in_suite_warm and M.in_suite_warm() then
+        return
+    end
+    if RaijinLab.om.frames.object_manager then
+        -- Already running — do not double-create frames.
+        RaijinLab.om.running = true
+        return
+    end
+    RaijinLab.om.frames = RaijinLab.om.frames or {}
     RaijinLab.om.frames.object_manager = CreateFrame("FRAME")
     RaijinLab.om.frames.object_manager:SetScript("OnUpdate", ObjectManagerOnUpdate)
     RaijinLab.om.frames.object_manager:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -423,7 +441,14 @@ function RaijinLab:InitObjectManager()
 end
 
 function RaijinLab:DestroyObjectManager()
-    RaijinLab.om.frames.object_manager:SetScript("OnUpdate", nil)
-    RaijinLab.om.frames.object_manager = nil
-    RaijinLab.om.running = false
+    local f = RaijinLab.om and RaijinLab.om.frames and RaijinLab.om.frames.object_manager
+    if f then
+        f:SetScript("OnUpdate", nil)
+        f:SetScript("OnEvent", nil)
+        f:UnregisterAllEvents()
+    end
+    if RaijinLab.om and RaijinLab.om.frames then
+        RaijinLab.om.frames.object_manager = nil
+    end
+    if RaijinLab.om then RaijinLab.om.running = false end
 end

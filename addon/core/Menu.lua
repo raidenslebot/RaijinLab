@@ -685,6 +685,11 @@ function Menu:BuildNav(parent)
             print("|cffff5555RaijinLab|r OM probe: runtime not injected.")
             return
         end
+        local Mw = RaijinLab.Master
+        if Mw and Mw.in_suite_warm and Mw.in_suite_warm() then
+            print("|cffffd200RaijinLab|r OM probe blocked during suite warm (~8s).")
+            return
+        end
         RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
         RaijinLab:RuntimeCall("SetSystemVar", "om.probe", "1")
         local pstr = RaijinLab:RuntimeCall("OmProbe")

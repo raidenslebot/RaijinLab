@@ -1118,32 +1118,47 @@ Conditions.register("aura_search", {
         local players = args.include_players == true or args.include_players == 1
             or args.include_players == "true"
 
-        local token, guid, dist = W.find_aura_search_target({
-            kind = kind,
-            state = state,
-            spell_id = id,
-            name = nm,
-            range = num(args.range, 40),
-            min_stacks = num(args.min_stacks, 1),
-            max_stacks = num(args.max_stacks, 0),
-            hostile_only = hostile,
-            include_players = players,
-            acquire_target = acquire,
-        })
-        if not guid and not token then
+        local list
+        if W.find_aura_search_targets then
+            list = W.find_aura_search_targets({
+                kind = kind,
+                state = state,
+                spell_id = id,
+                name = nm,
+                range = num(args.range, 40),
+                min_stacks = num(args.min_stacks, 1),
+                max_stacks = num(args.max_stacks, 0),
+                hostile_only = hostile,
+                include_players = players,
+                max_n = 5,
+            })
+        else
+            local token, guid, dist = W.find_aura_search_target({
+                kind = kind, state = state, spell_id = id, name = nm,
+                range = num(args.range, 40),
+                min_stacks = num(args.min_stacks, 1),
+                max_stacks = num(args.max_stacks, 0),
+                hostile_only = hostile, include_players = players,
+            })
+            list = (guid or token) and { { token = token, guid = guid, dist = dist } } or {}
+        end
+        if not list or #list == 0 then
             ctx.aura_search_hit = nil
             return false
         end
 
-        -- PURE: record match only. TargetUnit only if acquire_target=true and
-        -- this slot wins (attempt_action). Never requires nameplates.
+        local best = list[1]
+        -- PURE: record match + full candidate list for same-tick face fallthrough.
+        -- TargetUnit only if acquire_target=true and this slot wins.
         ctx.aura_search_hit = {
-            token = token,
-            guid = guid,
-            dist = dist,
+            token = best.token,
+            guid = best.guid,
+            dist = best.dist,
+            facing = best.facing,
+            face_err = best.face_err,
+            candidates = list,
             acquire_target = acquire,
             reset_after = reset_after,
-            -- Legacy field kept for any old reader paths.
             retarget = acquire,
         }
         local sid = num(ctx.slot_spell_id, 0)

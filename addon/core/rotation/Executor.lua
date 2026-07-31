@@ -279,11 +279,11 @@ local function apply_pending_refuse(reason, fail_name)
         Executor._recent = Executor._recent or {}
         if sid then Executor._recent[sid] = now() + 0.08 end
     end
-    -- Facing / LoS client spam: short same-GUID cool so we re-eval other slots
-    -- without re-wiring the same blocked cast every frame.
+    -- Facing / LoS: longer GUID cool so we do not re-wire the same unit every
+    -- frame (was 0.35s → spam loop of "in front of you").
     if rl:find("in front", 1, true) or rl:find("facing", 1, true)
         or rl:find("line of sight", 1, true) or rl:find("not in line", 1, true) then
-        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 0.35, rl)
+        blacklist_guid(pguid or (Executor._last_cast and Executor._last_cast.guid), 1.25, rl)
     end
     if rl:find("corpse") then
         local WW = RaijinLab and RaijinLab.World
@@ -1774,57 +1774,107 @@ function Executor.attempt_action(action, ctx)
     --   acquire OFF           -> cast by GUID; NEVER leave selection on victim
     --   acquire ON + reset    -> Target match, then restore previous
     --   acquire ON + no reset -> Target match and keep it
+    -- Facing is independent of acquire: unit-targeted spells still need front cone.
     local preserve_selection = (guid ~= nil) and (not want_acquire or want_reset_after)
+    local skip_face_cast = is_ground_self_aoe(sid, name) or is_self_aoe_spell(sid, name)
+        or policy == "optional" or policy == "forbid" or policy == "corpse"
 
-    -- Final face/LoS gate on the cast GUID (never trust earlier snapshot alone).
-    if guid and needs_enemy and not is_ground_self_aoe(sid, name) then
-        local BR = RaijinLab and RaijinLab.BasicRules
-        if BR and BR.guid_cast_gates then
-            local gok, gwhy = BR.guid_cast_gates(guid, {
-                skip_facing = is_self_aoe_spell(sid, name),
-                skip_los = false,
-            })
-            if not gok then
-                return false, tostring(gwhy) .. ":" .. tostring(name)
-            end
+    -- Multi-candidate same-tick try (aura_search top-N). Face-fail → next GUID.
+    local try_list = {}
+    if search and search.candidates and #search.candidates > 0 then
+        for i = 1, #search.candidates do
+            local c = search.candidates[i]
+            if c and c.guid then try_list[#try_list + 1] = c end
         end
+    elseif guid then
+        try_list[1] = { guid = guid, token = search and search.token }
     end
-
-    -- Native cast WITH guid when we have one (multi-dot). Never omit guid.
-    -- When preserve_selection: use CastSpellPreserveSelection so Spell_C cannot
-    -- stick the client target on the cast victim (acquire off / reset after).
-    local ok
-    if preserve_selection and Act.CastSpellPreserveSelection then
-        ok = Act.CastSpellPreserveSelection(cast_sid, guid)
-    else
-        ok = Act.CastSpell(cast_sid, guid)
-    end
+    if #try_list == 0 and guid then try_list[1] = { guid = guid } end
 
     local function restore_selection()
         if not preserve_selection or not Act then return end
         local cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
         if pre_had_target and pre_target_guid then
             if tostring(cur or "") == tostring(pre_target_guid) then return end
-            -- 1) TargetLastTarget (client previous-target stack)
             if Act.TargetLastTarget then pcall(Act.TargetLastTarget) end
             cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
             if tostring(cur or "") == tostring(pre_target_guid) then return end
-            -- 2) Direct GUID re-target
             if Act.Target then pcall(Act.Target, pre_target_guid) end
             cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
             if tostring(cur or "") == tostring(pre_target_guid) then return end
-            -- 3) Clear then re-target (break sticky cast victim)
             if Act.ClearTarget then pcall(Act.ClearTarget) end
             if Act.Target then pcall(Act.Target, pre_target_guid) end
         else
-            -- Had no target: must end with no target.
             if cur and Act.ClearTarget then pcall(Act.ClearTarget) end
+        end
+    end
+
+    -- Ensure face+LoS then wire. NEVER CastSpell if facing fails (no UI spam).
+    local ok, wire_guid = false, nil
+    local last_why = "no_candidate"
+    for ci = 1, #try_list do
+        local cand = try_list[ci]
+        local cg = cand.guid
+        if not cg then
+            -- skip
+        elseif Executor.guid_blacklisted(cg) then
+            last_why = "facing" -- blacklisted (often prior face fail)
+        else
+            if not skip_face_cast and needs_enemy then
+                local facing_ok = true
+                if W and W.is_facing_guid then
+                    facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                end
+                if not facing_ok then
+                    -- Auto-face GUID (does not change selection). One attempt.
+                    if W and W.face_guid then pcall(W.face_guid, cg) end
+                    if W and W.is_facing_guid then
+                        facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                    end
+                end
+                if not facing_ok then
+                    blacklist_guid(cg, 1.25, "facing_prewire")
+                    last_why = "facing"
+                    -- try next candidate
+                else
+                    if W and W.is_los_guid and W.is_los_guid(cg) == false then
+                        blacklist_guid(cg, 1.0, "los_prewire")
+                        last_why = "los"
+                    else
+                        -- Wire this GUID.
+                        if preserve_selection and Act.CastSpellPreserveSelection then
+                            ok = Act.CastSpellPreserveSelection(cast_sid, cg)
+                        else
+                            ok = Act.CastSpell(cast_sid, cg)
+                        end
+                        wire_guid = cg
+                        guid = cg
+                        if search then
+                            search.guid = cg
+                            search.token = cand.token
+                            if ctx then ctx.aura_search_hit = search end
+                        end
+                        if ok then break end
+                        last_why = "cast_failed"
+                        blacklist_guid(cg, 0.4, "cast_failed")
+                    end
+                end
+            else
+                if preserve_selection and Act.CastSpellPreserveSelection then
+                    ok = Act.CastSpellPreserveSelection(cast_sid, cg)
+                else
+                    ok = Act.CastSpell(cast_sid, cg)
+                end
+                wire_guid = cg
+                guid = cg
+                if ok then break end
+                last_why = "cast_failed"
+            end
         end
     end
 
     if ok and preserve_selection then
         restore_selection()
-        -- Deferred restore: Spell_C / server can select a frame later.
         if C_Timer and C_Timer.After then
             C_Timer.After(0, function() pcall(restore_selection) end)
             C_Timer.After(0.05, function() pcall(restore_selection) end)
@@ -1833,14 +1883,14 @@ function Executor.attempt_action(action, ctx)
     end
 
     if not ok then
-        if Ou and oid then Ou.settle(oid, -1.0, "cast_failed") end
-        -- INSTANT free: wire rejected. Same ability eligible on next evaluate.
+        if Ou and oid then Ou.settle(oid, -1.0, last_why or "cast_failed") end
+        -- INSTANT free: never hold list on facing/los/wire fail.
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         Executor._next_gap = 0
         Executor._pending = nil
         clear_sid_soft_locks(sid)
-        return false, "cast_failed:" .. tostring(name) .. "#" .. tostring(cast_sid)
+        return false, tostring(last_why or "cast_failed") .. ":" .. tostring(name)
     end
 
     local after = cast_snapshot(cast_sid)
@@ -1855,7 +1905,7 @@ function Executor.attempt_action(action, ctx)
 
     -- GCD after wire:
     --   confirmed evidence -> real GCD
-    --   wire-only -> hold provisional for net_grace (anti lag spam). FAIL frees now.
+    --   wire-only -> short provisional (cap ~180ms). FAIL frees now.
     local tnow = now()
     local off_gcd = action.slot and action.slot.off_gcd and true or false
     local grace = net_grace()
@@ -1871,16 +1921,14 @@ function Executor.attempt_action(action, ctx)
             Executor._gcd_until = tnow + dur
             Executor._gcd_src = "evidence"
         else
-            -- Hold the GCD for the full confirmation window so lag cannot
-            -- re-fire the same ability 5+ times before the server accepts.
             Executor._gcd_until = tnow + grace
             Executor._gcd_src = "wire_pending"
             Executor._gcd_provisional = true
         end
     end
 
-    -- Optimistic multi-dot mark: cast went to wire on this GUID.
-    if guid and W and W.note_aura_on_guid and search and search.guid
+    -- Optimistic multi-dot mark ONLY with evidence (facing refuse must not mark).
+    if evidence and guid and W and W.note_aura_on_guid and search and search.guid
         and tostring(guid) == tostring(search.guid) then
         local aura_sid = 0
         local aura_nm = nil
@@ -1935,10 +1983,10 @@ function Executor.attempt_action(action, ctx)
 end
 
 -- Pending confirmation window after wire-ok.
--- Too short => spam re-casts on server lag (5+ fires before land).
--- Too long => feels stuck after real fails (FAIL event still frees INSTANTLY).
+-- Too long freezes the priority list (facing refuse that never fires events).
+-- FAIL / UI_ERROR still free the same frame (apply_pending_refuse).
 local function net_grace()
-    local lag = 0.10
+    local lag = 0.08
     if GetNetStats then
         local ok, _, _, latHome, latWorld = pcall(GetNetStats)
         if ok then
@@ -1946,12 +1994,10 @@ local function net_grace()
             if ms > 0 then lag = ms / 1000 end
         end
     end
-    -- Hold re-fire for ~1 RTT so server lag cannot multi-fire the same spell.
-    -- FAIL / UI_ERROR still free the same frame (apply_pending_refuse).
-    -- Floor 220ms, cap 500ms — laggy realms need longer; confirmed land uses real GCD.
-    local g = lag * 1.5 + 0.10
-    if g < 0.22 then g = 0.22 end
-    if g > 0.50 then g = 0.50 end
+    -- Cap 180ms: longer provisional GCD was the "freeze after fail" feel.
+    local g = lag * 1.2 + 0.06
+    if g < 0.10 then g = 0.10 end
+    if g > 0.18 then g = 0.18 end
     return g
 end
 
@@ -2452,7 +2498,9 @@ function Executor._tick_body()
             or (how and tostring(how):find("facing", 1, true))
             or (how and tostring(how):find("los", 1, true))
             or (how and tostring(how):find("line of sight", 1, true))
-            or (how and tostring(how):find("in front", 1, true)) then
+            or (how and tostring(how):find("in front", 1, true))
+            or (how and tostring(how):find("^facing", 1, true))
+            or (how and tostring(how):find("^los", 1, true)) then
             if rot_detail() then
                 dlog("fallthrough", "#%s %s  %s",
                     tostring(action.index), tostring(action.name), tostring(how))
@@ -2606,20 +2654,27 @@ function Executor._tick_body()
         end
     end
 
-    -- Idle throttle: no target, user busy, or every spell sticky for this world.
+    -- Idle throttle: never sleep when aura_search / multi-dot may still find units
+    -- without a client target (was freezing multi-dot at "no_target").
     do
+        local has_aura_search = false
+        for _, slot in ipairs(rotation.slots or {}) do
+            for _, c in ipairs(slot.conditions or {}) do
+                if c and c.id == "aura_search" then has_aura_search = true; break end
+            end
+            if has_aura_search then break end
+        end
         local G = gate()
-        local idle, iwhy = false, nil
+        local idle = false
         if ctx.user_state and ctx.user_state ~= "free" then
-            idle, iwhy = true, "user_busy"
-        elseif not ctx.target_exists and not ctx._has_no_target_slot then
-            idle, iwhy = true, "no_target"
-        elseif G and G.list_is_idle then
-            idle, iwhy = G.list_is_idle(ctx, spell_ids)
+            idle = true
+        elseif not ctx.target_exists and not ctx._has_no_target_slot and not has_aura_search then
+            idle = true
+        elseif G and G.list_is_idle and not has_aura_search then
+            idle = select(1, G.list_is_idle(ctx, spell_ids))
         end
         Executor._idle_had_target = ctx.target_exists and true or false
         if idle then
-            -- Short sleep: still re-scan fast for aura_search / pack swaps.
             Executor._idle_until = t + 0.05
         else
             Executor._idle_until = nil
@@ -2656,13 +2711,17 @@ end
 -- Capability unchanged — work is amortized, not dropped forever.
 local function adaptive_tick_interval()
     if Executor._pending then return 0 end
+    -- Full rate in combat or with multi-dot / hostiles work.
     if UnitAffectingCombat and UnitAffectingCombat("player") then return 0 end
     if UnitExists and UnitExists("target") then
         if UnitCanAttack and UnitCanAttack("player", "target")
             and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
-            return 0.033 -- ~30 Hz with a live hostile target OOC
+            return 0
         end
     end
+    -- Rotation with aura_search: never drop to 80ms idle (misses pack swaps).
+    local nc = Executor._needs_cache
+    if nc and nc.aura then return 0 end
     -- Menu / editor open: leave headroom for UI paint (major hitch source).
     if RaijinLab and RaijinLab._ui_open_hint then return 0.12 end
     local Menu = RaijinLab and RaijinLab.Menu
@@ -2673,7 +2732,7 @@ local function adaptive_tick_interval()
     if Ed and Ed.frame and Ed.frame.IsShown and Ed.frame:IsShown() then
         return 0.12
     end
-    return 0.08 -- OOC no target: still responsive, not every render frame
+    return 0.05 -- OOC no target, no aura_search
 end
 
 function Executor.start(interval)

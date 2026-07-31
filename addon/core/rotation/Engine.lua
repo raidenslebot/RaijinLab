@@ -500,16 +500,41 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
                     -- ------------------------------------------------------
                     local pass, err = conditions_mod.evaluate_all(slot.conditions, ctx)
                     if pass then
-                        -- After aura_search resolved a GUID, re-gate face/LoS.
+                        -- After aura_search: only hard-block LoS here. Facing is
+                        -- handled in Executor with auto-face + multi-candidate try
+                        -- (denying here prevented auto-face from ever running).
                         if has_aura_search and ctx.aura_search_hit and ctx.aura_search_hit.guid
                             and Basic and Basic.guid_cast_gates then
-                            local gok, gwhy = Basic.guid_cast_gates(ctx.aura_search_hit.guid, {})
-                            if not gok then
-                                if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "basic_deny", why = gwhy } end
-                                last_skip = gwhy or "basic_deny"
-                                ctx.aura_search_hit = nil
-                                -- fall through to next slot
-                            else
+                            local gok, gwhy = Basic.guid_cast_gates(ctx.aura_search_hit.guid, {
+                                skip_facing = true, -- Executor auto-faces
+                            })
+                            if not gok and gwhy == "los" then
+                                -- Try next candidate with clear LoS if any.
+                                local cands = ctx.aura_search_hit.candidates
+                                local picked = nil
+                                if type(cands) == "table" then
+                                    local W = RaijinLab and RaijinLab.World
+                                    for ci = 1, #cands do
+                                        local c = cands[ci]
+                                        if c and c.guid and (not W or not W.is_los_guid
+                                            or W.is_los_guid(c.guid) ~= false) then
+                                            picked = c
+                                            break
+                                        end
+                                    end
+                                end
+                                if picked then
+                                    ctx.aura_search_hit.guid = picked.guid
+                                    ctx.aura_search_hit.token = picked.token
+                                    ctx.aura_search_hit.dist = picked.dist
+                                    gok = true
+                                else
+                                    if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "basic_deny", why = gwhy } end
+                                    last_skip = gwhy or "basic_deny"
+                                    ctx.aura_search_hit = nil
+                                end
+                            end
+                            if gok ~= false and ctx.aura_search_hit then
                                 local action = {
                                     index = i,
                                     slot = slot,

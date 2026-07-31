@@ -234,33 +234,66 @@ end
 World.CAST_FACE_HALF_ARC = math.pi / 2   -- half-angle radians
 World.CAST_FACE_FULL_ARC = math.pi       -- full cone (documentation / Trinity M_PI)
 
+-- Heading error (signed rad) from player facing to GUID. nil if unmeasurable.
+function World.heading_error_to_guid(guid)
+    if not guid or not (RaijinLab and RaijinLab.ObjectPosition) then return nil end
+    local px, py = RaijinLab:ObjectPosition("player")
+    local tx, ty = RaijinLab:ObjectPosition(guid)
+    if not px or not tx then return nil end
+    local face = nil
+    if RaijinLab.ObjectFacing then face = RaijinLab:ObjectFacing("player") end
+    if not face and GetPlayerFacing then face = GetPlayerFacing() end
+    if not face then return nil end
+    local ang = math.atan2(ty - py, tx - px)
+    local diff = ang - face
+    while diff > math.pi do diff = diff - 2 * math.pi end
+    while diff < -math.pi do diff = diff + 2 * math.pi end
+    return diff
+end
+
+-- Absolute yaw (rad) toward GUID, or nil.
+function World.heading_to_guid(guid)
+    if not guid or not (RaijinLab and RaijinLab.ObjectPosition) then return nil end
+    local px, py = RaijinLab:ObjectPosition("player")
+    local tx, ty = RaijinLab:ObjectPosition(guid)
+    if not px or not tx then return nil end
+    return math.atan2(ty - py, tx - px)
+end
+
+-- Instant face toward GUID (does NOT change unit selection). Returns true if
+-- Face was issued. Acquire-off multi-dot uses this before CastSpell(guid).
+function World.face_guid(guid)
+    local yaw = World.heading_to_guid(guid)
+    if yaw == nil then return false end
+    local A = RaijinLab and RaijinLab.Actions
+    if A and A.Face then
+        local ok = pcall(A.Face, yaw)
+        return ok and true or false
+    end
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        local ok = pcall(RaijinLab.RuntimeCall, RaijinLab, "FaceDirection", yaw)
+        return ok and true or false
+    end
+    return false
+end
+
+-- true = facing, false = not facing or undetermined (FAIL-CLOSED for casts).
+-- Undetermined must NOT wire unit-targeted spells ("in front of you" spam).
 function World.is_facing_guid(guid, half_arc)
     if not guid then return false end
     half_arc = tonumber(half_arc) or World.CAST_FACE_HALF_ARC
-    -- Prefer hostiles-cache bit (same frame as NearbyHostiles) — free.
+    -- Live math first (fresher than packed hostiles bit).
+    local err = World.heading_error_to_guid(guid)
+    if err ~= nil then
+        return math.abs(err) <= half_arc
+    end
+    -- Hostiles-cache bit only if very fresh.
     local c = World._hostiles_cache
     if c and c.by_guid then
         local row = c.by_guid[tostring(guid)]
-        if row and row.facing ~= nil and (not c.t or ((GetTime and GetTime()) or 0) - c.t < 0.12) then
+        if row and row.facing ~= nil and (not c.t or ((GetTime and GetTime()) or 0) - c.t < 0.08) then
             return row.facing and true or false
-        end
-    end
-    -- Compute from positions whenever possible (fail-closed when measurable).
-    -- Returning true on unknown was letting "target needs to be in front" spam.
-    if RaijinLab and RaijinLab.ObjectPosition then
-        local px, py = RaijinLab:ObjectPosition("player")
-        local tx, ty = RaijinLab:ObjectPosition(guid)
-        local face = nil
-        if RaijinLab.ObjectFacing then
-            face = RaijinLab:ObjectFacing("player")
-        end
-        if not face and GetPlayerFacing then face = GetPlayerFacing() end
-        if px and tx and face then
-            local ang = math.atan2(ty - py, tx - px)
-            local diff = ang - face
-            while diff > math.pi do diff = diff - 2 * math.pi end
-            while diff < -math.pi do diff = diff + 2 * math.pi end
-            return math.abs(diff) <= half_arc
         end
     end
     if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
@@ -270,8 +303,8 @@ function World.is_facing_guid(guid, half_arc)
             return v == true or v == 1 or v == "true"
         end
     end
-    -- No geometry, no runtime answer: undetermined — allow (other gates apply).
-    return true
+    -- FAIL-CLOSED: undetermined is not "ok to cast".
+    return false
 end
 
 -- GUID line-of-sight. true = clear, false = blocked, nil = undetermined.
@@ -2391,12 +2424,11 @@ local function aura_search_tokens()
     return { "target", "focus", "pet", "targettarget", "focustarget", "pettarget", "mouseover" }
 end
 
--- Find a nearby unit matching aura present/missing.
--- Returns token (may be nil), guid, dist.
--- NEVER requires nameplates or client TargetUnit. Uses OM positions + CLEU aura map.
--- opts.acquire_target is ignored here (cast path only); discovery is always GUID-first.
--- Never changes the client's current target.
-function World.find_aura_search_target(opts)
+-- Find nearby units matching aura present/missing.
+-- Returns list of {token, guid, dist, face_err} sorted best-first (face then dist).
+-- NEVER requires nameplates or TargetUnit. Never changes client selection.
+-- opts.max_n = max candidates (default 5) for same-tick fallthrough.
+function World.find_aura_search_targets(opts)
     opts = opts or {}
     World.arm_combat_log()
     local kind = string.lower(tostring(opts.kind or "debuff"))
@@ -2404,19 +2436,23 @@ function World.find_aura_search_target(opts)
     local spell_id = tonumber(opts.spell_id) or 0
     local aura_name = tostring(opts.name or "")
     if spell_id <= 0 and (aura_name == "" or not aura_name) then
-        return nil
+        return {}
     end
     if spell_id > 0 and (aura_name == "" or not aura_name) and GetSpellInfo then
         local ok, n = pcall(GetSpellInfo, spell_id)
         if ok and n then aura_name = n end
     end
     local range = tonumber(opts.range) or 40
+    local max_n = tonumber(opts.max_n) or 5
+    if max_n < 1 then max_n = 1 end
+    if max_n > 8 then max_n = 8 end
     local hostile_only = opts.hostile_only
     if hostile_only == nil then hostile_only = true end
     local include_players = opts.include_players and true or false
     local min_st = tonumber(opts.min_stacks) or 1
     local max_st = tonumber(opts.max_stacks) or 0
     local want_missing = (state == "missing" or state == "absent" or state == "lacks")
+    local half = World.CAST_FACE_HALF_ARC
 
     local function aura_matches(has, stacks)
         if want_missing then return not has end
@@ -2438,11 +2474,8 @@ function World.find_aura_search_target(opts)
         return aura_matches(has, stacks)
     end
 
-    -- GUID path: CLEU / optimistic only. Units from collect_nearby_enemies are
-    -- already hostile — do NOT re-call om_unit_is_hostile (extra RuntimeCalls).
     local function aura_ok_on_guid(guid)
         local has, stacks = World.guid_aura_state(guid, spell_id, aura_name)
-        -- Missing: no CLEU record => missing (multi-dot). Present: need mark.
         return aura_matches(has, stacks)
     end
 
@@ -2450,53 +2483,71 @@ function World.find_aura_search_target(opts)
     local Ex = RaijinLab and RaijinLab.RotationExecutor
     local candidates = {}
 
-    local function add_cand(token, guid, dist, facing_ok)
+    local function add_cand(token, guid, dist)
         if not guid then return end
         local g = tostring(guid)
         if seen[g] then return end
         if Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid) then return end
         seen[g] = true
-        -- Face + LoS gates: never select a unit that will hard-fail the cast.
-        if facing_ok == false then return end
-        if facing_ok == nil and not World.is_facing_guid(guid) then return end
+        -- LoS hard fail drops candidate (cannot auto-fix through walls).
         if World.is_los_guid and World.is_los_guid(guid) == false then return end
+        -- Live face error for sort; face-fail is NOT dropped here so auto-face
+        -- can still try the nearest missing-debuff unit.
+        local ferr = World.heading_error_to_guid(guid)
+        local abs_err = (ferr ~= nil) and math.abs(ferr) or 99
+        local facing = (ferr ~= nil) and (abs_err <= half) or World.is_facing_guid(guid, half)
         candidates[#candidates + 1] = {
             token = token, guid = guid, dist = tonumber(dist) or 999,
+            face_err = abs_err, facing = facing and true or false,
         }
     end
 
-    -- 1) Current target is a candidate (when OM pack is cold) — NOT preferred
-    -- for selection change; only as a discoverable unit among others.
     if UnitExists and UnitExists("target") and aura_ok_on_token("target") then
         local tg = UnitGUID and UnitGUID("target")
         if tg then
             local d = World.token_distance("target")
             if d == nil or d >= 900 then d = 0 end
             if d <= range + 5 then
-                add_cand("target", tg, d, World.is_facing_guid(tg) or nil)
+                add_cand("target", tg, d)
             else
                 seen[tostring(tg)] = true
             end
         end
     end
 
-    -- 2) RUNTIME HOSTILES pack (in-front + LoS). Skip if OM still warming.
     local enemies = World.collect_nearby_enemies(range)
-    for i = 1, math.min(#enemies, 32) do
+    for i = 1, math.min(#enemies, 40) do
         local e = enemies[i]
         if e.guid and not seen[tostring(e.guid)] then
             local d = tonumber(e.dist_center) or 999
-            if d <= range and e.facing ~= false and aura_ok_on_guid(e.guid) then
-                add_cand(e.token, e.guid, d, e.facing ~= false)
+            if d <= range and aura_ok_on_guid(e.guid) then
+                add_cand(e.token, e.guid, d)
             end
         end
     end
 
-    if #candidates == 0 then return nil end
+    -- Prefer already-facing, then nearest.
     table.sort(candidates, function(a, b)
+        local fa = a.facing and 0 or 1
+        local fb = b.facing and 0 or 1
+        if fa ~= fb then return fa < fb end
+        local ea, eb = a.face_err or 99, b.face_err or 99
+        if math.abs(ea - eb) > 0.05 then return ea < eb end
         return (a.dist or 999) < (b.dist or 999)
     end)
-    local best = candidates[1]
+
+    local out = {}
+    for i = 1, math.min(#candidates, max_n) do
+        out[i] = candidates[i]
+    end
+    return out
+end
+
+-- Back-compat single-hit wrapper.
+function World.find_aura_search_target(opts)
+    local list = World.find_aura_search_targets(opts)
+    if not list or #list == 0 then return nil end
+    local best = list[1]
     return best.token, best.guid, best.dist
 end
 

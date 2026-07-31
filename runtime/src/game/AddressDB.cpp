@@ -15,8 +15,14 @@ uint64_t SafeGetActivePlayerGuid() {
 }
 
 int ReadInWorldFlag() {
+    // CRITICAL: stock/Ascension stores this as a BYTE (bool), NOT a 32-bit int.
+    // Reading as int required value == 1 exactly; when adjacent bytes were
+    // non-zero the int was e.g. 0x000001xx / garbage and registration NEVER
+    // ran → BRIDGE ONLINE never logged → addon saw stock IsLinuxClient forever.
+    // WowAutoSDK / proven injectors read uint8_t: any non-zero = in world.
     __try {
-        return *reinterpret_cast<volatile int*>(g_InWorld);
+        uint8_t b = *reinterpret_cast<volatile uint8_t*>(g_InWorld);
+        return b ? 1 : 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1; // unreadable
     }

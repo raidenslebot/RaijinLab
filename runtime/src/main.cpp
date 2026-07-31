@@ -150,7 +150,7 @@ static DWORD WINAPI MainThread(LPVOID param) {
             ++settle;
             const int needSettle = everRegistered ? kMinSettleRebind : kMinSettleFirst;
             const int needWorld  = everRegistered ? kInWorldStreakRebind : kInWorldStreakFirst;
-            // STRICT: flag must be 1 for needWorld consecutive ticks.
+            // STRICT: in-world byte non-zero for needWorld consecutive ticks.
             // Never register on glue / load screen (flag!=1).
             const bool worldReady = (flag == 1) && (inWorldStreak >= needWorld);
             if (settle >= needSettle && worldReady && failBackoff == 0) {
@@ -159,7 +159,7 @@ static DWORD WINAPI MainThread(LPVOID param) {
                     everRegistered = true;
                     RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d inWorldStreak=%d rebind=%d",
                                   RL::Bridge::Version(), L, flag, settle, inWorldStreak,
-                                  everRegistered && settle <= kMinSettleRebind + 5 ? 1 : 0);
+                                  everRegistered ? 1 : 0);
                 } else {
                     RL::Log::Warn("Register failed - backoff %d ticks (flag=%d)",
                                   kFailBackoff, flag);
@@ -170,11 +170,12 @@ static DWORD WINAPI MainThread(LPVOID param) {
         }
 
         ++tick;
-        // Heartbeat every ~2.5s so a stuck rebind is obvious in the inject tail.
-        if ((tick % 50) == 0) {
-            RL::Log::Info("heartbeat reg=%d ever=%d sec=%d flag=%d settle=%d inWorld=%d L=%p",
-                          (int)registered, (int)everRegistered, (int)secondary, flag, settle,
-                          inWorldStreak, L);
+        // WRN so it always appears in the inject tail (Info was easy to miss).
+        if ((tick % 40) == 0) {
+            RL::Log::Warn("heartbeat reg=%d ever=%d flag=%d settle=%d inWorld=%d L=%p waiting=%d",
+                          (int)registered, (int)everRegistered, flag, settle,
+                          inWorldStreak, L,
+                          (!registered && L) ? 1 : 0);
         }
 
         Sleep(50);

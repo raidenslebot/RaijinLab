@@ -101,9 +101,8 @@ bool InWorld();              // GUID proxy first, then g_InWorld flag
 void* LuaState();
 uint64_t ActivePlayerGuid(); // ClntObjMgrGetActivePlayer
 // PURE memory read of the g_InWorld flag (NO client-function call). Safe to
-// poll from the worker thread — a read can't block/deadlock the way calling
-// ClntObjMgrGetActivePlayer cross-thread does during a world load. Returns
-// 1 = in world, 0 = not, -1 = address unreadable.
+// poll from the worker thread. The flag is a BYTE (bool) at g_InWorld — do not
+// read as int. Returns 1 = in world (byte != 0), 0 = not, -1 = unreadable.
 int InWorldFlag();
 
 } // namespace RL::Game::Addr

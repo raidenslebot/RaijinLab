@@ -123,24 +123,25 @@ already inside `IsLinuxClient` → RuntimeCall. Nested VM re-entry → ERROR #13
 - Multi-dot different GUID: native Spell_C(guid), restore via pcall only.
 - FSExec allowed only when not already inside Lua (worker/main non-Lua paths).
 
-## Multi-dot / aura_search (1.10.11–1.10.12) — FUNDAMENTAL
+## Multi-dot / aura_search — FUNDAMENTAL (do not regress)
 
 **Symptom:** Icy Touch only fired with a client target; acquire-off snapped
 selection; rotation froze after failed IT; enemies_in_range went dead.
 
-**Root causes (fixed):**
-1. **Dispatch gated NearbyHostiles on om.enable** — soft list never ran; only
-   mouseover/Unit* worked (instant while hovering).
-2. **Empty hostiles packs were cached** — enemies_in_range stayed 0.
-3. **Spell_C returns true without land** — long pending/GCD locked ALL lower
-   slots (IT priority loop freeze).
-4. **Long GUID blacklists / not_ready holds** — multi-dot could not recover.
+**Root causes (fixed historically):**
+1. Dispatch gated NearbyHostiles on om.enable — soft list never ran
+2. Empty hostiles packs cached — enemies_in_range stayed 0
+3. Spell_C true without land — long GCD froze the list
+4. **False crash "fixes" (1.10.22):** multi-second empty OM warm + rotation
+   boot ticks with skip_enemies **killed AuraSearch** while barely helping
+   crashes. Never "fix" multi-dot by disabling discovery.
 
 **Rules (permanent):**
-- Rotation discovery / hostility / face / cast-by-GUID = **runtime only**
-- Acquire OFF → Spell_C(guid) + restore selection; never Act.Target
-- Multi-dot wire without evidence → provisional GCD ≤ **80ms**, FAIL frees now,
-  phantom frees next tick (never multi-second list freeze)
-- Cast fail → **same-tick priority fallthrough** (clear provisional GCD)
-- Never cache empty NearbyHostiles packs
-- GUID blacklist cap **0.6s**
+- Soft list walk is the multi-dot backbone (works with om.enable 0 or 1)
+- AuraSearch always soft-refreshes; never depends on a warm-up that returns empty
+- OnLuaReload: brief quiet (~400ms) only — never reset cold settle / everWalked
+- SEH walk keeps prior snapshot on bad frames (never wipe units=0 on one AV)
+- Failed walk ≠ empty world; keep last good snapshot
+- Acquire OFF → Spell_C(guid) + pcall restore; never FSExec inside Lua C
+- Never cache empty NearbyHostiles / AuraSearch packs as success
+- Cast fail → same-tick fallthrough

@@ -933,24 +933,27 @@ void Invalidate() {
     // Do NOT clear g_enumDead - once the enum AVs, it stays off until re-inject.
 }
 
-// Static warm/settle state shared with Refresh (reset on /reload).
-static ULONGLONG g_omFirstLocalMs = 0;
-static bool g_omWarmDone = false;
+// OM lifecycle (fundamental — do not "fix crashes" by disabling discovery):
+//   g_firstPlayerMs  — first time we saw a local player after inject (cold only)
+//   g_everWalkedOk   — at least one successful list walk this inject
+//   g_rebindQuietUntil — brief pause after lua_State change (FrameXML mid-load)
+// SoftRefresh (multi-dot) and Refresh (om.enable=1) BOTH walk the same list
+// with SEH. Never leave a multi-second empty window after every /reload.
+static ULONGLONG g_firstPlayerMs = 0;
+static bool g_everWalkedOk = false;
+static ULONGLONG g_rebindQuietUntil = 0;
 static bool g_omWasOn = false;
-static int g_omListOnlyLeft = 12;
-static ULONGLONG g_omEnableAt = 0;
+static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
+static constexpr ULONGLONG kRebindQuietMs = 400ull;   // FrameXML flicker only
+static constexpr ULONGLONG kWalkMinIntervalMs = 80ull; // ~12 Hz max
 
 void OnLuaReload() {
-    // Called from worker when lua_State pointer changes after a successful
-    // prior Register. Must not walk OM; FrameXML is mid-load.
-    g_omFirstLocalMs = 0;
-    g_omWarmDone = false;
-    g_omWasOn = false;
-    g_omListOnlyLeft = 12;
-    g_omEnableAt = 0;
+    // lua_State changed. Drop snapshot (pointers belong to old VM epoch) and
+    // pause walks briefly while FrameXML reloads. Do NOT reset cold settle /
+    // everWalked — that forced 6s+ of empty AuraSearch after every rebind.
     Invalidate();
-    // Soft hostiles path uses its own statics — force a quiet period via enable=0
-    // (caller sets om.enable=0). SoftRefresh checks om.enable.
+    g_omWasOn = false;
+    g_rebindQuietUntil = GetTickCount64() + kRebindQuietMs;
 }
 
 bool EnumIsDead() { return g_enumDead; }
@@ -1218,36 +1221,37 @@ static int SoftPodsSeh() {
     }
 }
 
-// List-only soft refresh for rotation discovery when om.enable=0.
-// NEVER EnumVisibleObjects. MUST use the same hard settle as Refresh —
-// walking the object list during world load hard-crashes (CRASH_LESSONS).
+// Shared gate for SoftRefresh + Refresh list walks.
+static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
+    if (!local) return false;
+    if (now < g_rebindQuietUntil) return false; // FrameXML rebind flicker only
+    if (!g_firstPlayerMs) g_firstPlayerMs = now;
+    // Cold inject only: short settle until first successful walk ever.
+    if (!g_everWalkedOk && (now - g_firstPlayerMs) < kColdSettleMs)
+        return false;
+    return true;
+}
+
+// List-only soft refresh for multi-dot when om.enable=0 OR as discovery backbone.
+// NEVER EnumVisibleObjects. SEH-isolated walk. Rate-limited.
 static void SoftRefreshListOnlyForHostiles() {
     static ULONGLONG s_last = 0;
     ULONGLONG now = GetTickCount64();
     uint64_t local = SafeGetActive();
-    if (!local) {
-        return;
-    }
-    // Share settle / warm clocks with Refresh — never walk during warm-up.
-    if (!g_omFirstLocalMs) g_omFirstLocalMs = now;
-    if ((now - g_omFirstLocalMs) < 6000ull) return;
-    if (!g_omWarmDone) {
-        if (!g_omEnableAt) g_omEnableAt = now;
-        if ((now - g_omEnableAt) < 1500ull) return;
-        g_omWarmDone = true;
-    }
-    if ((now - s_last) < 100ull) return;            // ~10 Hz max
+    if (!OmWalkAllowed(now, local)) return;
+    if ((now - s_last) < kWalkMinIntervalMs) return;
     s_last = now;
     std::lock_guard<std::mutex> lock(g_mu);
     g_podCount = 0;
     int listRc = SoftWalkSeh();
     if (listRc != 1 || g_podCount == 0) {
-        return; // keep prior snapshot
+        return; // keep prior snapshot (do not wipe discovery on a bad frame)
     }
     if (!SoftPodsSeh()) {
         g_podCount = 0;
         return;
     }
+    g_everWalkedOk = true;
     g_lastRefresh = now;
 }
 
@@ -1456,7 +1460,8 @@ bool HasUnitAura(uint64_t guid, int spellId, int* outStacks) {
 }
 
 std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN) {
-    // RUNTIME-FIRST multi-dot. Cached ~80ms so 50Hz rotation ticks are free.
+    // RUNTIME-FIRST multi-dot. Always soft-refresh capable so discovery works
+    // even when om.enable is 0 or Refresh is quiet. Cached ~80ms for 50Hz ticks.
     if (spellId <= 0) return "0";
     static ULONGLONG s_cacheT = 0;
     static ULONGLONG s_cacheGen = 0;
@@ -1469,18 +1474,19 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     if (s_cacheSid == spellId && s_cacheMissing == (wantMissing ? 1 : 0)
         && std::fabs(s_cacheRange - maxRange) < 0.5f && s_cacheMaxN == maxN
         && s_cacheGen == g_auraSearchGen
-        && s_cacheT && (now - s_cacheT) < 80ull && !s_cacheOut.empty()) {
+        && s_cacheT && (now - s_cacheT) < 80ull && !s_cacheOut.empty()
+        && s_cacheOut != "0") {
         return s_cacheOut;
     }
 
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
-    // Refresh at most ~12Hz; reuse snapshot otherwise (was full OM walk every tick).
+    // Always run soft list refresh for multi-dot (does not depend on om.enable).
+    // If om is on, Refresh also runs — soft path is the reliability backbone.
+    SoftRefreshListOnlyForHostiles();
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
-    if (!g_lastRefresh || (now - g_lastRefresh) >= 80ull) {
-        if (omOn) Refresh(false);
-        else SoftRefreshListOnlyForHostiles();
-    }
+    if (omOn && (!g_lastRefresh || (now - g_lastRefresh) >= 80ull))
+        Refresh(false);
 
     Vec3 playerPos = Position(localGuid);
     bool havePlayer = (playerPos.x != 0.f || playerPos.y != 0.f);
@@ -1586,17 +1592,12 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
 
 void Refresh(bool force) {
     std::lock_guard<std::mutex> lock(g_mu);
-    // NOTE: do NOT early-return on g_enumDead. EnumVisibleObjects can AV once and
-    // latch off; the linked-list walk must keep feeding the snapshot (list-only mode).
-    // Old code `if (g_enumDead) return` killed the entire OM after one enum AV.
 
     ULONGLONG now = GetTickCount64();
     int ttl = RL::Config::Opts().omCacheMs;
-    if (ttl < 100) ttl = 100; // hard floor so we never spam enum
+    if (ttl < (int)kWalkMinIntervalMs) ttl = (int)kWalkMinIntervalMs;
     if (!force && g_lastRefresh && (now - g_lastRefresh) < (ULONGLONG)ttl) return;
 
-    // Require an active player - enum at login/charselect AVs on this client.
-    // SafeGetActive is a separate SEH-only function (no C++ objects).
     uint64_t local = SafeGetActive();
     if (!local) {
         g_all.clear();
@@ -1605,111 +1606,60 @@ void Refresh(bool force) {
         return;
     }
 
-    // ============================================================
-    // CRASH LESSON (permanent): suite-on / PEW / inject must NEVER walk the
-    // object list or EnumVisibleObjects while the world is still settling.
-    // Instant client hard-crash after login+suite has been reproduced when:
-    //   - om.enable flipped to 1 the same frame as suite start
-    //   - list walk + enum + Lua GetUnitCount all hit main thread together
-    //   - settle was only ~2s and warm-up only 4 list-only frames
-    // Policy: long hard settle (no walk), long list-only warm-up, then enum.
-    // Single-GUID ObjectPtr/Position still work (no full walk).
-    // ============================================================
-    if (!g_omFirstLocalMs) g_omFirstLocalMs = now;
-    // Hard settle after first local / after reload reset: NO list walk, NO enum.
-    constexpr ULONGLONG kOmSettleMs = 6000ull;
-    if ((now - g_omFirstLocalMs) < kOmSettleMs) {
-        g_lastRefresh = now;
-        return;
-    }
-
-    // om.enable=0: no walk this call (caller may soft-refresh instead).
-    // CRITICAL: do NOT restart warm-up on every 0→1 edge within a session.
-    // OnLuaReload() clears g_omWarmDone so post-reload re-enable warms once.
-    constexpr int kListOnlyFrames = 12;
-    constexpr ULONGLONG kListOnlyMs = 1500ull;
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
     if (!omOn) {
+        // Soft path owns discovery while frozen — do not clear snapshot here.
         g_omWasOn = false;
         g_lastRefresh = now;
         return;
     }
     if (!g_omWasOn) {
-        if (!g_omWarmDone) {
-            g_omEnableAt = now;
-            g_omListOnlyLeft = kListOnlyFrames;
-            RL::Log::Warn("OM first enable -> idle warm-up (no walk %llums)",
-                          (unsigned long long)kListOnlyMs);
-        } else {
-            RL::Log::Info("OM re-enable (warm already done, no restart)");
-        }
+        g_omWasOn = true;
+        RL::Log::Info("OM enable (list walk active, enum=%s)",
+                      RL::Config::Get("om.enum", "0") == "1" ? "on" : "off");
     }
-    g_omWasOn = true;
 
-    // WARM-UP: return empty WITHOUT list walk or enum. Live crash 2026-07-31
-    // 14:09: rotation ON the same second as first SafeWalkObjectList after
-    // rebind → ERROR #132 null EIP. Walking while the world/list is still
-    // settling corrupts the client even when SEH "succeeds".
-    const bool listOnlyClock = omOn && !g_omWarmDone && g_omEnableAt
-        && (now - g_omEnableAt) < kListOnlyMs;
-    if (!g_omWarmDone && (listOnlyClock || g_omListOnlyLeft > 0)) {
-        if (g_omListOnlyLeft > 0)
-            --g_omListOnlyLeft;
-        if (!listOnlyClock && g_omListOnlyLeft <= 0)
-            g_omWarmDone = true;
+    // Shared gates with SoftRefresh (cold settle + rebind quiet). Never invent
+    // multi-second empty "warm-ups" that blind AuraSearch.
+    if (!OmWalkAllowed(now, local)) {
         g_lastRefresh = now;
-        return; // keep prior snapshot / empty — do not walk
+        return;
     }
-    g_omWarmDone = true;
 
-    // Enum is optional and crash-prone on Ascension; default list-only after warm.
-    // Only attempt enum if explicitly enabled and not already latched dead.
-    const bool wantEnum = !g_enumDead
-        && RL::Config::Get("om.enum", "0") == "1";
-    const bool allowEnum = wantEnum;
-
-    // List walk only (after warm). Enum only if om.enum=1.
+    // List walk is the foundation for multi-dot. SEH inside SafeWalkObjectList;
+    // bad frames keep prior snapshot (PodsToVectors only on success).
     g_podCount = 0;
     int listRc = SafeWalkObjectList();
     size_t listCount = g_podCount;
 
-    // NEVER put kMaxEnum Pods on the stack (Pod grew with faction/target).
     static Pod s_listPods[kMaxEnum];
     size_t listN = listCount;
     if (listN > kMaxEnum) listN = kMaxEnum;
     for (size_t i = 0; i < listN; ++i) s_listPods[i] = g_pods[i];
 
-    // Probe only when explicitly requested (never auto on suite-on — mask
-    // trials hammer ObjectPtr and crashed load/suite).
-    static bool s_probeFired = false;
     if (RL::Config::Get("om.probe", "0") == "1") {
         g_probeArmed = true;
     }
 
     g_podCount = 0;
     int enumRc = 1;
-    if (allowEnum) {
+    // Enum is opt-in (om.enum=1). Default list-only — proven stable for multi-dot.
+    const bool wantEnum = !g_enumDead && RL::Config::Get("om.enum", "0") == "1";
+    if (wantEnum) {
         enumRc = SafeEnumVisible();
         if (enumRc != 1) {
             if (!g_enumDeadLogged) {
                 g_enumDeadLogged = true;
                 RL::Log::Error(
-                    "EnumVisibleObjects AV 0x%08X - enumvis OFF, list-only OM continues",
+                    "EnumVisibleObjects AV 0x%08X - enumvis OFF, list-only continues",
                     enumRc);
             }
             g_enumDead = true;
             g_podCount = 0;
             enumRc = g_lastEnumRc ? g_lastEnumRc : enumRc;
         }
-    } else {
-        // Default: list-only (enum off). Restore list pods after optional enum path.
-        enumRc = 1;
-        g_podCount = 0;
     }
 
-    // Merge: start with enumvis pods, add list pods with new guids
-    // g_pods currently holds enum results (or empty)
-    size_t enumN = g_podCount;
     auto hasGuid = [&](uint64_t g) -> bool {
         if (!g) return false;
         for (size_t i = 0; i < g_podCount; ++i)
@@ -1724,14 +1674,17 @@ void Refresh(bool force) {
         }
     }
 
-    if (g_podCount == 0 && listRc != 1 && enumRc != 1) {
-        g_all.clear();
-        for (auto& v : g_byType) v.clear();
+    if (g_podCount == 0) {
+        // Failed walk: keep prior g_all (do not wipe multi-dot targets).
         g_lastRefresh = now;
         return;
     }
 
-    PodsToVectors();
+    if (!SoftPodsSeh()) {
+        g_lastRefresh = now;
+        return;
+    }
+    g_everWalkedOk = true;
     g_lastRefresh = now;
 
     // ONE-SHOT probe report - dumps everything a future RE round needs to
@@ -1740,24 +1693,23 @@ void Refresh(bool force) {
     // kProbeMax guids. Only fires when probe was armed this Refresh.
     if (g_probeArmed) {
         g_probeArmed = false;
-        s_probeFired = true;
-        // Run mask trials NOW (outside the enum iterator - safe from
-        // reentrancy AVs that crashed the client in 1.7.1-om-probe).
         RunProbeMaskTrials();
-        RL::Log::Info("OM PROBE list(mgr=%08X first=%02lX next=%02lX iters=%d count=%zu) enum(cb=%d withGuid=%d pods=%zu ptrMiss=%d dead=%d rc=0x%X)",
-                      (unsigned)g_listMgr, (unsigned long)g_listFirstOff,
-                      (unsigned long)g_listNextOff, g_listDiagIters, listN,
-                      g_enumCbCallCount, g_enumCbSeenGuids, enumN, g_objPtrMiss,
-                      g_enumDead ? 1 : 0, (unsigned)enumRc);
+        RL::Log::Info(
+            "OM PROBE list(mgr=%08X first=%02lX next=%02lX iters=%d count=%zu) enum(cb=%d withGuid=%d pods=%zu ptrMiss=%d dead=%d rc=0x%X)",
+            (unsigned)g_listMgr, (unsigned long)g_listFirstOff,
+            (unsigned long)g_listNextOff, g_listDiagIters, listN,
+            g_enumCbCallCount, g_enumCbSeenGuids, g_podCount, g_objPtrMiss,
+            g_enumDead ? 1 : 0, (unsigned)enumRc);
         for (size_t i = 0; i < g_probeCount; ++i) {
             const ProbeEntry& pe = g_probeEntries[i];
-            RL::Log::Info("OM PROBE[%zu] guid=0x%llX  m-1=%08lX  mFFFF=%08lX  mUnit(0x18)=%08lX  mPlyr(0x10)=%08lX  mGO(0x20)=%08lX",
-                          i, (unsigned long long)pe.guid,
-                          (unsigned long)pe.ptrMinus1,
-                          (unsigned long)pe.ptrMaskFFFF,
-                          (unsigned long)pe.ptrMaskUnit,
-                          (unsigned long)pe.ptrMaskPlyr,
-                          (unsigned long)pe.ptrMaskGO);
+            RL::Log::Info(
+                "OM PROBE[%zu] guid=0x%llX  m-1=%08lX  mFFFF=%08lX  mUnit=%08lX  mPlyr=%08lX  mGO=%08lX",
+                i, (unsigned long long)pe.guid,
+                (unsigned long)pe.ptrMinus1,
+                (unsigned long)pe.ptrMaskFFFF,
+                (unsigned long)pe.ptrMaskUnit,
+                (unsigned long)pe.ptrMaskPlyr,
+                (unsigned long)pe.ptrMaskGO);
         }
     }
 
@@ -1771,8 +1723,9 @@ void Refresh(bool force) {
     if (g_all.size() != s_lastLogCount || u != s_lastU || pl != s_lastPl || go != s_lastGo) {
         s_lastLogCount = g_all.size();
         s_lastU = u; s_lastPl = pl; s_lastGo = go;
-        RL::Log::Info("OM ok merge list=%zu/%d enum=%zu/%d total=%zu units=%zu players=%zu gos=%zu items=%zu ptrMiss=%d",
-                      listCount, listRc, enumN, enumRc, g_all.size(), u, pl, go, it, g_objPtrMiss);
+        RL::Log::Info(
+            "OM ok list=%zu/%d total=%zu units=%zu players=%zu gos=%zu items=%zu ptrMiss=%d",
+            listCount, listRc, g_all.size(), u, pl, go, it, g_objPtrMiss);
     }
 }
 

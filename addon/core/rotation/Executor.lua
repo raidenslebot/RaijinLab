@@ -2501,11 +2501,7 @@ function Executor._tick_body()
             needs_aura_search = nc.aura
         end
     end
-    -- Boot window: first few ticks after rotation ON never fan OM discovery.
-    -- Live crash: first tick + first SafeWalk after rebind killed the client.
-    Executor._boot_ticks = (Executor._boot_ticks or 0) + 1
-    local boot = (Executor._boot_ticks or 0) <= 8
-    local skip_enemies = boot or not (needs_enemies or needs_aura_search)
+    local skip_enemies = not (needs_enemies or needs_aura_search)
 
     if World and World.build_context then
         -- fill_live overwrites spell snapshot; skip duplicate IsUsable/range work.
@@ -2515,8 +2511,7 @@ function Executor._tick_body()
             skip_enemies = skip_enemies,
             skip_spell_snapshot = true,
             skip_facing = true,
-            skip_los = boot or false,
-            light = boot and true or nil,
+            skip_los = false,
         })
         if okb and type(built) == "table" then
             ctx = built
@@ -2904,9 +2899,6 @@ function Executor.start(interval)
     Executor._idle_until = nil
     Executor._idle_had_target = false
     Executor._skip_streak = 0
-    -- First real tick only after one frame so start() chat/log is not mid-OM.
-    Executor._start_t = (GetTime and GetTime()) or 0
-    Executor._boot_ticks = 0
     do
         local G = gate()
         if G and G.reset_session then G.reset_session() end

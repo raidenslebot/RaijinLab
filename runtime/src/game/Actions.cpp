@@ -404,32 +404,27 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
 
     uint64_t prev = ReadClientTargetGuid();
 
-    // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) + descriptor pin.
+    // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) ONLY.
     // Never demote multi-dot / GUID casts to stock CastSpellByID (client target).
     //
-    // CRASH FIX (mid-combat): do NOT call TargetUnit / TargetLastTarget / ClearTarget
-    // from inside CastSpell. Nested Lua pcalls while already in IsLinuxClient
-    // re-entry are the ERROR #132 null-EIP pattern under combat load. Selection
-    // changes for multi-dot belong in Lua acquire_on only; acquire-off uses
-    // UNIT_FIELD_TARGET pin + Spell_C(guid) only, then descriptor restore.
+    // ACQUIRE-OFF (fundamental): do NOT write UNIT_FIELD_TARGET before cast.
+    // That field IS client selection — pinning it force-acquired the multi-dot
+    // victim (live: pin=1 whenever prev!=guid). Acquire ON is Lua Target first.
+    // CRASH FIX: never TargetUnit/ClearTarget from inside CastSpell (ERROR #132).
+    // After Spell_C, if selection stuck on victim, restore descriptor only.
     // Only guid==0 is self / ground / current-target (still prefer nested pcall).
     if (targetGuid != 0) {
-        bool pinned = false;
-        if (prev != targetGuid) {
-            pinned = WriteClientTargetGuid(targetGuid);
-            if (!pinned)
-                RL::Log::Warn("CastSpell pin failed id=%d guid=0x%llX",
-                              spellId, (unsigned long long)targetGuid);
-        }
         int nrc = SafeNativeCast(spellId, targetGuid);
-        // Descriptor-only restore — never nested TargetUnit here.
-        if (prev != targetGuid || pinned)
+        // Restore if Spell_C mutated selection — never leave multi-dot sticky.
+        uint64_t nowSel = ReadClientTargetGuid();
+        if (nowSel != prev)
             WriteClientTargetGuid(prev);
         if (nrc > 0) {
             g_cast_ok++;
-            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX pin=%d ok=%d",
+            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX now=0x%llX ok=%d",
                           spellId, (unsigned long long)targetGuid,
-                          (unsigned long long)prev, pinned ? 1 : 0, g_cast_ok);
+                          (unsigned long long)prev, (unsigned long long)nowSel,
+                          g_cast_ok);
             return true;
         }
         if (nrc < 0)
@@ -625,19 +620,28 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         }
     }
 
-    // Acquire-OFF multi-dot: NO_TARGET_CHANGE. CastSpell already restores when
-    // prev != victim. When acquire is ON, Lua Targets first so prev==victim and
-    // restore is a no-op — selection stays on the match.
+    // CastSpell is pin-free Spell_C(guid) + descriptor restore if selection moved.
+    // NO_TARGET_CHANGE: double-ensure restore (acquire-off multi-dot).
+    // Without NO_TARGET_CHANGE and acquire ON, Lua already Target'd so prev==victim.
     uint64_t prev = (targetGuid != 0) ? ReadClientTargetGuid() : 0;
     bool ok = CastSpell(spellId, targetGuid);
     if (ok) {
-        // Explicit restore pass for NO_TARGET_CHANGE (double-ensure after native).
-        if ((flags & kCastNoTargetChange) && targetGuid != 0) {
-            RestoreSelectionAfterCast(prev, targetGuid);
+        if (targetGuid != 0) {
+            uint64_t nowSel = ReadClientTargetGuid();
+            if (nowSel != prev)
+                WriteClientTargetGuid(prev);
+            if ((flags & kCastNoTargetChange) && ReadClientTargetGuid() != prev)
+                RestoreSelectionAfterCast(prev, targetGuid);
         }
         r.ok = true;
         r.reason = "ok";
     } else {
+        // Fail: still restore if cast path mutated selection before failing.
+        if (targetGuid != 0) {
+            uint64_t nowSel = ReadClientTargetGuid();
+            if (nowSel != prev)
+                WriteClientTargetGuid(prev);
+        }
         r.reason = "cast_fail";
     }
     return r;

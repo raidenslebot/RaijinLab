@@ -99,11 +99,10 @@ function A.CastSpell(spellId, unitOrGuid)
         return false
     end
     -- Native Spell_C_CastSpell only (no ExecSecure - re-enters Lua and crashed client).
-    -- GUID path: runtime pins UNIT_FIELD_TARGET for melee, then restores selection
-    -- after Spell_C (multi-dot must never stick the victim when acquire is off).
+    -- GUID path: Spell_C(guid) only — runtime does NOT TargetUnit / pin-select
+    -- (acquire-off multi-dot). NO_TARGET_CHANGE restores if Spell_C stuck victim.
     local res
     if g then
-        -- Prefer CastSpellEx with NO_TARGET_CHANGE so restore is double-ensured.
         local flags = A.CAST_NO_TARGET_CHANGE or 2
         local ex = rt("CastSpellEx", spellId, g, flags)
         if type(ex) == "string" then

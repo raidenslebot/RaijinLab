@@ -151,6 +151,21 @@ FrameXML was still settling after `/reload`.
 authorize enum. Keep `g_everWalkedOk` so multi-dot list soft-path does not
 re-enter the 2s cold settle.
 
+## Double FrameScript_Register on seal after /reload (1.10.40-reloadsafe) — FATAL
+
+**Proof:** 2026-07-31 16:46 `REBIND` → seed BRIDGE ONLINE → 23ms later
+`Register OK main-thread SEAL` → hard kill (log ends).
+
+**Cause:** 1.10.39 sealed by calling `FrameScript_RegisterFunction` *again*
+from inside `Lua_IsLinuxClient` (we were already the bound cclosure). Second
+reg mid-FrameXML settle after `/reload` AV/kills the client.
+
+**Rule:**
+- Worker `Register()` is the **only** `FrameScript_RegisterFunction` site
+- First `Lua_IsLinuxClient` only sets a seal flag (no re-reg)
+- After rebind, refuse Register for ~2.5s (`g_noRegUntil`)
+- PEW must not ArmRuntimeSystems/om.enable on the PEW frame after reload
+
 ## AuraSearch gen thrash / lag spikes (1.10.35-stable)
 
 **Symptom:** Random hard kills + constant lag spikes while multi-dot runs;

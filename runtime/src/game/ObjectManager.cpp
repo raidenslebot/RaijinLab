@@ -962,7 +962,7 @@ static bool g_everWalkedOk = false;
 static ULONGLONG g_rebindQuietUntil = 0;
 static bool g_omWasOn = false;
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
-static constexpr ULONGLONG kRebindQuietMs = 600ull;   // FrameXML flicker only
+static constexpr ULONGLONG kRebindQuietMs = 2000ull;  // FrameXML /reload settle
 static constexpr ULONGLONG kWalkMinIntervalMs = 100ull; // ~10 Hz max (lag: 80→50Hz thrash)
 // EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
 // List-only until this many successful list walks OR this ms after first player

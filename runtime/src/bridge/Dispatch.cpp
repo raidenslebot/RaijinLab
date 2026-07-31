@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.39-bridge";
+const char* kVersion = "1.10.40-reloadsafe";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1332,14 +1332,14 @@ static int Handle(lua_State* L, const char* name) {
     return PushNil(L);
 }
 
-// Two-phase bind (live "HasRuntime false despite BRIDGE ONLINE"):
-//   1) Worker Register() SEEDS IsLinuxClient so Lua can reach us (off main —
-//      known L1 exception). Must NOT mark sealed — worker FrameScript_Register
-//      is flaky; first AV then "OK" left g_main_registered=true with stock
-//      IsLinuxClient still in _G → addon never detects the runtime.
-//   2) First Lua_IsLinuxClient on the GAME main thread SEALS with force=true.
-// CRITICAL_SECTION: worker seed + main seal never pushcclosure concurrently.
+// Bind policy (1.10.40-reloadsafe):
+//   Worker Register() is the ONLY FrameScript_RegisterFunction call.
+//   First Lua_IsLinuxClient only marks sealed — we are ALREADY the bound
+//   function. 1.10.39 force-re-reg on seal ~20ms after seed mid-/reload =
+//   hard client death (log ends at SEAL).
+//   g_noRegUntil blocks ANY Register during FrameXML rebind quiet.
 static std::atomic<bool> g_main_sealed{false};
+static ULONGLONG g_noRegUntil = 0;
 static CRITICAL_SECTION g_regCs;
 static std::atomic<bool> g_regCsInit{false};
 static int __cdecl Lua_IsLinuxClient(lua_State* L); // forward
@@ -1351,14 +1351,13 @@ static void EnsureRegCs() {
     }
 }
 
-// force: always FrameScript_RegisterFunction (seed / seal / rebind).
-// When !force and already sealed, no-op success (hot path).
-static int SafeRegisterNative(bool force) {
+static int SafeRegisterNative() {
     EnsureRegCs();
     EnterCriticalSection(&g_regCs);
-    if (!force && g_main_sealed.load(std::memory_order_acquire)) {
+    ULONGLONG now = GetTickCount64();
+    if (g_noRegUntil && now < g_noRegUntil) {
         LeaveCriticalSection(&g_regCs);
-        return 1;
+        return -2; // rebind quiet — not AV
     }
     auto reg = reinterpret_cast<fnReg>(RL::Game::Offsets::F().FrameScript_RegisterFunction);
     if (!reg) reg = reinterpret_cast<fnReg>(0x00817F90);
@@ -1377,26 +1376,14 @@ static int SafeRegisterNative(bool force) {
     return rc;
 }
 
-// Main-thread only (inside our Lua C callback). Force rebind and seal.
-static void EnsureMainThreadSeal() {
-    if (g_main_sealed.load(std::memory_order_acquire)) return;
-    int rc = SafeRegisterNative(true);
-    if (rc == 1) {
-        g_main_sealed.store(true, std::memory_order_release);
-        RL::Log::Warn("Register OK main-thread SEAL L=%p ver=%s",
-                      RL::Game::Addr::LuaState(), kVersion);
-    } else {
-        RL::Log::Warn("Register seal failed rc=%d", rc);
-    }
-}
-
 static int __cdecl Lua_IsLinuxClient(lua_State* L) {
-    // Seal on main thread the first time Lua reaches us (worker seed alone is
-    // not trusted for detection).
-    EnsureMainThreadSeal();
+    // Already our cclosure — binding works. NEVER RegisterFunction here.
+    if (!g_main_sealed.load(std::memory_order_acquire)) {
+        g_main_sealed.store(true, std::memory_order_release);
+        RL::Log::Warn("bridge SEAL (no re-reg) L=%p ver=%s", (void*)L, kVersion);
+    }
 
     const char* name = RL::Lua::checkstring(L, 1);
-    // Lightweight player pulse - no OM enum
     if (!name || !std::strcmp(name, "Ping") || !std::strcmp(name, "GetRuntimeVersion") ||
         !std::strcmp(name, "CastSpell") || !std::strcmp(name, "CastSpellByID") ||
         !std::strcmp(name, "ArmUnlock")) {
@@ -1410,11 +1397,12 @@ static int __cdecl Lua_IsLinuxClient(lua_State* L) {
 
 } // namespace
 
-// Drop seal so next Lua call re-seals; worker will re-seed after L change.
 void ResetRegistrationState() {
     EnsureRegCs();
     EnterCriticalSection(&g_regCs);
     g_main_sealed.store(false, std::memory_order_release);
+    // Block seed until FrameXML settles after L change /reload.
+    g_noRegUntil = GetTickCount64() + 2500ull;
     LeaveCriticalSection(&g_regCs);
 }
 
@@ -1423,16 +1411,16 @@ int Dispatch(lua_State* L) { return Lua_IsLinuxClient(L); }
 const char* Version() { return kVersion; }
 
 bool Register(bool force) {
-    // WORKER SEED ONLY. force is always treated as true for the actual
-    // RegisterFunction call so a new lua_State always gets a fresh cclosure.
-    // Do NOT set g_main_sealed here — that prevented main-thread seal and left
-    // the addon on stock IsLinuxClient (HasRuntime false / runtime=NO).
     (void)force;
-    int rc = SafeRegisterNative(true);
+    int rc = SafeRegisterNative();
     if (rc == 1) {
-        RL::Log::Warn("Register OK seed L=%p ver=%s (await main-thread seal)",
+        RL::Log::Warn("Register OK seed L=%p ver=%s",
                       RL::Game::Addr::LuaState(), kVersion);
         return true;
+    }
+    if (rc == -2) {
+        RL::Log::Info("Register deferred (rebind quiet)");
+        return false;
     }
     RL::Log::Warn("Register seed failed rc=%d", rc);
     return false;

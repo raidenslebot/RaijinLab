@@ -278,9 +278,17 @@ function RaijinLab:CoreOnEvent(event, ...)
             RaijinLab._runtime_hw_armed = false
             RaijinLab._arm_pos_ok = 0
         end
-        -- Arm once when bridge+player exist. Idempotent after set.
-        if RaijinLab:HasRuntime() and RaijinLab.ArmRuntimeSystems then
-            pcall(function() RaijinLab:ArmRuntimeSystems() end)
+        -- Do NOT ArmRuntimeSystems on the PEW frame after /reload.
+        -- Live crash: seed + PEW arm + OM enable mid-FrameXML. OnUpdate
+        -- should_arm retries once player+bridge settle (Runtime.lua).
+        if C_Timer and C_Timer.After then
+            C_Timer.After(3.0, function()
+                if RaijinLab and RaijinLab.HasRuntime and RaijinLab:HasRuntime()
+                    and RaijinLab.ArmRuntimeSystems
+                    and not RaijinLab._runtime_armed then
+                    pcall(function() RaijinLab:ArmRuntimeSystems() end)
+                end
+            end)
         end
         if RaijinLab:HasRuntime() and RaijinLabDB.track_quest_objects then
             RaijinLab:EnableQuestTracker()

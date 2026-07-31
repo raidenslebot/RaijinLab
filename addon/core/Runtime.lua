@@ -111,7 +111,8 @@ function RL.should_arm(has_runtime, armed, online_t, now, player_ready, settle)
     if not has_runtime then return false end
     if armed then return false end            -- idempotent: nothing to do
     if not player_ready then return false end -- in-world gate, #132
-    settle = settle or 1.5
+    -- Default settle 5s: arming OM mid-load-screen hard-crashed (#132 + suite-on).
+    settle = settle or 5.0
     if type(now) ~= "number" or type(online_t) ~= "number" then return false end
     return (now - online_t) >= settle
 end
@@ -121,38 +122,55 @@ function RL:ArmRuntimeSystems()
     if not self:HasRuntime() then return end
     if UnitName and not UnitName("player") then return end
     self._runtime_armed = true
+    -- Soft arm only: HW gates + ping. OM enable + Lua OM frame are DELAYED.
+    -- Enabling om + InitObjectManager on the PEW arm frame (or suite-on frame)
+    -- was a top crash path after login.
     pcall(function()
-        self:RuntimeCall("SetSystemVar", "om.enable", "1")
         self:RuntimeCall("SetSystemVar", "taint.patch", "0")
         self:RuntimeCall("ArmUnlock")
         self:RuntimeCall("Ping")
+        -- Keep om.enable off for a few more seconds after "armed".
+        self:RuntimeCall("SetSystemVar", "om.enable", "0")
     end)
     if self.Actions and self.Actions.ensure then
         pcall(function() self.Actions.ensure() end)
     end
-    -- Start the Lua-side OM OnUpdate (~30 Hz) so object_list stays fresh.
-    if self.GetObjManagerFrame and self.InitObjectManager
-        and not self:GetObjManagerFrame() then
-        pcall(function() self:InitObjectManager() end)
+    -- Stagger: enable native OM pack, then Lua object_list OnUpdate.
+    local function enable_om()
+        if not self:HasRuntime() then return end
+        pcall(function()
+            self:RuntimeCall("SetSystemVar", "om.enable", "1")
+        end)
     end
-    -- The supervisor gets its own 1Hz frame here, NOT from inside Suite.tick -
-    -- a watchdog driven by the thing it watches cannot see that thing die. This
-    -- is the gated, in-world path, so it starts alongside the OM rather than at
-    -- VARIABLES_LOADED. It self-gates on RaijinLabDB.modules.quest and its tick
-    -- is pcall'd, so it costs nothing when questing is off.
+    local function start_lua_om()
+        if not self:HasRuntime() then return end
+        -- If suite just started, Master owns the stagger — do not double-start.
+        local M = self.Master
+        if M and M.enabled and M.enabled() and M.suite_om_safe
+            and not M.suite_om_safe() then
+            return
+        end
+        if self.GetObjManagerFrame and self.InitObjectManager
+            and not self:GetObjManagerFrame() then
+            pcall(function() self:InitObjectManager() end)
+        end
+    end
+    if C_Timer and C_Timer.After then
+        C_Timer.After(3.0, enable_om)
+        C_Timer.After(5.0, start_lua_om)
+    else
+        enable_om()
+        start_lua_om()
+    end
+    -- Watchdog: cheap 1Hz; OK after soft arm.
     if self.Watchdog and self.Watchdog.start then
         pcall(self.Watchdog.start)
     end
-    -- RUN THE SELFTEST AUTOMATICALLY AND PUT IT IN THE LOG.
-    --
-    -- Requiring a typed command and a screenshot is the workflow the user
-    -- explicitly rejected: everything must be readable from the log file. The
-    -- runtime is up and the world exists at this point, which is exactly when
-    -- the checks are meaningful, so run them once here. It costs one pass over
-    -- ~11 cheap bridge calls and lands in raijinlab_dev.log under [selftest].
+    -- Selftest: long delay, never on the arm frame (bridge stress = crash co-factor).
     if self.SelfTest and self.SelfTest.evaluate and self.SelfTest.log_rows then
-        local delay = 3.0    -- let the OM produce at least one pass first
+        local delay = 12.0
         local function run_it()
+            if not self:HasRuntime() then return end
             local ST = self.SelfTest
             local function call(name, ...)
                 if not self:HasRuntime() then return nil end
@@ -174,12 +192,10 @@ function RL:ArmRuntimeSystems()
         end
         if C_Timer and C_Timer.After then
             C_Timer.After(delay, function() pcall(run_it) end)
-        else
-            pcall(run_it)
         end
     end
     if self._debug_print then
-        print("|cff7ec8e3RaijinLab|r: OM armed (in-world default on)")
+        print("|cff7ec8e3RaijinLab|r: runtime soft-armed (OM delayed)")
     end
 end
 

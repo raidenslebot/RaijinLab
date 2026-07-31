@@ -346,6 +346,29 @@ end
 function World.collect_nearby_enemies(max_range)
     max_range = tonumber(max_range) or 40
     local now = (GetTime and GetTime()) or 0
+    -- Crash gate: during suite-on OM arm window, NEVER call NearbyHostiles.
+    -- Return current-target-only (or empty). Multi-dot still works on target;
+    -- pack discovery waits until Master.suite_om_safe().
+    local M = RaijinLab and RaijinLab.Master
+    if M and M.enabled and M.enabled() and M.suite_om_safe and not M.suite_om_safe() then
+        local out = {}
+        if UnitExists and UnitExists("target")
+            and UnitCanAttack and UnitCanAttack("player", "target")
+            and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
+            local guid = UnitGUID and UnitGUID("target")
+            local center, edge, aoe = unit_distances(guid, "target")
+            if center then
+                out[1] = {
+                    guid = guid, token = "target",
+                    dist = aoe or center, dist_aoe = aoe or center,
+                    dist_center = center, dist_edge = edge or center,
+                    precise = true, source = "suite_warm_target",
+                    facing = true,
+                }
+            end
+        end
+        return out
+    end
     local c = World._hostiles_cache
     if c and c.list and c.range and c.range >= max_range
         and (now - (c.t or 0)) < 0.10 then

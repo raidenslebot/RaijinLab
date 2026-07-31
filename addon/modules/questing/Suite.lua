@@ -176,8 +176,14 @@ local function set_state(s)
 end
 
 -- ---- object manager: make sure it is enumerating -------------------------
+-- NEVER force om.enable / InitObjectManager during suite-on warm window.
+-- That path hard-crashed the client after login (OM walk + Lua enum same frame).
 local function ensure_om()
     if not RaijinLab then return end
+    local M = RaijinLab.Master
+    if M and M.suite_om_safe and not M.suite_om_safe() then
+        return -- Master owns the staggered arm
+    end
     if RaijinLab.RuntimeCall then
         RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
     end

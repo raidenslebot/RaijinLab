@@ -101,6 +101,17 @@ function M.enabled()
 end
 
 -- The single line every ticker uses: `if RaijinLab.Master and RaijinLab.Master.suppressed() then return end`
+-- True when native/Lua OM heavy paths are safe after suite-on (not mid-arm).
+-- Modules that would call NearbyHostiles / full object walks must gate on this.
+function M.suite_om_safe()
+    if not M.enabled or not M.enabled() then return false end
+    local t0 = M._suite_on_t
+    if not t0 then return true end
+    local now = (GetTime and GetTime()) or 0
+    -- Match Master.start_all stagger: native OM at 4s, Lua frame at 5.5s.
+    return (now - t0) >= 5.5
+end
+
 function M.suppressed()
     return not M.enabled()
 end
@@ -226,19 +237,48 @@ function M.start_all(reason)
     d.master = true
     M._off_armed_t = nil
     M.clear_ui_focus()
+    -- Crash-hardening clock: Lua modules fail-closed on heavy OM until this
+    -- window passes (see World.suite_om_safe / collect_nearby_enemies).
+    M._suite_on_t = (GetTime and GetTime()) or 0
 
-    -- OM: never force a full enum on the same frame as suite-on (hard crash).
-    -- Enable om + Lua OM manager after a short stagger so the first ticks can
-    -- still cast on the *current target* without NearbyHostiles.
+    -- ================================================================
+    -- CRASH LESSON (permanent): suite-on the same frame as OM walk/enum
+    -- after login hard-crashes the client. Sequence must be:
+    --   0.0s  freeze OM (om.enable=0), start lightweight modules only
+    --   4.0s  re-enable om.enable (native list-only warm-up begins)
+    --   5.5s  start Lua OM OnUpdate (GetUnitCount fan)
+    --   8.0s  Surveyor raycast fan
+    -- Single-GUID casts / current-target rotation work the whole time.
+    -- ================================================================
     local R = RaijinLab
-    local function arm_om_safe()
+    pcall(function()
+        if RaijinLab.RuntimeCall then
+            RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "0")
+        end
+        -- Tear down Lua OM frame if it was already running from PEW arm —
+        -- re-creating it mid-suite-on was a concurrent crash source.
+        if RaijinLab.DestroyObjectManager then
+            pcall(RaijinLab.DestroyObjectManager, RaijinLab)
+        end
+    end)
+
+    local function arm_om_native()
         if not (RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
             and RaijinLab.Master.enabled()) then return end
         pcall(function()
-            if RaijinLab.ArmRuntimeSystems then RaijinLab:ArmRuntimeSystems() end
+            if RaijinLab.ArmRuntimeSystems then
+                -- May already be armed from PEW; idempotent.
+                RaijinLab:ArmRuntimeSystems()
+            end
             if RaijinLab.RuntimeCall then
                 RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
             end
+        end)
+    end
+    local function arm_om_lua_frame()
+        if not (RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
+            and RaijinLab.Master.enabled()) then return end
+        pcall(function()
             if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
                 and not RaijinLab:GetObjManagerFrame() then
                 RaijinLab:InitObjectManager()
@@ -246,17 +286,19 @@ function M.start_all(reason)
         end)
     end
     if C_Timer and C_Timer.After then
-        C_Timer.After(1.5, arm_om_safe)
+        C_Timer.After(4.0, arm_om_native)
+        C_Timer.After(5.5, arm_om_lua_frame)
     else
-        arm_om_safe()
+        arm_om_native()
+        arm_om_lua_frame()
     end
-    -- Pathfinder jobs run on the Scheduler OnUpdate.
+    -- Pathfinder jobs run on the Scheduler OnUpdate (cheap when idle).
     if R and R.Scheduler and R.Scheduler.start then pcall(R.Scheduler.start) end
-    -- Surveyor: delay — tracing at suite-on was extra main-thread work on crash frame.
+    -- Surveyor: long delay — TraceLine fan at suite-on is a known crash co-factor.
     if R and R.Surveyor and R.Surveyor.start
         and (not R.Surveyor.needed or R.Surveyor.needed()) then
         if C_Timer and C_Timer.After then
-            C_Timer.After(3.0, function()
+            C_Timer.After(8.0, function()
                 if RaijinLab and RaijinLab.Master and RaijinLab.Master.enabled
                     and RaijinLab.Master.enabled()
                     and RaijinLab.Surveyor and RaijinLab.Surveyor.start then

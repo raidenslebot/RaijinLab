@@ -1178,8 +1178,14 @@ static bool SnapshotLooksHostileNpc(const Object& o, uint64_t localGuid) {
 std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     // ONE Refresh, then pure snapshot math. Lua must not ObjectPtr/ObjectHealth
     // each unit — that path crashed and lagged the client.
+    // NEVER force Refresh. Empty during settle/warm is correct — multi-dot
+    // falls back to current target until the pack is live.
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
+    // If OM is disabled, answer empty without walking (suite-on may briefly
+    // hold om.enable=0 while modules start).
+    if (RL::Config::Get("om.enable", "1") == "0")
+        return "0";
     Refresh(false);
     // Still empty after settle skip — safe empty answer (no force Refresh).
     {
@@ -1314,32 +1320,56 @@ void Refresh(bool force) {
         return;
     }
 
-    // Cold settle after first local GUID (inject / login). Short — suite needs
-    // hostiles soon; longer delays felt like "nothing casts". Single-GUID reads OK.
+    // ============================================================
+    // CRASH LESSON (permanent): suite-on / PEW / inject must NEVER walk the
+    // object list or EnumVisibleObjects while the world is still settling.
+    // Instant client hard-crash after login+suite has been reproduced when:
+    //   - om.enable flipped to 1 the same frame as suite start
+    //   - list walk + enum + Lua GetUnitCount all hit main thread together
+    //   - settle was only ~2s and warm-up only 4 list-only frames
+    // Policy: long hard settle (no walk), long list-only warm-up, then enum.
+    // Single-GUID ObjectPtr/Position still work (no full walk).
+    // ============================================================
     static ULONGLONG s_firstLocal = 0;
     if (!s_firstLocal) s_firstLocal = now;
-    constexpr ULONGLONG kOmSettleMs = 2000ull;
-    if ((now - s_firstLocal) < kOmSettleMs && !force) {
-        if (g_all.empty()) {
-            g_lastRefresh = now;
-            return;
-        }
+    // Hard settle: NO list walk, NO enum. Empty snapshot is correct here.
+    constexpr ULONGLONG kOmSettleMs = 5000ull;
+    if ((now - s_firstLocal) < kOmSettleMs) {
+        g_lastRefresh = now;
+        return;
     }
 
-    // Warm-up: first few OM refreshes after suite/om enable are LIST-ONLY.
-    // EnumVisibleObjects on the first suite tick was hard-crashing the client
-    // (2026-07-31 suite-on). After N list-only frames, enum is allowed again.
-    static int s_listOnlyLeft = 4;
+    // om.enable=0: freeze walks entirely (suite-on holds this for several seconds).
+    if (RL::Config::Get("om.enable", "1") == "0") {
+        g_lastRefresh = now;
+        return;
+    }
+
+    // Warm-up after om.enable: list-only for many frames AND wall-clock floor.
+    // EnumVisibleObjects on the first suite tick hard-crashed (2026-07-31).
+    static int s_listOnlyLeft = 16;
+    static ULONGLONG s_omEnableAt = 0;
     static ULONGLONG s_lastOmEnableWatch = 0;
-    if (RL::Config::Get("om.enable", "1") != "0") {
-        if (s_lastOmEnableWatch == 0)
+    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    if (omOn) {
+        if (s_lastOmEnableWatch == 0) {
             s_lastOmEnableWatch = now;
+            s_omEnableAt = now;
+            s_listOnlyLeft = 16; // reset warm-up every re-enable edge
+            RL::Log::Info("OM enable edge -> list-only warm-up (16 frames / 4s)");
+        }
     } else {
         s_lastOmEnableWatch = 0;
-        s_listOnlyLeft = 4;
+        s_omEnableAt = 0;
+        s_listOnlyLeft = 16;
     }
 
-    // MERGE: list walk always; enum only after warm-up and if not dead.
+    // Wall-clock: at least 4s list-only after enable, regardless of refresh rate.
+    const bool listOnlyClock = omOn && s_omEnableAt
+        && (now - s_omEnableAt) < 4000ull;
+    const bool allowEnum = !g_enumDead && s_listOnlyLeft <= 0 && !listOnlyClock;
+
+    // MERGE: list walk always (after settle); enum only after warm-up.
     g_podCount = 0;
     int listRc = SafeWalkObjectList();
     size_t listCount = g_podCount;
@@ -1359,7 +1389,6 @@ void Refresh(bool force) {
 
     g_podCount = 0;
     int enumRc = 1;
-    const bool allowEnum = !g_enumDead && s_listOnlyLeft <= 0;
     if (allowEnum) {
         enumRc = SafeEnumVisible();
         if (enumRc != 1) {
@@ -1377,8 +1406,10 @@ void Refresh(bool force) {
         // List-only warm-up or enum latched off.
         if (s_listOnlyLeft > 0) {
             --s_listOnlyLeft;
-            RL::Log::Info("OM warm-up list-only remaining=%d list=%zu",
-                          s_listOnlyLeft, listN);
+            if ((s_listOnlyLeft % 4) == 0) {
+                RL::Log::Info("OM warm-up list-only remaining=%d list=%zu clock=%d",
+                              s_listOnlyLeft, listN, listOnlyClock ? 1 : 0);
+            }
         }
         enumRc = g_enumDead ? (g_lastEnumRc ? g_lastEnumRc : (int)0xC0000005) : 1;
         g_podCount = 0;

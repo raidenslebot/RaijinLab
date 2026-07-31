@@ -267,13 +267,15 @@ function RaijinLab:CoreOnEvent(event, ...)
             pcall(RaijinLab.MinimapIcon.Init, RaijinLab.MinimapIcon)
         end
         -- Defer heavy OM arm until the world is stable (avoids load-screen crashes
-        -- when the DLL was injected at character select).
+        -- when the DLL was injected at character select / suite-on after login).
         if RaijinLab:HasRuntime() and RaijinLab.ArmRuntimeSystems then
             if C_Timer and C_Timer.After then
-                -- 3s settle: arm runtime; OM warm-up is list-only for first ticks.
-                C_Timer.After(3.0, function()
-                    RaijinLab:ArmRuntimeSystems()
-                    -- Do not auto-start rotation; leave user's Start/Stop alone.
+                -- 6s settle after PEW: soft-arm only (OM itself delayed further
+                -- inside ArmRuntimeSystems). Never arm on the PEW frame.
+                C_Timer.After(6.0, function()
+                    if RaijinLab and RaijinLab.ArmRuntimeSystems then
+                        pcall(function() RaijinLab:ArmRuntimeSystems() end)
+                    end
                 end)
             else
                 RaijinLab:ArmRuntimeSystems()

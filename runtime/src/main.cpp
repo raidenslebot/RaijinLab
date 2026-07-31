@@ -107,23 +107,24 @@ static DWORD WINAPI MainThread(LPVOID param) {
     int mediumStreak = 0;    // consecutive medium (wf|conn|mgr) — Ascension normal
     int failBackoff = 0;     // ticks to wait after a failed Register
     int tick = 0;
-    // Registration policy (crash #132 + bridge-never-online balance):
-    //   STRONG path (flag/local/guid): modest settle — safe when signals work.
-    //   MEDIUM path (0xE only): LONG continuous streak + long settle. ALWAYS.
-    //     Live proof 2026-07-31 13:38 after /reload: rebind used short medium
-    //     settle (~1.5s) → Register failed rc=0xC0000005 at bits=0xE settle~96
-    //     (worker SEH "success" still corrupts VM / hard-crashes suite-on).
-    //     Medium is NEVER allowed a fast rebind. Strong may rebind faster.
-    constexpr int kSettleFirst       = 80;  // ~4 s L stable (strong min)
-    constexpr int kStrongFirst       = 30;  // ~1.5 s strong
-    constexpr int kMediumStreak      = 100; // ~5 s continuous medium (first+rebind)
-    constexpr int kSettleMedium      = 160; // ~8 s before medium-only Register
-    constexpr int kSettleRebindStrong = 30; // ~1.5 s strong rebind only
-    constexpr int kStrongRebind      = 16;  // ~0.8 s
-    constexpr int kFailBackoff       = 160; // ~8 s after Register AV
-    constexpr int kFailMedExtra      = 40;  // extra medium settle after a fail
+    // Registration policy:
+    //   STRONG (flag|local|guid): modest settle.
+    //   MEDIUM (0xE only): ~8s continuous — Ascension often never gets strong.
+    //   NEVER treat lua_State=NULL as a finished rebind target: brief null
+    //   glitches (zone /reload) used to wipe registration and demand another
+    //   20s medium wait, leaving the addon on stock IsLinuxClient forever if
+    //   the user didn't wait — live "runtime=NO" after rebind (2026-07-31).
+    constexpr int kSettleFirst        = 80;  // ~4 s L stable (strong min first)
+    constexpr int kStrongFirst        = 30;  // ~1.5 s strong
+    constexpr int kMediumStreak       = 100; // ~5 s continuous medium
+    constexpr int kSettleMedium       = 160; // ~8 s medium Register (first+rebind)
+    constexpr int kSettleRebindStrong = 40;  // ~2 s strong rebind
+    constexpr int kStrongRebind       = 20;  // ~1 s
+    constexpr int kFailBackoff        = 120; // ~6 s after Register AV
+    constexpr int kFailMedExtra       = 40;
 
-    int mediumFailPenalty = 0; // extra settle ticks after medium-path AV
+    int mediumFailPenalty = 0;
+    bool pendingRebind = false; // saw L go null or change after a successful bind
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {
@@ -132,18 +133,51 @@ static DWORD WINAPI MainThread(LPVOID param) {
         }
 
         void* L = RL::Game::Addr::LuaState();
+
+        // Transient NULL: do not spin settle, do not "Register" against nothing.
+        // Mark offline once so we force a real rebind when L returns.
+        if (!L) {
+            if (registered) {
+                RL::Log::Warn("lua_State null — bridge offline until rebind");
+                registered = false;
+                pendingRebind = everRegistered;
+                RL::Bridge::ResetRegistrationState();
+                RL::Config::Set("om.enable", "0");
+                RL::Game::OM::OnLuaReload();
+            }
+            lastL = nullptr;
+            settle = 0;
+            strongStreak = 0;
+            mediumStreak = 0;
+            Sleep(50);
+            ++tick;
+            if ((tick % 40) == 0) {
+                RL::Log::Warn(
+                    "heartbeat reg=0 ever=%d bits=0x%X settle=0 str=0 med=0 L=null waiting=1",
+                    (int)everRegistered, (unsigned)RL::Game::Addr::WorldReadyBits());
+            }
+            continue;
+        }
+
         if (L != lastL) {
+            const bool rebind = everRegistered || pendingRebind;
             RL::Log::Warn("lua_State %p -> %p%s", lastL, L,
-                          everRegistered ? " (need REBIND after /reload)" : "");
+                          rebind ? " (REBIND)" : "");
             lastL = L;
             registered = false;
             settle = 0;
             strongStreak = 0;
             mediumStreak = 0;
             failBackoff = 0;
-            // Keep mediumFailPenalty across rebind so a just-failed medium
-            // path does not immediately retry short after /reload.
+            pendingRebind = false;
             RL::Bridge::ResetRegistrationState();
+            // Freeze OM across rebind — FrameXML load + list walk = crash.
+            // Re-enable only via addon ArmRuntimeSystems after PEW.
+            if (rebind || everRegistered) {
+                RL::Config::Set("om.enable", "0");
+                RL::Game::OM::OnLuaReload();
+                RL::Log::Warn("OM frozen for rebind (om.enable=0)");
+            }
         }
 
         uint32_t wbits = RL::Game::Addr::WorldReadyBits();
@@ -158,24 +192,25 @@ static DWORD WINAPI MainThread(LPVOID param) {
         if (!secondary && L && !registered) {
             ++settle;
             const bool first = !everRegistered;
-            // Strong: first needs longer L settle; rebind can be faster.
             const int needSettleStrong = first ? kSettleFirst : kSettleRebindStrong;
             const int needStrong = first ? kStrongFirst : kStrongRebind;
-            // Medium: same long bar first AND rebind. Penalty after AV.
+            // Same medium bar first and rebind — safety is OM freeze + force
+            // re-push IsLinuxClient, not a 20s blackout that looks "undetected".
             const int needMedStr = kMediumStreak;
             const int needMedSet = kSettleMedium + mediumFailPenalty;
 
-            // Path A: strong signal held — preferred; rebind allowed sooner.
             const bool pathStrong = strong && strongStreak >= needStrong
                                     && settle >= needSettleStrong;
-            // Path B: medium 0xE only after long settle (never fast rebind).
             const bool pathMedium = medium && mediumStreak >= needMedStr
                                     && settle >= needMedSet;
 
             if ((pathStrong || pathMedium) && failBackoff == 0) {
-                if (RL::Bridge::Register()) {
+                // force=true: always FrameScript_RegisterFunction on new L
+                // (never skip as "already registered" after a wipe).
+                if (RL::Bridge::Register(true)) {
                     registered = true;
                     everRegistered = true;
+                    pendingRebind = false;
                     mediumFailPenalty = 0;
                     RL::Log::Warn(
                         "BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d strong=%d medium=%d via=%s",
@@ -190,7 +225,6 @@ static DWORD WINAPI MainThread(LPVOID param) {
                     failBackoff = kFailBackoff;
                     strongStreak = 0;
                     mediumStreak = 0;
-                    // Next medium attempt waits even longer (proven AV window).
                     if (!pathStrong)
                         mediumFailPenalty += kFailMedExtra;
                 }

@@ -7,8 +7,9 @@ namespace RL::Bridge {
 // Full IsLinuxClient / RaijinLab_Runtime dispatcher (124 APIs + meta)
 int Dispatch(lua_State* L);
 
-// Register with FrameScript
-bool Register();
+// Register with FrameScript. force=true always re-pushes IsLinuxClient
+// (required after /reload new lua_State).
+bool Register(bool force = false);
 
 // Clear the internal "already registered" latch. Call whenever the observed
 // lua_State pointer changes (a /reload or char-select round-trip creates a

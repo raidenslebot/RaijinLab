@@ -129,11 +129,15 @@ function RL.should_arm(has_runtime, armed, online_t, now, player_ready, settle)
     if not has_runtime then return false end
     if armed then return false end            -- idempotent: nothing to do
     if not player_ready then return false end -- in-world gate, #132
-    -- Gate is player+bridge, NOT multi-second wall clocks. Delays only postponed
-    -- crashes (suite ON → crash at +5s when PEW timer flipped om.enable).
+    -- Mid-/reload: LEAVING_WORLD clears _world_entered until PEW.
+    if RL._leaving_world then return false end
+    -- Inject mid-session (PEW already fired before inject): treat as entered.
+    if not RL._world_entered then
+        RL._world_entered = true
+    end
     settle = settle or 0
     if type(now) ~= "number" or type(online_t) ~= "number" then
-        return true -- player_ready already proven
+        return true
     end
     return (now - online_t) >= settle
 end

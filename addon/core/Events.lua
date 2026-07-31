@@ -95,6 +95,9 @@ function RaijinLab:CoreOnEvent(event, ...)
         return
     end
     if event == "PLAYER_LEAVING_WORLD" then
+        -- /reload or logout: block OM arm until next PEW.
+        RaijinLab._world_entered = false
+        RaijinLab._leaving_world = true
         -- Also a teardown: /reload and character-select free the object manager
         -- the same way. Cheap to repeat, and the modules re-arm on world entry.
         RaijinLab.HaltAll("leaving_world")
@@ -266,9 +269,14 @@ function RaijinLab:CoreOnEvent(event, ...)
         if RaijinLab.MinimapIcon and RaijinLab.MinimapIcon.Init then
             pcall(RaijinLab.MinimapIcon.Init, RaijinLab.MinimapIcon)
         end
-        -- Arm once when bridge+player exist. No multi-second PEW delay — those
-        -- just moved the crash to "suite ON + 5s". Runtime OnUpdate also retries
-        -- until armed. ArmRuntimeSystems is idempotent.
+        -- Mark world entered so should_arm may proceed (blocks arm mid-/reload).
+        if RaijinLab then
+            RaijinLab._world_entered = true
+            RaijinLab._leaving_world = false
+            -- /reload wipes _runtime_armed; allow one-shot arm again.
+            RaijinLab._runtime_armed = false
+        end
+        -- Arm once when bridge+player exist. Idempotent after set.
         if RaijinLab:HasRuntime() and RaijinLab.ArmRuntimeSystems then
             pcall(function() RaijinLab:ArmRuntimeSystems() end)
         end

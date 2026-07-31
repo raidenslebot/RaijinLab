@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.19-castsafe";
+const char* kVersion = "1.10.21-redetect";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1299,14 +1299,12 @@ static void EnsureRegCs() {
 // EXCEPT for the single worker-side bootstrap call - that one is a known L1
 // exception (see main.cpp header comment) needed to seed the binding so Lua
 // can ever dispatch to us.
-static int SafeRegisterNative() {
+// force: always call FrameScript_RegisterFunction (new lua_State after /reload).
+static int SafeRegisterNative(bool force = false) {
     EnsureRegCs();
-    // Serialise all callers so we never have two concurrent
-    // FrameScript_RegisterFunction invocations (see g_main_registered note).
     EnterCriticalSection(&g_regCs);
-    // Recheck under the lock - if a concurrent caller already registered,
-    // skip the redundant pushcclosure entirely.
-    if (g_main_registered.load(std::memory_order_acquire)) {
+    // Skip only when already bound AND not forcing a rebind.
+    if (!force && g_main_registered.load(std::memory_order_acquire)) {
         LeaveCriticalSection(&g_regCs);
         return 1;
     }
@@ -1329,7 +1327,7 @@ static int SafeRegisterNative() {
 
 static void EnsureMainThreadRegister() {
     if (g_main_registered.load(std::memory_order_acquire)) return;
-    int rc = SafeRegisterNative();
+    int rc = SafeRegisterNative(false);
     if (rc == 1) {
         g_main_registered.store(true, std::memory_order_release);
         RL::Log::Warn("Register OK main-thread L=%p ver=%s",
@@ -1375,21 +1373,18 @@ int Dispatch(lua_State* L) { return Lua_IsLinuxClient(L); }
 
 const char* Version() { return kVersion; }
 
-bool Register() {
-    // Always re-bind after settle (reload wipes FrameScript globals).
+bool Register(bool force) {
     // RegisterFunction only - never Execute.
-    // Idempotent: SafeRegisterNative rechecks the atomic under the lock and
-    // skips a redundant pushcclosure when we're already bound. This keeps
-    // main.cpp's one-shot bootstrap safe against the periodic re-register
-    // that is now handled entirely by the main-thread self-heal path.
-    int rc = SafeRegisterNative();
+    // force=true after /reload: always pushcclosure (new _G). force=false:
+    // skip if already bound (main-thread self-heal / duplicate worker call).
+    int rc = SafeRegisterNative(force);
     if (rc == 1) {
         g_main_registered.store(true, std::memory_order_release);
-        RL::Log::Warn("Register OK L=%p ver=%s",
-                      RL::Game::Addr::LuaState(), kVersion);
+        RL::Log::Warn("Register OK L=%p ver=%s force=%d",
+                      RL::Game::Addr::LuaState(), kVersion, (int)force);
         return true;
     }
-    RL::Log::Warn("Register failed rc=%d", rc);
+    RL::Log::Warn("Register failed rc=%d force=%d", rc, (int)force);
     return false;
 }
 

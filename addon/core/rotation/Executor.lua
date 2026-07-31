@@ -1864,12 +1864,25 @@ function Executor.attempt_action(action, ctx)
         or policy == "optional" or policy == "forbid" or policy == "corpse"
 
     -- Multi-candidate same-tick try (aura_search top-N). Face-fail → next GUID.
+    -- Prefer NON-current units for multi-dot spread: when the current target
+    -- also lacks the debuff it often sorts nearest, so PS looked like it only
+    -- ever hit "my target" even when aura_search found others.
     local try_list = {}
+    local cur_tg = target_guid()
     if search and search.candidates and #search.candidates > 0 then
+        local others, cur_only = {}, nil
         for i = 1, #search.candidates do
             local c = search.candidates[i]
-            if c and c.guid then try_list[#try_list + 1] = c end
+            if c and c.guid then
+                if cur_tg and tostring(c.guid) == tostring(cur_tg) then
+                    cur_only = c
+                else
+                    others[#others + 1] = c
+                end
+            end
         end
+        for i = 1, #others do try_list[#try_list + 1] = others[i] end
+        if cur_only then try_list[#try_list + 1] = cur_only end
     elseif guid then
         try_list[1] = { guid = guid, token = search and search.token }
     end

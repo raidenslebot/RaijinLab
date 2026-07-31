@@ -131,7 +131,17 @@ function A.CastSpellEx(spellId, unitOrGuid, flags)
     if had_unit and not g then
         return false, "bad_guid"
     end
-    local res = rt("CastSpellEx", spellId, g or 0, flags)
+    -- Omit guid arg when none (do not pass 0 — lua may tostring to "0" and
+    -- older runtimes treated that as bad_guid, blocking Consecration).
+    local res
+    if g then
+        res = rt("CastSpellEx", spellId, g, flags)
+    else
+        res = rt("CastSpellEx", spellId, nil, flags)
+        if type(res) ~= "string" then
+            res = rt("CastSpellEx", spellId, 0, flags)
+        end
+    end
     if type(res) ~= "string" then
         -- Old runtime: fall back to plain CastSpell
         local ok = A.CastSpell(spellId, unitOrGuid)

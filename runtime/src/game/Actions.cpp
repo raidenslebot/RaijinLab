@@ -428,26 +428,37 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
 
     // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) + restore.
     // Never demote multi-dot / GUID casts to stock CastSpellByID (client target).
-    // Melee: pin UNIT_FIELD_TARGET to the cast victim for the native call so
-    // Plague Strike (and any melee) hits the aura_search GUID, not prev target.
+    //
+    // Melee (Plague Strike): Spell_C GUID alone + descriptor pin is NOT enough.
+    // Client melee resolution uses the real selection (TargetUnit / CGGameUI),
+    // so descriptor-only pin still hit the previous target. Live proof: IT
+    // (ranged) multi-dot worked; PS always hit current target.
+    //
+    // Fix: briefly TargetGuid(victim) for the wire, then restore selection.
+    // Acquire-off multi-dot still never LEAVES selection on the victim.
     // Only guid==0 is self / ground / current-target (still prefer nested pcall).
     if (targetGuid != 0) {
+        bool retargeted = false;
         bool pinned = false;
         if (prev != targetGuid) {
+            // 1) Real client selection (melee authority)
+            retargeted = TargetGuid(targetGuid);
+            // 2) Descriptor pin (belt + suspenders with Spell_C guid args)
             pinned = WriteClientTargetGuid(targetGuid);
-            if (!pinned)
-                RL::Log::Warn("CastSpell pin target failed id=%d guid=0x%llX",
+            if (!retargeted && !pinned)
+                RL::Log::Warn("CastSpell select/pin failed id=%d guid=0x%llX",
                               spellId, (unsigned long long)targetGuid);
         }
         int nrc = SafeNativeCast(spellId, targetGuid);
-        // Always restore pin (even on native fail) so selection never sticks.
-        if (prev != targetGuid || pinned)
+        // Always restore when we changed selection (even on native fail).
+        if (prev != targetGuid || retargeted || pinned)
             RestoreSelectionAfterCast(prev, targetGuid);
         if (nrc > 0) {
             g_cast_ok++;
-            RL::Log::Info("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX pin=%d ok=%d",
+            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX retgt=%d pin=%d ok=%d",
                           spellId, (unsigned long long)targetGuid,
-                          (unsigned long long)prev, pinned ? 1 : 0, g_cast_ok);
+                          (unsigned long long)prev, retargeted ? 1 : 0,
+                          pinned ? 1 : 0, g_cast_ok);
             return true;
         }
         if (nrc < 0)

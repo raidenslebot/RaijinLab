@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.27-strong-fix";
+const char* kVersion = "1.10.28-melee-select";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1031,13 +1031,14 @@ static int Handle(lua_State* L, const char* name) {
         return GuidArg(L, idx);
     };
 
-    // True when stack arg looks like an intentional GUID/unit that FAILED to
-    // parse — never demote those to guid=0 (current-target) cast. Tokens like
-    // "target"/"player" intentionally resolve to 0 for self/current paths.
+    // True when stack arg looks like an intentional GUID that FAILED to parse.
+    // Never demote those to guid=0 (current-target) cast.
+    // CRITICAL: lua may tostring number 0 → "0". That is intentional no-guid
+    // (Consecration / ground), NOT a bad GUID. Live 2026-07-31: s='0' refused
+    // every Consecration wire (CastSpellEx refuse bad_guid id=26573).
     auto guidArgWasIntended = [&](int idx) -> bool {
         const char* gs = checkstring(L, idx);
         if (!gs || !gs[0]) {
-            // Numeric non-zero that failed? GuidArg already handles numbers.
             double n = optnumber(L, idx, 0.0);
             return n != 0.0;
         }
@@ -1047,7 +1048,28 @@ static int Handle(lua_State* L, const char* name) {
             !_stricmp(gs, "vehicle")) {
             return false; // token → 0 is intentional
         }
-        return true; // non-empty non-token string was a GUID attempt
+        // Explicit zero forms ("0", "0x0", "0x000...") = no unit, not a failure.
+        char* end = nullptr;
+        unsigned long long v = strtoull(gs, &end, 0);
+        if (end && end != gs && *end == '\0' && v == 0ull)
+            return false;
+        bool hexish = true;
+        for (const char* p = gs; *p; ++p) {
+            char c = *p;
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F') || c == 'x' || c == 'X')) {
+                hexish = false;
+                break;
+            }
+        }
+        if (hexish) {
+            const char* body = gs;
+            if (body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) body += 2;
+            v = strtoull(body, &end, 16);
+            if (end && end != body && v == 0ull)
+                return false;
+        }
+        return true; // non-zero-looking or unparseable garbage
     };
 
     if (!std::strcmp(name, "CastSpell") || !std::strcmp(name, "CastSpellByID") ||

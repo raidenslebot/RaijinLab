@@ -6,75 +6,87 @@ if not RaijinLabDB.looter then
         move_to_loot = false
     }
 end
--- local struct = {
---     Object = "nil",
---     Name = "nil",
---     Guid = "nil",
---     Id = 0,
---     Type = {
---         base_type = { -- RaijinLab:ObjectTypeFlags() GameObject
---             name = "nil"
---         },
---         sub_type = { -- RaijinLab:GameObjectType() Door
---             id = 0,
---             name = "nil"
---         }
---     },
---     Flags = { value = 0, list = {} }, -- Depends on sub_type
---     DynamicFlags = { value = 0, list = {} }, -- Depends on sub_tpe
---     Info = {
---         Quest = {
---             IsTiedToQuest = false
---         },
---         Unit = {
---             Dead = false,
---             Hidden = false,
---             Rare = false,
---             Lootable = false,
---             Skinnable = false
---         },
---         Filter = {
---             List = "nil"
---         },
---         GameObject = {
---             Interactable = true
---         }
---     }
--- }
-local function GetLootableUnit()
-    local interactable_units = RaijinLab:GetInteractableObjects()
-    local obj_loot_candidates = {}
-    for i = 1, #interactable_units do
-        local struct = interactable_units[i]
-        local object = struct.Object
-        local is_good_go = true
-        if struct.Type.base_type.name == "GameObject" and not struct.Info.Quest.IsTiedToQuest then
-            is_good_go = false
-        else
-            is_good_go = true
-        end
-        local distance = RaijinLab:GetDistanceBetweenObjects("player", object)
-        if RaijinLab:InLineOfSight("player", object) and is_good_go then
-            table.insert(obj_loot_candidates, {object = object, distance = distance})
+
+-- Distance-first loot pick. NEVER TraceLine every object — that was the loot
+-- lag spike (LoS fan across full interactable + NPC lists every 0.5s).
+-- Sort by distance, then LoS only the nearest few candidates.
+local function dist_player(object)
+    if not object or not RaijinLab.GetDistanceBetweenObjects then return nil end
+    local ok, d = pcall(RaijinLab.GetDistanceBetweenObjects, RaijinLab, "player", object)
+    if ok and type(d) == "number" then return d end
+    return nil
+end
+
+local function los_player(object)
+    if not object or not RaijinLab.InLineOfSight then return true end -- undetermined allow
+    local ok, clear = pcall(RaijinLab.InLineOfSight, RaijinLab, "player", object)
+    if not ok then return true end
+    return clear ~= false
+end
+
+local function pick_nearest_with_los(cands, max_check)
+    if not cands or #cands == 0 then return nil end
+    table.sort(cands, function(a, b) return (a.distance or 999) < (b.distance or 999) end)
+    max_check = max_check or 4
+    for i = 1, math.min(#cands, max_check) do
+        local c = cands[i]
+        if c and c.object and (c.distance or 999) <= 12 and los_player(c.object) then
+            return c
         end
     end
-    table.sort(obj_loot_candidates, function(a, b) return a.distance < b.distance end)
-    private.lootable_unit = obj_loot_candidates[1]
-    local npc_loot_candidates = {}
-    if not private.lootable_unit or private.lootable_unit.distance > 10 then
-        for i = 1, #RaijinLab.om.object_list.npcs do
-            local struct = RaijinLab.om.object_list.npcs[i]
-            local object = struct.Object
-            if struct.Info.Unit.Dead and struct.Info.Unit.Lootable then
-                local distance = RaijinLab:GetDistanceBetweenObjects("player", object)
-                if RaijinLab:InLineOfSight("player", object) then
-                    table.insert(npc_loot_candidates, {object = object, distance = distance})
+    -- No LoS hit among nearest: still return closest within 5yd (feet interact).
+    local c0 = cands[1]
+    if c0 and (c0.distance or 999) <= 5 then return c0 end
+    return nil
+end
+
+local function GetLootableUnit()
+    local cands = {}
+
+    -- 1) Interactable list (GO / quest) — distance only, no LoS yet.
+    local interactable_units = RaijinLab.GetInteractableObjects
+        and RaijinLab:GetInteractableObjects() or {}
+    for i = 1, #interactable_units do
+        local struct = interactable_units[i]
+        if struct and struct.Object then
+            local is_good_go = true
+            if struct.Type and struct.Type.base_type and struct.Type.base_type.name == "GameObject" then
+                if not (struct.Info and struct.Info.Quest and struct.Info.Quest.IsTiedToQuest) then
+                    is_good_go = false
+                end
+            end
+            if is_good_go then
+                local d = dist_player(struct.Object)
+                if d and d <= 15 then
+                    cands[#cands + 1] = { object = struct.Object, distance = d }
                 end
             end
         end
     end
-    table.sort(npc_loot_candidates, function(a, b) return a.distance < b.distance end)
-    private.lootable_unit = npc_loot_candidates[1]
+
+    local best = pick_nearest_with_los(cands, 4)
+    if best and best.distance and best.distance <= 10 then
+        private.lootable_unit = best
+        return
+    end
+
+    -- 2) Dead lootable NPCs from OM list — distance first, LoS only top-N.
+    cands = {}
+    local npcs = RaijinLab.om and RaijinLab.om.object_list and RaijinLab.om.object_list.npcs
+    if npcs then
+        for i = 1, #npcs do
+            local struct = npcs[i]
+            if struct and struct.Object
+                and struct.Info and struct.Info.Unit
+                and struct.Info.Unit.Dead and struct.Info.Unit.Lootable then
+                local d = dist_player(struct.Object)
+                if d and d <= 15 then
+                    cands[#cands + 1] = { object = struct.Object, distance = d }
+                end
+            end
+        end
+    end
+    private.lootable_unit = pick_nearest_with_los(cands, 4)
 end
 
 local function Gather()
@@ -88,7 +100,11 @@ local function Gather()
         end
         if distance <= 5 then
             RaijinLab.HAS_LOOTABLE_UNIT = true
-            RaijinLab:StopMoving()
+            if RaijinLab.Actions and RaijinLab.Actions.StopMoving then
+                pcall(RaijinLab.Actions.StopMoving)
+            elseif RaijinLab.StopMoving then
+                pcall(RaijinLab.StopMoving, RaijinLab)
+            end
             if RaijinLab.Actions then
                 RaijinLab.Actions.Interact(private.lootable_unit.object)
             elseif RaijinLab.ObjectInteract then
@@ -98,10 +114,6 @@ local function Gather()
         elseif distance < 10 and RaijinLabDB.looter.move_to_loot then
             RaijinLab.HAS_LOOTABLE_UNIT = true
             local x, y, z = RaijinLab:ObjectPosition(private.lootable_unit.object)
-            -- Steering, not click-to-move (forbidden project-wide). Walking to a
-            -- corpse is ordinary travel and must obey the same obstacle handling
-            -- as everything else, or the looter drags the character through
-            -- scenery the navigator would have gone around.
             local Nav = RaijinLab.Nav
             if x and Nav and Nav.request_move then
                 Nav.request_move({ x = x, y = y, z = z }, { arrive_dist = 3.0 })
@@ -159,6 +171,12 @@ LooterFrame:SetScript(
                     else
                         RaijinLabDB.looter_enabled = false
                     end
+                    -- Update label only on toggle (not every OnUpdate frame).
+                    if RaijinLabDB.looter_enabled then
+                        LooterStatus:SetText("Looter |cFF00FF00Enabled")
+                    else
+                        LooterStatus:SetText("Looter |cffff0000Disabled")
+                    end
                 end
             )
             LooterFrame:SetScript(
@@ -200,7 +218,7 @@ LooterFrame:SetScript(
             private.player_looting = true
         elseif event == "LOOT_CLOSED" then
             private.player_looting = false
-            private.pulse = GetTime() + 1
+            private.pulse = GetTime() + 0.35
         elseif event == "UNIT_SPELLCAST_START" then
             if arg1 == "player" then
                 private.player_casting = true
@@ -208,7 +226,7 @@ LooterFrame:SetScript(
         elseif event == "UNIT_SPELLCAST_STOP" then
             if arg1 == "player" then
                 private.player_casting = false
-                private.pulse = GetTime() + 1
+                private.pulse = GetTime() + 0.35
             end
         end
     end
@@ -217,21 +235,19 @@ LooterFrame:SetScript(
 LooterFrame:SetScript(
     "OnUpdate",
     function(self, elapsed)
-        if RaijinLabDB.looter_enabled and not private.player_looting and not private.player_casting then
-            if private.pulse == nil then
-                private.pulse = GetTime()
-            end
-            if GetTime() > private.pulse then
-                Gather()
-                private.pulse = GetTime() + private.delay
-            end
-        end
-        if RaijinLabDB.looter_enabled then
-            LooterStatus:SetText("Looter |cFF00FF00Enabled")
-        end
         if not RaijinLabDB.looter_enabled then
-            LooterStatus:SetText("Looter |cffff0000Disabled")
             private.lootable_unit = nil
+            return
+        end
+        if private.player_looting or private.player_casting then
+            return
+        end
+        if private.pulse == nil then
+            private.pulse = GetTime()
+        end
+        if GetTime() > private.pulse then
+            Gather()
+            private.pulse = GetTime() + private.delay
         end
     end
 )

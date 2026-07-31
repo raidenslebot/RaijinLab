@@ -38,6 +38,7 @@ using fn_settop = void(__cdecl*)(lua_State*, int);
 using fn_gettop = int(__cdecl*)(lua_State*);
 using fn_pushnumber = void(__cdecl*)(lua_State*, double);
 using fn_pushstring = void(__cdecl*)(lua_State*, const char*);
+using fn_tonumber = double(__cdecl*)(lua_State*, int);
 
 static constexpr int LUA_GLOBALSINDEX = -10002;
 static constexpr int LUA_TFUNCTION = 6;
@@ -312,6 +313,60 @@ static bool CastViaLuaPCall(lua_State* L, int spellId) {
     return LuaGlobalN(L, "CastSpellByID", (double)spellId);
 }
 
+// Sample one spell's remaining CD. SEH-only (no C++ dtors) for MSVC.
+static float SpellReadyRemOne(lua_State* L, int id) {
+    if (!L || id <= 0) return 0.f;
+    using namespace RL::Game::Addr;
+    auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
+    auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
+    auto type = reinterpret_cast<fn_type>(lua_type);
+    auto settop = reinterpret_cast<fn_settop>(lua_settop);
+    auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
+    auto pushnumber = reinterpret_cast<fn_pushnumber>(lua_pushnumber);
+    auto tonumber = reinterpret_cast<fn_tonumber>(0x0084E030);
+    if (!getfield || !pcall || !type || !settop || !gettop || !pushnumber || !tonumber)
+        return 0.f;
+    __try {
+        int top = gettop(L);
+        getfield(L, LUA_GLOBALSINDEX, "GetSpellCooldown");
+        if (type(L, -1) != LUA_TFUNCTION) {
+            settop(L, top);
+            return 0.f;
+        }
+        pushnumber(L, (double)id);
+        if (pcall(L, 1, 3, 0) != 0) {
+            settop(L, top);
+            return 0.f;
+        }
+        double start = tonumber(L, -3);
+        double dur = tonumber(L, -2);
+        settop(L, top);
+        if (dur <= 0.0) return 0.f;
+        getfield(L, LUA_GLOBALSINDEX, "GetTime");
+        if (type(L, -1) != LUA_TFUNCTION) {
+            settop(L, top);
+            return 0.f;
+        }
+        if (pcall(L, 0, 1, 0) != 0) {
+            settop(L, top);
+            return 0.f;
+        }
+        double nowt = tonumber(L, -1);
+        settop(L, top);
+        float rem = (float)((start + dur) - nowt);
+        return rem > 0.f ? rem : 0.f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0.f;
+    }
+}
+
+// Live remaining cooldown/GCD (seconds). 0 = ready/unknown. No invent pads.
+static float SpellReadyRem(lua_State* L, int spellId) {
+    float best = SpellReadyRemOne(L, spellId);
+    float gcd = SpellReadyRemOne(L, 61304);
+    return (gcd > best) ? gcd : best;
+}
+
 // Run a tiny script ONLY when we are NOT already inside Lua.
 // When g_currentL is set, FSExec is forbidden (nested VM re-entry crash).
 static int SafeScript(const char* code) {
@@ -518,23 +573,26 @@ bool FaceTowardGuid(uint64_t guid) {
     if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
         return false;
 
-    // Live facing (0x7AC), not stale 0x7A4.
-    float face = PlayerFacing();
-    if (face > 1e8f || face != face) {
-        face = OM::Facing(me);
-        if (face != face || face < -0.01f || face > 12.f)
+    // Up to 3 TurnByDelta steps same call — large rear angles used to leave
+    // one partial turn then cast → "not facing". No waits; pure awareness.
+    for (int step = 0; step < 3; ++step) {
+        float face = PlayerFacing();
+        if (face > 1e8f || face != face) {
+            face = OM::Facing(me);
+            if (face != face || face < -0.01f || face > 12.f)
+                return false;
+        }
+        float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
+        float diff = NormPi(ang - face);
+        if (std::fabs(diff) <= 0.12f)
+            return true;
+        float d = diff;
+        if (d > 1.4f) d = 1.4f;
+        if (d < -1.4f) d = -1.4f;
+        if (!TurnByDelta(d))
             return false;
     }
-
-    float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
-    float diff = NormPi(ang - face);
-    if (std::fabs(diff) <= 0.12f)
-        return true; // already on-angle enough for cast cone
-
-    // One TurnByDelta step (capped). Real client turn + CommitMovement.
-    if (diff > 1.4f) diff = 1.4f;
-    if (diff < -1.4f) diff = -1.4f;
-    return TurnByDelta(diff);
+    return IsFacingGuidEx(guid, 1.5707963f) != 0;
 }
 
 static bool LosClear(uint64_t guid) {
@@ -558,6 +616,12 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
     uint64_t me = ActiveGuid();
     if (!me) { r.reason = "no_player"; return r; }
 
+    // Live readiness (no invent pads).
+    if (g_currentL) {
+        float rem = SpellReadyRem(g_currentL, spellId);
+        if (rem > 0.05f) { r.reason = "not_ready"; return r; }
+    }
+
     if (targetGuid != 0) {
         Vec3 pb = OM::Position(targetGuid);
         Vec3 pa = OM::Position(me);
@@ -572,17 +636,18 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        // Only refuse when MEASURED not-facing. Undetermined (-1) allows cast.
+        // Unit casts: always refuse MEASURED not-facing (never spam client UI).
+        // Undetermined (-1) allows — positions unavailable.
         if (face == 0) {
             r.reason = "facing";
             return r;
         }
-        if (flags & kCastCheckLos) {
-            if (!LosClear(targetGuid)) {
-                r.reason = "los";
-                return r;
-            }
+        // Unit casts: always LoS when measurable.
+        if (!LosClear(targetGuid)) {
+            r.reason = "los";
+            return r;
         }
+        (void)flags;
     }
 
     r.ok = true;
@@ -599,27 +664,34 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // Face gate: only block when we MEASURE not-facing.
-    // Undetermined → cast (client is authority). Was zero multi-dot fires.
-    // (Readiness: Lua Executor GetSpellCooldown — no nested pcall here.)
+    // RUNTIME AUTHORITY (perfection path):
+    //   1) Live GetSpellCooldown — refuse not_ready before Spell_C (no client UI spam)
+    //   2) Unit face: optional turn, then always refuse measured not-facing
+    //   3) Unit LoS: always refuse measured blocked
+    // No invent delays — only refuse when client state is known-bad.
+    if (g_currentL) {
+        float rem = SpellReadyRem(g_currentL, spellId);
+        if (rem > 0.05f) {
+            r.reason = "not_ready";
+            return r;
+        }
+    }
+
     if (targetGuid != 0) {
         int face = IsFacingGuidEx(targetGuid, 1.5707963f);
         if (face == 0 && (flags & kCastFaceIfNeeded)) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        if (face == 0 && (flags & kCastSkipIfNotFacing)) {
+        // Always refuse measured not-facing for unit GUID casts (flags optional
+        // for face-turn; skip is default now — never wire a face-fail cast).
+        if (face == 0) {
             r.reason = "facing";
-            RL::Log::Info("CastSpellEx refuse facing id=%d guid=0x%llX",
-                          spellId, (unsigned long long)targetGuid);
             return r;
         }
-        // No default refuse when flags omit SKIP — just cast.
-        if (flags & kCastCheckLos) {
-            if (!LosClear(targetGuid)) {
-                r.reason = "los";
-                return r;
-            }
+        if (!LosClear(targetGuid)) {
+            r.reason = "los";
+            return r;
         }
     }
 

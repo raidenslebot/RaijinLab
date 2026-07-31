@@ -61,10 +61,11 @@ end
 
 -- Defined early (assigns the forward-declared locals). Used by attempt_action.
 net_grace = function()
+    -- Short confirm window only (land/fail events free sooner). Not a cast delay.
     local lag = latency_sec()
-    local g = lag * 1.2 + 0.06
-    if g < 0.10 then g = 0.10 end
-    if g > 0.18 then g = 0.18 end
+    local g = lag * 0.8 + 0.04
+    if g < 0.06 then g = 0.06 end
+    if g > 0.14 then g = 0.14 end
     return g
 end
 
@@ -1955,6 +1956,17 @@ function Executor.attempt_action(action, ctx)
     local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
     local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
     local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
+    local LOS = (Act.CAST_CHECK_LOS or 8)
+    -- Runtime authority flags for every unit GUID cast:
+    --   SKIP + LOS always (never wire a face/LoS fail → no client UI spam)
+    --   FACE when Auto Face condition is on the slot
+    --   NOTGT when acquire-off multi-dot
+    local function unit_cast_flags()
+        local f = SKIP + LOS
+        if not want_acquire then f = f + NOTGT end
+        if want_auto_face then f = f + FACE end
+        return f
+    end
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
@@ -1964,50 +1976,37 @@ function Executor.attempt_action(action, ctx)
             last_why = "blacklisted"
         else
             if not skip_face_cast and needs_enemy then
-                local not_facing = W and W.is_not_facing_guid
-                    and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                if not_facing and want_auto_face then
-                    if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
-                    elseif W and W.face_guid then pcall(W.face_guid, cg) end
-                    not_facing = W and W.is_not_facing_guid
-                        and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                end
-                if not_facing then
-                    last_why = "facing"
-                    blacklist_guid(cg, 0.20, "facing")
+                -- Prefer runtime CastSpellEx: face-turn (if Auto Face), then
+                -- refuse not_ready/facing/los without client UI spam.
+                local reason = nil
+                if Act.CastSpellEx then
+                    ok, reason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
                 else
-                    local reason = nil
-                    -- Always use CastSpellEx for multi-dot GUID casts so runtime
-                    -- can return not_ready/facing and pin UNIT_FIELD_TARGET.
-                    if Act.CastSpellEx then
-                        local flags = (want_acquire and 0 or NOTGT)
-                        if want_auto_face then flags = flags + FACE + SKIP end
-                        ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
-                    else
-                        ok = Act.CastSpell(cast_sid, cg)
-                        reason = ok and "ok" or "cast_fail"
+                    ok = Act.CastSpell(cast_sid, cg)
+                    reason = ok and "ok" or "cast_fail"
+                end
+                if ok == true or ok == 1 then
+                    ok = true
+                    wire_guid = cg
+                    guid = cg
+                    if search then
+                        search.guid = cg
+                        search.token = cand.token
+                        if ctx then ctx.aura_search_hit = search end
                     end
-                    if ok == true or ok == 1 then
-                        ok = true
-                        wire_guid = cg
-                        guid = cg
-                        if search then
-                            search.guid = cg
-                            search.token = cand.token
-                            if ctx then ctx.aura_search_hit = search end
-                        end
-                        break
-                    end
-                    ok = false
-                    last_why = reason or "cast_fail"
-                    -- not_ready is a list/GCD issue, not a bad GUID — don't blacklist.
-                    if tostring(last_why) ~= "not_ready" and tostring(last_why) ~= "cooldown" then
-                        blacklist_guid(cg, 0.15, last_why)
-                    end
+                    break
+                end
+                ok = false
+                last_why = reason or "cast_fail"
+                -- facing/los: try next candidate same tick (awareness, no pause).
+                if tostring(last_why) == "facing" or tostring(last_why) == "los"
+                    or tostring(last_why) == "oor" then
+                    -- fall through to next cand
+                elseif tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
+                    break -- list-level; don't thrash other GUIDs
                 end
             else
-                -- RUNTIME ONLY: multi-dot and unit casts go CastSpell(id, guid).
-                -- Ground self-AoE uses CastSpell(id) with no unit.
+                -- Ground self-AoE / no unit face: CastSpell(id) only.
                 local cok, creason
                 if ground_self then
                     if Act.CastSpellEx then
@@ -2016,8 +2015,7 @@ function Executor.attempt_action(action, ctx)
                         cok = Act.CastSpell(cast_sid)
                     end
                 elseif Act.CastSpellEx then
-                    local flags = (want_acquire and 0 or NOTGT)
-                    cok, creason = Act.CastSpellEx(cast_sid, cg, flags)
+                    cok, creason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
                 else
                     cok = Act.CastSpell(cast_sid, cg)
                 end
@@ -2030,6 +2028,9 @@ function Executor.attempt_action(action, ctx)
                     break
                 end
                 last_why = creason or "cast_failed"
+                if tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
+                    break
+                end
             end
         end
     end

@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.35-stable";
+const char* kVersion = "1.10.36-aware";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -1109,8 +1109,18 @@ static int Handle(lua_State* L, const char* name) {
         Actions::SetCurrentLuaState(nullptr);
         char buf[64];
         snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
-        RL::Log::Info("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
-                      spellId, (unsigned long long)g, (unsigned)flags, buf);
+        // Trace-only success; Warn refuses (was Info every cast → I/O lag under RL_LOG).
+        if (!r.ok) {
+            static int s_refuseLog = 0;
+            if (s_refuseLog < 24) {
+                RL::Log::Info("CastSpellEx refuse id=%d guid=0x%llX -> %s",
+                              spellId, (unsigned long long)g, buf);
+                s_refuseLog++;
+            }
+        } else {
+            RL::Log::Trace("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
+                           spellId, (unsigned long long)g, (unsigned)flags, buf);
+        }
         return PushString(L, buf);
     }
     if (!std::strcmp(name, "CanCast")) {

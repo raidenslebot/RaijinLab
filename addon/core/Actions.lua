@@ -103,7 +103,10 @@ function A.CastSpell(spellId, unitOrGuid)
     -- (acquire-off multi-dot). NO_TARGET_CHANGE restores if Spell_C stuck victim.
     local res
     if g then
-        local flags = A.CAST_NO_TARGET_CHANGE or 2
+        -- Unit casts: runtime refuses not_ready / measured face / LoS before wire.
+        local flags = (A.CAST_NO_TARGET_CHANGE or 2)
+            + (A.CAST_SKIP_IF_NOT_FACING or 4)
+            + (A.CAST_CHECK_LOS or 8)
         local ex = rt("CastSpellEx", spellId, g, flags)
         if type(ex) == "string" then
             local okb = ex:match("^(%d+)|")

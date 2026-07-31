@@ -133,28 +133,21 @@ local function check_gcd_cd(ctx, sid, slot)
     if ctx and ctx.gcd_active and not off then
         return false, "gcd"
     end
-    -- Pending OTHER spell: only hard-block when a real (non-provisional) cast
-    -- is in flight. Multi-dot wire provisional must not starve lower slots
-    -- for more than the short grace (handled by gcd_active clearing).
-    if ctx and ctx.pending_sid and not off then
+    -- Pending OTHER spell: only hard-block when a REAL cast is in flight.
+    -- Multi-dot / no_gcd pending must NOT starve the rest of the list
+    -- (that invented a 100–180ms rotation delay after every PS/IT wire).
+    if ctx and ctx.pending_sid and not off and not ctx.pending_no_gcd then
         if tonumber(ctx.pending_sid) ~= sid then
             return false, "pending_other"
         end
     end
-    -- Per-spell CD from live snapshot (+ Executor._recent via ctx.cooldowns)
+    -- Per-spell CD from live snapshot. Awareness only — no lag pads.
+    -- Pads (0.04+latency) invented multi-hundred-ms freezes when rem was ~0.
     local cds = ctx and ctx.cooldowns or {}
     local rem = cds[sid]
     if rem == nil then rem = cds[tostring(sid)] end
     rem = num(rem, 0)
-    local lag = 0.08
-    if GetNetStats then
-        local ok, _, _, lh, lw = pcall(GetNetStats)
-        if ok then
-            local ms = math.max(tonumber(lh) or 0, tonumber(lw) or 0)
-            if ms > 0 then lag = math.min(0.35, math.max(0.05, ms / 1000 * 0.6)) end
-        end
-    end
-    if rem > (0.04 + lag) then
+    if rem > 0.02 then
         return false, "cooldown"
     end
     return true

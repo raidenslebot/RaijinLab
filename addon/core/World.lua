@@ -2282,13 +2282,22 @@ function World.build_context(opts)
     end
     ctx.protection = pmap
     ctx.protection_target = ptarget
-    -- Convenience: target_protected[id] = bool
+    -- Convenience: target_protected[id] = bool for CAST GATES only.
+    -- Protection.is_protected returns protected=true when there is no target
+    -- (reason "no_target"). That must NOT look like immunity to BasicRules /
+    -- Engine — those gates require a real unit. Conditions still use
+    -- ctx.is_spell_protected() which keeps the full Protection semantics.
     ctx.target_protected = {}
     ctx.target_protected_reason = {}
     for id, info in pairs(pmap) do
         if type(info) == "table" then
-            ctx.target_protected[id] = info.protected and true or false
-            ctx.target_protected_reason[id] = info.reason
+            local r = info.reason
+            local prot = info.protected and true or false
+            if r == "no_target" then
+                prot = false
+            end
+            ctx.target_protected[id] = prot
+            ctx.target_protected_reason[id] = r
         end
     end
     -- Closure so pure conditions can re-query with custom school / absorb options

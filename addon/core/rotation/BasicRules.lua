@@ -305,12 +305,31 @@ end
 
 local function check_immunity(ctx, sid)
     if not ctx or not ctx.auto_castable then return true end
-    local prot = ctx.target_protected
-    if type(prot) == "table"
-        and (prot[sid] == true or prot[tostring(sid)] == true) then
-        return false, "immune"
+    -- Protection.is_protected returns protected=true when there is NO target
+    -- (reason "no_target"). That is NOT immunity. Treating it as immune froze
+    -- every non-aura_search slot with last_err=immune while tgt=no and
+    -- casts=0 forever. Engine.spell_ready already requires target_exists —
+    -- match that here. aura_search GUID casts are not about the client target.
+    if not bool(ctx.target_exists, false) then
+        return true
     end
-    return true
+    if ctx.aura_search_hit and ctx.aura_search_hit.guid then
+        return true
+    end
+    local prot = ctx.target_protected
+    if type(prot) ~= "table" then return true end
+    if not (prot[sid] == true or prot[tostring(sid)] == true) then
+        return true
+    end
+    -- Never alias relationship failures as "immune".
+    local reasons = ctx.target_protected_reason
+    if type(reasons) == "table" then
+        local r = reasons[sid] or reasons[tostring(sid)]
+        if r == "no_target" or r == "target_dead" or r == "friendly" then
+            return true
+        end
+    end
+    return false, "immune"
 end
 
 ------------------------------------------------------------

@@ -366,8 +366,13 @@ function BasicRules.guid_cast_gates(guid, opts)
     opts = opts or {}
     if not guid then return true, nil end
     local W = RaijinLab and RaijinLab.World
-    if not opts.skip_facing and W and W.is_facing_guid then
-        if not W.is_facing_guid(guid, W.CAST_FACE_HALF_ARC) then
+    if not opts.skip_facing and W and W.is_not_facing_guid then
+        -- Only refuse when MEASURED not-facing (nil undetermined allows cast).
+        if W.is_not_facing_guid(guid, W.CAST_FACE_HALF_ARC) then
+            return false, "facing"
+        end
+    elseif not opts.skip_facing and W and W.is_facing_guid then
+        if W.is_facing_guid(guid, W.CAST_FACE_HALF_ARC) == false then
             return false, "facing"
         end
     end

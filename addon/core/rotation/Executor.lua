@@ -852,8 +852,9 @@ local function live_castable(sid, name, opts)
                     })
                     if not gok then return false, gwhy end
                 else
-                    if not opts.skip_facing and Wf and Wf.is_facing_guid then
-                        if not Wf.is_facing_guid(face_ref, Wf.CAST_FACE_HALF_ARC) then
+                    -- Only measured not-facing blocks (nil undetermined allows).
+                    if not opts.skip_facing and Wf and Wf.is_not_facing_guid then
+                        if Wf.is_not_facing_guid(face_ref, Wf.CAST_FACE_HALF_ARC) then
                             return false, "facing"
                         end
                     end
@@ -1819,69 +1820,80 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Wire via runtime CastSpellEx when available: native face (if Auto Face),
-    -- skip if not facing, optional LoS. NEVER spam the client with refused casts.
+    -- Multi-dot GUID wire. Rules that killed Icy Touch:
+    --   * CastSpellEx + SKIP + fail-closed facing → every undetermined face = no cast
+    --   * LOS TraceLine false positives → no cast
+    --   * 1.25s blacklist on every face miss → burned all candidates
+    -- Fix: only skip when MEASURED not-facing; undetermined → CAST; optional Auto Face.
     local ok, wire_guid = false, nil
     local last_why = "no_candidate"
     local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
     local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
-    local LOS  = (Act.CAST_CHECK_LOS or 8)
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
         if not cg then
             -- skip
         elseif Executor.guid_blacklisted(cg) then
-            last_why = "facing"
+            last_why = "blacklisted"
         else
             if not skip_face_cast and needs_enemy then
-                local flags = SKIP + LOS
-                if want_auto_face then flags = flags + FACE end
-                local reason = nil
-                if Act.CastSpellEx then
-                    if preserve_selection and Act.CastSpellPreserveSelection then
-                        ok, reason = Act.CastSpellPreserveSelection(cast_sid, cg, flags)
-                    else
-                        ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
-                    end
+                -- Measured not-facing only (nil undetermined = allow).
+                local not_facing = W and W.is_not_facing_guid
+                    and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                if not_facing and want_auto_face then
+                    if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
+                    elseif W and W.face_guid then pcall(W.face_guid, cg) end
+                    not_facing = W and W.is_not_facing_guid
+                        and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                end
+                if not_facing then
+                    -- Clearly looking away: do not spam client; try next candidate.
+                    last_why = "facing"
+                    -- Short tick-local skip only (0.35s), not 1.25s multi-cand death.
+                    blacklist_guid(cg, 0.35, "facing")
                 else
-                    -- Legacy runtime: Lua face + hard skip.
-                    local facing_ok = true
-                    if W and W.is_facing_guid then
-                        facing_ok = W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                    end
-                    if not facing_ok and want_auto_face and W and W.face_guid then
-                        pcall(W.face_guid, cg)
-                        facing_ok = W.is_facing_guid and W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                    end
-                    if not facing_ok then
-                        ok, reason = false, "facing"
-                    elseif W and W.is_los_guid and W.is_los_guid(cg) == false then
-                        ok, reason = false, "los"
+                    -- CAST. Prefer plain Spell_C path — CastSpellEx only to opt face.
+                    local reason = nil
+                    if want_auto_face and Act.CastSpellEx then
+                        local flags = FACE + SKIP -- face if needed; skip only if still measured bad
+                        if preserve_selection and Act.CastSpellPreserveSelection then
+                            ok, reason = Act.CastSpellPreserveSelection(cast_sid, cg, flags)
+                        else
+                            ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
+                        end
                     else
+                        -- No auto-face: wire GUID cast; undetermined facing is OK.
                         if preserve_selection and Act.CastSpellPreserveSelection then
                             ok = Act.CastSpellPreserveSelection(cast_sid, cg)
                         else
                             ok = Act.CastSpell(cast_sid, cg)
                         end
-                        reason = ok and "ok" or "cast_fail"
+                        if type(ok) == "boolean" then
+                            reason = ok and "ok" or "cast_fail"
+                        else
+                            ok, reason = ok, "ok"
+                        end
                     end
-                end
-                if ok then
-                    wire_guid = cg
-                    guid = cg
-                    if search then
-                        search.guid = cg
-                        search.token = cand.token
-                        if ctx then ctx.aura_search_hit = search end
+                    -- CastSpellPreserveSelection may return ok, reason
+                    if ok == true or ok == 1 then
+                        ok = true
+                        wire_guid = cg
+                        guid = cg
+                        if search then
+                            search.guid = cg
+                            search.token = cand.token
+                            if ctx then ctx.aura_search_hit = search end
+                        end
+                        break
                     end
-                    break
-                end
-                last_why = reason or "cast_fail"
-                if last_why == "facing" or last_why == "los" then
-                    blacklist_guid(cg, 1.25, last_why)
-                else
-                    blacklist_guid(cg, 0.4, last_why)
+                    ok = false
+                    last_why = reason or "cast_fail"
+                    if last_why == "facing" then
+                        blacklist_guid(cg, 0.35, last_why)
+                    else
+                        blacklist_guid(cg, 0.25, last_why)
+                    end
                 end
             else
                 local cok = false

@@ -316,17 +316,15 @@ function World.face_guid(guid)
     return false
 end
 
--- true = facing, false = not facing or undetermined (FAIL-CLOSED for casts).
--- Undetermined must NOT wire unit-targeted spells ("in front of you" spam).
+-- Facing check. Returns true / false / nil (nil = undetermined — cannot measure).
+-- Multi-dot MUST cast when nil (client is last authority). Only skip when false.
 function World.is_facing_guid(guid, half_arc)
     if not guid then return false end
     half_arc = tonumber(half_arc) or World.CAST_FACE_HALF_ARC
-    -- Live math first (fresher than packed hostiles bit).
     local err = World.heading_error_to_guid(guid)
     if err ~= nil then
         return math.abs(err) <= half_arc
     end
-    -- Hostiles-cache bit only if very fresh.
     local c = World._hostiles_cache
     if c and c.by_guid then
         local row = c.by_guid[tostring(guid)]
@@ -341,8 +339,18 @@ function World.is_facing_guid(guid, half_arc)
             return v == true or v == 1 or v == "true"
         end
     end
-    -- FAIL-CLOSED: undetermined is not "ok to cast".
-    return false
+    -- Undetermined: not false. Callers that need bool for "can wire" treat nil as allow.
+    return nil
+end
+
+-- Bool helper: only true when measured facing. false for not-facing OR undetermined.
+function World.is_facing_guid_strict(guid, half_arc)
+    return World.is_facing_guid(guid, half_arc) == true
+end
+
+-- Bool helper for "should we skip cast": only when MEASURED not facing.
+function World.is_not_facing_guid(guid, half_arc)
+    return World.is_facing_guid(guid, half_arc) == false
 end
 
 -- GUID line-of-sight. true = clear, false = blocked, nil = undetermined.
@@ -417,29 +425,9 @@ end
 function World.collect_nearby_enemies(max_range)
     max_range = tonumber(max_range) or 40
     local now = (GetTime and GetTime()) or 0
-    -- Crash gate: during suite-on OM arm window, NEVER call NearbyHostiles.
-    -- Return current-target-only (or empty). Multi-dot still works on target;
-    -- pack discovery waits until Master.suite_om_safe().
-    local M = RaijinLab and RaijinLab.Master
-    if M and M.enabled and M.enabled() and M.suite_om_safe and not M.suite_om_safe() then
-        local out = {}
-        if UnitExists and UnitExists("target")
-            and UnitCanAttack and UnitCanAttack("player", "target")
-            and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
-            local guid = UnitGUID and UnitGUID("target")
-            local center, edge, aoe = unit_distances(guid, "target")
-            if center then
-                out[1] = {
-                    guid = guid, token = "target",
-                    dist = aoe or center, dist_aoe = aoe or center,
-                    dist_center = center, dist_edge = edge or center,
-                    precise = true, source = "suite_warm_target",
-                    facing = true,
-                }
-            end
-        end
-        return out
-    end
+    -- Suite warm: still allow NearbyHostiles if OM is already enabled — multi-dot
+    -- with no client target was completely blind when we forced target-only.
+    -- Only skip the native pack when om is off / runtime missing (handled below).
     local c = World._hostiles_cache
     if c and c.list and c.range and c.range >= max_range
         and (now - (c.t or 0)) < 0.10 then
@@ -2533,10 +2521,15 @@ function World.find_aura_search_targets(opts)
         -- can still try the nearest missing-debuff unit.
         local ferr = World.heading_error_to_guid(guid)
         local abs_err = (ferr ~= nil) and math.abs(ferr) or 99
-        local facing = (ferr ~= nil) and (abs_err <= half) or World.is_facing_guid(guid, half)
+        -- Prefer measured face; undetermined counts as "ok enough" for sort
+        -- (still included — do not drop candidates on unknown facing).
+        local facing = true
+        if ferr ~= nil then
+            facing = abs_err <= half
+        end
         candidates[#candidates + 1] = {
             token = token, guid = guid, dist = tonumber(dist) or 999,
-            face_err = abs_err, facing = facing and true or false,
+            face_err = abs_err, facing = facing,
         }
     end
 

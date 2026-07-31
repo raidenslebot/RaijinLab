@@ -367,13 +367,32 @@ static float NormPi(float d) {
     return d;
 }
 
-bool IsFacingGuid(uint64_t guid, float halfArcRad) {
-    if (!guid) return false;
+// Returns: 1 = facing, 0 = not facing (measured), -1 = undetermined (no positions).
+// Callers that must not spam "in front" only skip when result == 0.
+// Undetermined must NOT block multi-dot GUID casts (was zero Icy Touch fires).
+static int IsFacingGuidEx(uint64_t guid, float halfArcRad) {
+    if (!guid) return -1;
     if (halfArcRad <= 0.f) halfArcRad = 1.5707963f;
     uint64_t me = ActiveGuid();
-    if (!me) return false;
-    // Fail-closed: OM::IsFacing returns false when positions missing.
-    return OM::IsFacing(me, guid, halfArcRad);
+    if (!me) return -1;
+    Vec3 pa = OM::Position(me);
+    Vec3 pb = OM::Position(guid);
+    if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
+        return -1; // cannot measure — do not invent "not facing"
+    float face = PlayerFacing();
+    if (face > 1e8f || face != face)
+        face = OM::Facing(me);
+    if (face != face || face < -0.01f || face > 12.f)
+        return -1;
+    float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
+    float diff = NormPi(ang - face);
+    return (std::fabs(diff) <= halfArcRad) ? 1 : 0;
+}
+
+bool IsFacingGuid(uint64_t guid, float halfArcRad) {
+    // Legacy bool API: undetermined counts as facing so old callers don't soft-lock.
+    int v = IsFacingGuidEx(guid, halfArcRad);
+    return v != 0;
 }
 
 bool FaceTowardGuid(uint64_t guid) {
@@ -436,16 +455,16 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
         if ((pb.x != 0.f || pb.y != 0.f) && (pa.x != 0.f || pa.y != 0.f)) {
             float dx = pb.x - pa.x, dy = pb.y - pa.y;
             float dist = std::sqrt(dx * dx + dy * dy);
-            // Soft OOR: classic ~40yd unit casts. Exact range needs spell DB.
             if (dist > 45.f) { r.reason = "oor"; return r; }
         }
 
-        bool facing = IsFacingGuid(targetGuid, 1.5707963f);
-        if (!facing && (flags & kCastFaceIfNeeded)) {
+        int face = IsFacingGuidEx(targetGuid, 1.5707963f);
+        if (face == 0 && (flags & kCastFaceIfNeeded)) {
             FaceTowardGuid(targetGuid);
-            facing = IsFacingGuid(targetGuid, 1.5707963f);
+            face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        if (!facing) {
+        // Only refuse when MEASURED not-facing. Undetermined (-1) allows cast.
+        if (face == 0) {
             r.reason = "facing";
             return r;
         }
@@ -471,25 +490,21 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // Pre-wire gates (face / los). Never call Spell_C when we know the client
-    // will refuse with "in front of you" — that spam freezes the executor.
+    // Face gate: only block when we MEASURE not-facing.
+    // Undetermined → cast (client is authority). Was zero multi-dot fires.
     if (targetGuid != 0) {
-        bool facing = IsFacingGuid(targetGuid, 1.5707963f);
-        if (!facing && (flags & kCastFaceIfNeeded)) {
+        int face = IsFacingGuidEx(targetGuid, 1.5707963f);
+        if (face == 0 && (flags & kCastFaceIfNeeded)) {
             FaceTowardGuid(targetGuid);
-            facing = IsFacingGuid(targetGuid, 1.5707963f);
+            face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        if (!facing && (flags & kCastSkipIfNotFacing)) {
+        if (face == 0 && (flags & kCastSkipIfNotFacing)) {
             r.reason = "facing";
             RL::Log::Info("CastSpellEx refuse facing id=%d guid=0x%llX",
                           spellId, (unsigned long long)targetGuid);
             return r;
         }
-        if (!facing && !(flags & kCastSkipIfNotFacing) && !(flags & kCastFaceIfNeeded)) {
-            // Default for GUID casts: still skip if not facing (no spam).
-            r.reason = "facing";
-            return r;
-        }
+        // No default refuse when flags omit SKIP — just cast.
         if (flags & kCastCheckLos) {
             if (!LosClear(targetGuid)) {
                 r.reason = "los";

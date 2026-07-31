@@ -273,8 +273,10 @@ function RaijinLab:CoreOnEvent(event, ...)
         if RaijinLab then
             RaijinLab._world_entered = true
             RaijinLab._leaving_world = false
-            -- /reload wipes _runtime_armed; allow one-shot arm again.
+            -- /reload wipes arm state; allow one-shot arm again.
             RaijinLab._runtime_armed = false
+            RaijinLab._runtime_hw_armed = false
+            RaijinLab._arm_pos_ok = 0
         end
         -- Arm once when bridge+player exist. Idempotent after set.
         if RaijinLab:HasRuntime() and RaijinLab.ArmRuntimeSystems then

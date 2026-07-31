@@ -107,15 +107,14 @@ static DWORD WINAPI MainThread(LPVOID param) {
     int failBackoff = 0;     // ticks to wait after a failed Register
     int tick = 0;
     // First bind of the session: conservative (crash lesson #132).
-    constexpr int kMinSettleFirst    = 60;  // ~3 s
-    constexpr int kInWorldStreakFirst = 40; // ~2 s
-    // Rebind after /reload: IsLinuxClient is wiped from _G but the world is
-    // already live. Wait only long enough for the new VM to finish ADDON_LOADED.
-    // (Log proof 2026-07-31: BRIDGE ONLINE then L changes — addon went blind
-    // until a full 5s settle; users checked status immediately → "no runtime".)
-    constexpr int kMinSettleRebind    = 24; // ~1.2 s
-    constexpr int kInWorldStreakRebind = 16; // ~0.8 s
-    constexpr int kFailBackoff       = 60;  // ~3 s after failed Register
+    // After Register AV on load (bits=0xE, settle~4s) — require longer settle
+    // so ADDON_LOADED / world entry has finished before FrameScript_Register.
+    constexpr int kMinSettleFirst    = 100; // ~5 s after L stable
+    constexpr int kInWorldStreakFirst = 60; // ~3 s strong WorldReady
+    // Rebind after /reload: world already live; still wait past ADDON_LOADED.
+    constexpr int kMinSettleRebind    = 40; // ~2 s
+    constexpr int kInWorldStreakRebind = 24; // ~1.2 s
+    constexpr int kFailBackoff       = 120; // ~6 s after failed Register (AV)
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {

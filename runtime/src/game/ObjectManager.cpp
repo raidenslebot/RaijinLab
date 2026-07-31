@@ -1181,25 +1181,50 @@ static bool SnapshotLooksHostileNpc(const Object& o, uint64_t localGuid) {
     return false;
 }
 
+// SEH helpers (no C++ dtors) — MSVC forbids __try with lock_guard in same fn.
+static int SoftWalkSeh() {
+    __try {
+        return SafeWalkObjectList();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+static int SoftPodsSeh() {
+    __try {
+        PodsToVectors();
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
 // List-only soft refresh for rotation discovery when om.enable=0.
-// NEVER EnumVisibleObjects. Fast: 0.5s settle after first local, ~20Hz.
+// NEVER EnumVisibleObjects. MUST use the same hard settle as Refresh —
+// walking the object list during world load hard-crashes (CRASH_LESSONS).
 static void SoftRefreshListOnlyForHostiles() {
     static ULONGLONG s_firstLocal = 0;
     static ULONGLONG s_last = 0;
     ULONGLONG now = GetTickCount64();
     uint64_t local = SafeGetActive();
-    if (!local) return;
+    if (!local) {
+        s_firstLocal = 0; // reset settle if we lose player (load/logout)
+        return;
+    }
     if (!s_firstLocal) s_firstLocal = now;
-    if ((now - s_firstLocal) < 500ull) return;      // brief settle only
-    if ((now - s_last) < 50ull) return;             // ~20 Hz multi-dot
+    // Same 6s hard settle as Refresh — not 500ms (crash on world entry).
+    if ((now - s_firstLocal) < 6000ull) return;
+    if ((now - s_last) < 100ull) return;            // ~10 Hz max
     s_last = now;
     std::lock_guard<std::mutex> lock(g_mu);
     g_podCount = 0;
-    int listRc = SafeWalkObjectList();
+    int listRc = SoftWalkSeh();
     if (listRc != 1 || g_podCount == 0) {
         return; // keep prior snapshot
     }
-    PodsToVectors();
+    if (!SoftPodsSeh()) {
+        g_podCount = 0;
+        return;
+    }
     g_lastRefresh = now;
 }
 

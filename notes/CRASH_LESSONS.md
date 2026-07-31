@@ -3,19 +3,22 @@
 Hard client crashes after **login + suite ON** and **inject during load** have
 been reproduced multiple times. These rules are non-negotiable.
 
-## ERROR #132 @ 0x00857D05 — Register during ADDON_LOADED (2026-07-31)
+## ERROR #132 @ 0x00857D05 — Register during ADDON_LOADED / world load
 
-**Proof:** `runtime.log` line `Register failed` timestamp == crash dump time
-`11:38:32.476`. EBX == lua_State from inject log. Stack in FrameScript while
-loading `Details\core\level_scaling_data.lua`. `Last FrameScript_SignalEvent:
-ADDON_LOADED`.
+**Proof (1):** `Register failed` == crash dump `11:38:32.476` during
+`Details\core\level_scaling_data.lua` ADDON_LOADED (hard-timeout path).
 
-**Cause:** worker `kHardTimeout` (~6s) called `FrameScript_RegisterFunction`
-**without** `g_InWorld==1`. SEH on the worker “caught” an AV but corrupted the
-Lua VM; main thread then null-deref’d (`mov edi,[eax]` with eax=0).
+**Proof (2):** 2026-07-31 13:28:45 `Register failed rc=1073741819` (0xC0000005)
+with `bits=0xE` only (worldFrame|conn|objMgr — **no** localPlayer/guid/flag).
+Medium-only WorldReady fired mid load; SEH corrupted VM → crash on world entry.
 
-**Rule:** NEVER register unless `InWorldFlag()==1` for a sustained streak.
-**No hard-timeout bypass.** Failed register → multi-second backoff, not spam.
+**Cause:** `FrameScript_RegisterFunction` from worker while Lua VM still loading
+or world not fully ready.
+
+**Rule:** Register ONLY when STRONG signals hold for a sustained streak:
+`g_InWorld` **or** local player ptr **or** active GUID.
+**Never** medium 0xE alone. No hard-timeout bypass. Failed register → long backoff.
+Soft OM list walks use the same **6s** hard settle as Refresh.
 
 ## Root pattern (OM / suite)
 

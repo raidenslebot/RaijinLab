@@ -299,12 +299,17 @@ function RaijinLab:CoreOnEvent(event, ...)
         if RaijinLabDB.rotation_enabled and RaijinLab.RotationExecutor then
             local Ex = RaijinLab.RotationExecutor
             local function resume_rotation()
+                -- Never spin rotation mid-load: wait for runtime bridge too.
+                if not (RaijinLab and RaijinLab.HasRuntime and RaijinLab:HasRuntime()) then
+                    return
+                end
                 if RaijinLabDB and RaijinLabDB.rotation_enabled and not Ex._frame then
                     Ex.start()
                 end
             end
             if C_Timer and C_Timer.After then
-                C_Timer.After(3.0, resume_rotation)
+                -- 8s after PEW: past OM soft-arm settle; never 3s (load crash).
+                C_Timer.After(8.0, resume_rotation)
             else
                 resume_rotation()
             end

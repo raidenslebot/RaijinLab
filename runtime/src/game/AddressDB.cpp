@@ -101,9 +101,13 @@ int InWorldFlag() {
 
 bool WorldReady(uint32_t* outBits) {
     // Multi-signal world readiness for FrameScript_RegisterFunction.
-    // Live proof: g_InWorld stayed 0 for 60s while player was in world and
-    // lua_State was valid — registration never fired. So we OR several
-    // independent pure-memory (and one SEH-guarded GUID) signals.
+    //
+    // CRASH PROOF 2026-07-31 13:28:45 — Register failed rc=1073741819 (0xC0000005)
+    // with bits=0xE (worldFrame|conn|objMgr ONLY). Medium-only readiness fired
+    // during world load / ADDON_LOADED; SEH "caught" the worker AV but corrupted
+    // the Lua VM → client crash on load (classic ERROR #132 pattern).
+    //
+    // Rule: STRONG signals only for register. Medium 0xE is diagnostic, not a gate.
     uint32_t bits = 0;
     int flag = ReadInWorldFlag();
     if (flag == 1) bits |= 1u;
@@ -112,23 +116,18 @@ bool WorldReady(uint32_t* outBits) {
     if (ReadObjMgrOk()) bits |= 8u;
     if (ReadLocalPlayerOk()) bits |= 16u;
 
-    // Active player GUID: SEH-isolated. Prefer throttling callers; safe if AV.
+    // Active player GUID: SEH-isolated. May return 0 from worker (no TLS) — OK.
     uint64_t guid = SafeGetActivePlayerGuid();
     if (guid != 0) bits |= 32u;
 
     if (outBits) *outBits = bits;
 
-    // Strong signals: local player object or active GUID = definitely in world.
-    if (bits & (16u | 32u))
-        return true;
-
-    // Medium: world frame + client connection + object manager all live
-    // (character in world with OM). Flag alone is insufficient (often stuck 0).
-    if ((bits & (2u | 4u | 8u)) == (2u | 4u | 8u))
-        return true;
-
-    // Weak positive: flag byte only (stock path when it works).
-    if (flag == 1)
+    // STRONG ONLY — any one of these means the player is actually in world:
+    //   bit0  g_InWorld flag (when Ascension sets it)
+    //   bit4  local player pointer readable
+    //   bit5  active player GUID non-zero
+    // Medium (wf|conn|mgr) alone is NOT enough — present during load screens.
+    if (bits & (1u | 16u | 32u))
         return true;
 
     return false;

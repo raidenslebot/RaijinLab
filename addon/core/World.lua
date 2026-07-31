@@ -1043,6 +1043,7 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     if dur < 1 then dur = 15 end
     if dur > 120 then dur = 60 end
     stacks = tonumber(stacks) or 1
+    World._aura_search_cache = nil -- next search must see the applied aura
     -- RUNTIME is the authority. Lua cache is diagnostic only.
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
@@ -2486,9 +2487,18 @@ function World.find_aura_search_targets(opts)
         return {}
     end
 
+    -- Lua-side cache (~80ms) — Engine evaluates aura_search every tick per slot.
+    local tnow = (GetTime and GetTime()) or 0
+    local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
+    local ac = World._aura_search_cache
+    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.08 and ac.list then
+        return ac.list
+    end
+
     local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "AuraSearch",
         range, spell_id, state_n, max_n)
     if not ok or type(packed) ~= "string" or packed == "" or packed == "0" then
+        World._aura_search_cache = { key = ck, t = tnow, list = {} }
         return {}
     end
 
@@ -2526,6 +2536,7 @@ function World.find_aura_search_targets(opts)
             end
         end
     end
+    World._aura_search_cache = { key = ck, t = tnow, list = out }
     return out
 end
 

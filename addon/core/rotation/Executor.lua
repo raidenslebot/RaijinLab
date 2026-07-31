@@ -1873,25 +1873,24 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Multi-dot GUID wire. Rules that killed Icy Touch:
-    --   * CastSpellEx + SKIP + fail-closed facing → every undetermined face = no cast
-    --   * LOS TraceLine false positives → no cast
-    --   * 1.25s blacklist on every face miss → burned all candidates
-    -- Fix: only skip when MEASURED not-facing; undetermined → CAST; optional Auto Face.
+    -- Multi-dot GUID wire: plain Spell_C only.
+    -- NEVER CastSpellPreserveSelection here — its C_Timer TargetLastTarget spam
+    -- clobbered selection and stalled the client after every Icy Touch.
+    -- Runtime CastSpell already restores selection for GUID casts.
     local ok, wire_guid = false, nil
     local last_why = "no_candidate"
     local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
     local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
+    local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
-        if not cg then
-            -- skip
+        if not cg or cg == 0 or tostring(cg) == "0x0" or tostring(cg) == "0x0000000000000000" then
+            last_why = "bad_guid"
         elseif Executor.guid_blacklisted(cg) then
             last_why = "blacklisted"
         else
             if not skip_face_cast and needs_enemy then
-                -- Measured not-facing only (nil undetermined = allow).
                 local not_facing = W and W.is_not_facing_guid
                     and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
                 if not_facing and want_auto_face then
@@ -1901,42 +1900,17 @@ function Executor.attempt_action(action, ctx)
                         and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
                 end
                 if not_facing then
-                    -- Clearly looking away: do not spam client; try next candidate.
                     last_why = "facing"
-                    -- Short tick-local skip only (0.35s), not 1.25s multi-cand death.
-                    blacklist_guid(cg, 0.35, "facing")
+                    blacklist_guid(cg, 0.20, "facing")
                 else
-                    -- CAST. Prefer plain Spell_C path — CastSpellEx only to opt face.
                     local reason = nil
-                    -- Multi-dot: ALWAYS cast by GUID. Acquire OFF → NO_TARGET_CHANGE.
-                    local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
                     if want_auto_face and Act.CastSpellEx then
-                        local flags = FACE + SKIP
-                        if not want_acquire then flags = flags + NOTGT end
-                        if preserve_selection and Act.CastSpellPreserveSelection then
-                            ok, reason = Act.CastSpellPreserveSelection(cast_sid, cg, flags)
-                        else
-                            ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
-                        end
+                        local flags = FACE + SKIP + (want_acquire and 0 or NOTGT)
+                        ok, reason = Act.CastSpellEx(cast_sid, cg, flags)
                     else
-                        -- No auto-face: wire GUID cast; undetermined facing is OK.
-                        if not want_acquire then
-                            -- Runtime restores selection; Lua preserve is belt-and-suspenders.
-                            if Act.CastSpellPreserveSelection then
-                                ok = Act.CastSpellPreserveSelection(cast_sid, cg, NOTGT)
-                            else
-                                ok = Act.CastSpell(cast_sid, cg)
-                            end
-                        else
-                            ok = Act.CastSpell(cast_sid, cg)
-                        end
-                        if type(ok) == "boolean" then
-                            reason = ok and "ok" or "cast_fail"
-                        else
-                            ok, reason = ok, "ok"
-                        end
+                        ok = Act.CastSpell(cast_sid, cg)
+                        reason = ok and "ok" or "cast_fail"
                     end
-                    -- CastSpellPreserveSelection may return ok, reason
                     if ok == true or ok == 1 then
                         ok = true
                         wire_guid = cg
@@ -1950,19 +1924,10 @@ function Executor.attempt_action(action, ctx)
                     end
                     ok = false
                     last_why = reason or "cast_fail"
-                    if last_why == "facing" then
-                        blacklist_guid(cg, 0.35, last_why)
-                    else
-                        blacklist_guid(cg, 0.25, last_why)
-                    end
+                    blacklist_guid(cg, 0.15, last_why)
                 end
             else
-                local cok = false
-                if preserve_selection and Act.CastSpellPreserveSelection then
-                    cok = Act.CastSpellPreserveSelection(cast_sid, cg)
-                else
-                    cok = Act.CastSpell(cast_sid, cg)
-                end
+                local cok = Act.CastSpell(cast_sid, cg)
                 if cok then
                     ok = true
                     wire_guid = cg
@@ -1974,13 +1939,9 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    if ok and preserve_selection then
+    -- Acquire-off: one immediate restore only (no timer spam).
+    if ok and preserve_selection and not want_acquire then
         restore_selection()
-        if C_Timer and C_Timer.After then
-            C_Timer.After(0, function() pcall(restore_selection) end)
-            C_Timer.After(0.05, function() pcall(restore_selection) end)
-            C_Timer.After(0.15, function() pcall(restore_selection) end)
-        end
     end
 
     if not ok then
@@ -2029,11 +1990,12 @@ function Executor.attempt_action(action, ctx)
             Executor._gcd_until = tnow + dur
             Executor._gcd_src = "evidence"
         elseif is_multidot then
-            -- Multi-dot: never hold the list longer than one network frame.
-            local g = 0.08
-            Executor._gcd_until = tnow + g
+            -- Multi-dot: DO NOT set global _gcd_until (that clobbered every
+            -- lower-priority ability). Track pending without list lock.
+            Executor._gcd_until = 0
+            Executor._gcd_provisional = false
             Executor._gcd_src = "multidot_wire"
-            Executor._gcd_provisional = true
+            local g = 0.10
             Executor._pending = {
                 sid = sid, cast_t = tnow, deadline = tnow + g, grace = g,
                 before_cd = before and before.cd_start or 0,
@@ -2041,9 +2003,10 @@ function Executor.attempt_action(action, ctx)
                 off_gcd = false,
                 guid = guid,
                 multidot = true,
+                no_gcd = true, -- critical: does not freeze other slots
             }
             Executor._recent = Executor._recent or {}
-            Executor._recent[sid] = tnow + g
+            Executor._recent[sid] = tnow + 0.05 -- anti-spam THIS spell only
         else
             Executor._gcd_until = tnow + math.min(grace, 0.12)
             Executor._gcd_src = "wire_pending"
@@ -2542,7 +2505,9 @@ function Executor._tick_body()
     -- Corpse / Target Existence any|no_target policy overrides.
     apply_slot_policy_overrides(ctx, rotation)
 
-    -- GCD freeze: casting, _gcd_until, live GetSpellCooldown, or pending in-flight.
+    -- GCD freeze — ONLY real cast bar / channel / our short provisional clock.
+    -- NEVER treat a per-spell cooldown on slots 1..6 as global GCD (that froze
+    -- the entire rotation whenever any early ability had a CD remaining).
     local casting_now = (UnitCastingInfo and UnitCastingInfo("player"))
         or (UnitChannelInfo and UnitChannelInfo("player"))
     local gcd_active = false
@@ -2550,47 +2515,40 @@ function Executor._tick_body()
         gcd_active = true
     elseif t < (Executor._gcd_until or 0) then
         gcd_active = true
-    else
-        -- Live book GCD (any rotation spell still showing a short CD).
-        for i = 1, math.min(#spell_ids, 6) do
-            local rem = spell_ready_remaining(spell_ids[i], nil)
-            if rem > 0.08 then
-                gcd_active = true
-                if (Executor._gcd_until or 0) < t + rem then
-                    Executor._gcd_until = t + rem
-                    Executor._gcd_src = "live_book"
-                end
-                break
-            end
-        end
     end
+    -- Optional: real global GCD witness (short CD on the cast spell only is
+    -- handled in BasicRules per-slot via fill_live_spell_state / cooldowns).
     pend = Executor._pending
     if pend then
         ctx.pending_sid = pend.sid
-        if not pend.off_gcd then gcd_active = true end
-        -- Stuck recovery: pending past 2.5x grace with no event — free hard.
+        -- Multi-dot pending must NOT lock the whole list (no_gcd flag).
+        if not pend.off_gcd and not pend.no_gcd then
+            gcd_active = true
+        end
         local age = t - (pend.cast_t or t)
-        local grace = pend.grace or 0.18
-        if age > (grace * 2.5 + 0.15) then
+        local grace = pend.grace or 0.12
+        if age > (grace + 0.05) then
+            -- Expired pending: free hard. Never leave a stuck lock.
             Executor._pending = nil
-            Executor._gcd_until = 0
-            Executor._gcd_provisional = false
-            Executor._gcd_src = "stuck_recover"
+            if Executor._gcd_provisional or pend.no_gcd or pend.multidot then
+                Executor._gcd_until = 0
+                Executor._gcd_provisional = false
+                Executor._gcd_src = "pending_expire"
+            end
             clear_sid_soft_locks(pend.sid)
-            gcd_active = false
+            if pend.no_gcd or pend.multidot then gcd_active = casting_now and true or false end
             pend = nil
             ctx.pending_sid = nil
         end
     end
-    -- Provisional GCD with no pending must not freeze the rotation forever.
-    if not pend and Executor._gcd_provisional and (Executor._gcd_until or 0) > t then
-        local left = (Executor._gcd_until or 0) - t
-        if left > 0.45 or (Executor._gcd_src == "wire_pending" and left > 0.25) then
-            Executor._gcd_until = 0
-            Executor._gcd_provisional = false
-            Executor._gcd_src = "prov_cap"
-            gcd_active = false
-        end
+    -- Cap any provisional hold at 150ms hard.
+    if Executor._gcd_provisional and (Executor._gcd_until or 0) > t + 0.15 then
+        Executor._gcd_until = t + 0.15
+    end
+    if not casting_now and Executor._gcd_provisional and (Executor._gcd_until or 0) <= t then
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        gcd_active = false
     end
     ctx.gcd_active = gcd_active
     ctx.live_gcd_remaining = math.max(0, (Executor._gcd_until or 0) - t)

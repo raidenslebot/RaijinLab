@@ -1214,6 +1214,7 @@ static constexpr size_t kAuraCap = 512;
 static AuraNote g_auras[kAuraCap];
 static size_t g_auraN = 0;
 static std::mutex g_auraMu;
+static volatile ULONGLONG g_auraSearchGen = 1; // bump on note/clear to drop pack cache
 
 static void AuraPruneLocked(ULONGLONG now) {
     size_t w = 0;
@@ -1360,6 +1361,7 @@ void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
     if (durationSec > 120.f) durationSec = 60.f;
     ULONGLONG now = GetTickCount64();
     ULONGLONG exp = now + (ULONGLONG)(durationSec * 1000.f);
+    g_auraSearchGen++;
     std::lock_guard<std::mutex> lock(g_auraMu);
     AuraPruneLocked(now);
     for (size_t i = 0; i < g_auraN; ++i) {
@@ -1379,6 +1381,7 @@ void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
 
 void ClearUnitAura(uint64_t guid, int spellId) {
     if (!guid || spellId <= 0) return;
+    g_auraSearchGen++;
     std::lock_guard<std::mutex> lock(g_auraMu);
     size_t w = 0;
     for (size_t i = 0; i < g_auraN; ++i) {
@@ -1405,21 +1408,35 @@ bool HasUnitAura(uint64_t guid, int spellId, int* outStacks) {
 }
 
 std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN) {
-    // RUNTIME-FIRST multi-dot. No mouseover, no UnitExists, no UnitCanAttack.
-    // Pool = living attackable units from OM (same basic hostility as hostiles pack).
-    // Aura filter uses runtime NoteUnitAura table only.
+    // RUNTIME-FIRST multi-dot. Cached ~80ms so 50Hz rotation ticks are free.
     if (spellId <= 0) return "0";
+    static ULONGLONG s_cacheT = 0;
+    static ULONGLONG s_cacheGen = 0;
+    static int s_cacheSid = 0;
+    static float s_cacheRange = 0.f;
+    static int s_cacheMissing = -1;
+    static size_t s_cacheMaxN = 0;
+    static std::string s_cacheOut;
+    ULONGLONG now = GetTickCount64();
+    if (s_cacheSid == spellId && s_cacheMissing == (wantMissing ? 1 : 0)
+        && std::fabs(s_cacheRange - maxRange) < 0.5f && s_cacheMaxN == maxN
+        && s_cacheGen == g_auraSearchGen
+        && s_cacheT && (now - s_cacheT) < 80ull && !s_cacheOut.empty()) {
+        return s_cacheOut;
+    }
+
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
+    // Refresh at most ~12Hz; reuse snapshot otherwise (was full OM walk every tick).
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
-    if (omOn) Refresh(false);
-    else SoftRefreshListOnlyForHostiles();
+    if (!g_lastRefresh || (now - g_lastRefresh) >= 80ull) {
+        if (omOn) Refresh(false);
+        else SoftRefreshListOnlyForHostiles();
+    }
 
-    Vec3 playerPos{};
-    bool havePlayer = false;
+    Vec3 playerPos = Position(localGuid);
+    bool havePlayer = (playerPos.x != 0.f || playerPos.y != 0.f);
     s_playerFaction = 0;
-    playerPos = Position(localGuid);
-    if (playerPos.x != 0.f || playerPos.y != 0.f) havePlayer = true;
     uintptr_t pp = Ptr(localGuid);
     if (pp && AcceptObjPtr(pp)) {
         uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
@@ -1429,20 +1446,37 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     float playerFace = Facing(localGuid);
     bool haveFace = LooksLikeFacingEarly(playerFace);
 
+    // Snapshot aura notes without nested locks during OM walk.
+    struct AuraSnap { uint64_t g; int sid; };
+    AuraSnap auraSnap[kAuraCap];
+    size_t auraSnapN = 0;
+    {
+        std::lock_guard<std::mutex> alock(g_auraMu);
+        AuraPruneLocked(now);
+        for (size_t i = 0; i < g_auraN && auraSnapN < kAuraCap; ++i) {
+            if (g_auras[i].spellId == spellId)
+                auraSnap[auraSnapN++] = { g_auras[i].guid, g_auras[i].spellId };
+        }
+    }
+    auto hasAura = [&](uint64_t g) -> bool {
+        for (size_t i = 0; i < auraSnapN; ++i)
+            if (auraSnap[i].g == g) return true;
+        return false;
+    };
+
     struct Hit {
         uint64_t g; int entry;
         float center, edge;
         int face, hp, mhp;
     };
     std::vector<Hit> cands;
-    cands.reserve(48);
+    cands.reserve(32);
 
     {
         std::lock_guard<std::mutex> lock(g_mu);
         auto consider = [&](const Object& o) {
-            if (o.guid == localGuid) return;
+            if (o.guid == localGuid || !o.guid) return;
             if (!SnapshotLooksHostileNpc(o, localGuid)) return;
-            // Dead / zero hp
             if (o.maxHealth > 0 && o.health <= 0) return;
             if (o.unitFlags & kUF_NOT_SELECTABLE) return;
             float cx = 999.f, edge = 999.f;
@@ -1458,16 +1492,9 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                     face = IsFacingPos(playerFace, playerPos.x, playerPos.y,
                                        o.pos.x, o.pos.y, kDefaultCastFaceArc) ? 1 : 0;
             }
-            // Aura filter: missing = no runtime note; present = has note.
-            int stacks = 0;
-            bool has = HasUnitAura(o.guid, spellId, &stacks);
-            // HasUnitAura locks g_auraMu — cannot call while holding g_mu if
-            // nested order wrong. HasUnitAura takes g_auraMu only; OK.
-            if (wantMissing) {
-                if (has) return;
-            } else {
-                if (!has) return;
-            }
+            bool has = hasAura(o.guid);
+            if (wantMissing) { if (has) return; }
+            else { if (!has) return; }
             cands.push_back({ o.guid, o.entry, cx, edge, face, o.health, o.maxHealth });
         };
         for (const auto& o : g_byType[(int)ObjectType::Unit])
@@ -1481,7 +1508,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
 
     size_t nh = cands.size();
     if (nh > maxN) nh = maxN;
-    if (nh > 16) nh = 16;
+    if (nh > 12) nh = 12;
     if (nh > 0) {
         std::partial_sort(cands.begin(), cands.begin() + (std::ptrdiff_t)nh, cands.end(),
                           [](const Hit& a, const Hit& b) {
@@ -1499,7 +1526,14 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                                 (unsigned long long)h.g, h.entry,
                                 h.center, h.edge, h.face, h.hp, h.mhp);
     }
-    return std::string(out);
+    s_cacheOut.assign(out, off);
+    s_cacheT = now;
+    s_cacheGen = g_auraSearchGen;
+    s_cacheSid = spellId;
+    s_cacheRange = maxRange;
+    s_cacheMissing = wantMissing ? 1 : 0;
+    s_cacheMaxN = maxN;
+    return s_cacheOut;
 }
 
 void Refresh(bool force) {

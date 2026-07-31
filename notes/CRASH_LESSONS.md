@@ -136,6 +136,21 @@ player GUID). Enum only after warm. PEW arm: HW unlock first; om.enable only
 after two consecutive player-position ready ticks. Never InitObjectManager on
 the arm frame.
 
+## /reload rebind enum warm skipped (1.10.34-reload-aura) — FATAL
+
+**Proof:** 2026-07-31 15:50 `REBIND` → medium `BRIDGE ONLINE bits=0xE` → hard
+death. Same class as enum mid-load.
+
+**Cause:** `OnLuaReload` zeroed `g_listWarmWalks` but left `g_firstPlayerMs` at
+the pre-reload timestamp. `warmOk = walks>=8 || (now-firstPlayer)>=5s` was
+true immediately → SoftRefresh/Refresh called `EnumVisibleObjects` while
+FrameXML was still settling after `/reload`.
+
+**Rule:** On every lua_State rebind, reset **both** list-warm counter **and**
+`g_firstPlayerMs` (restart the warm epoch). Never let a pre-reload clock
+authorize enum. Keep `g_everWalkedOk` so multi-dot list soft-path does not
+re-enter the 2s cold settle.
+
 ## WorldReadyStrong OR-bug (1.10.27-strong-fix) — FATAL
 
 **Proof:** 2026-07-31 15:00 inject during load. Register `via=strong` with

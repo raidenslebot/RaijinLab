@@ -1028,6 +1028,28 @@ end
 -- [destGuid][spellKey] = { exp=GetTime()+dur, stacks=n, name=... }
 World._aura_by_guid = World._aura_by_guid or {}
 
+-- Normalize GUID strings so CLEU ("0xF130...") and runtime pack ("0xF130...")
+-- always hit the same Lua bag key (case / leading-zero safe).
+local function _guid_key(g)
+    if g == nil then return nil end
+    if type(g) == "number" then
+        if g == 0 then return nil end
+        return string.format("0x%X", g)
+    end
+    local s = tostring(g)
+    if s == "" or s == "0" or s == "0x0" or s == "0X0" then return nil end
+    s = s:gsub("^0[xX]", "")
+    s = s:upper()
+    s = s:gsub("^0+", "")
+    if s == "" then return nil end
+    return "0x" .. s
+end
+
+local function _guid_eq(a, b)
+    local ka, kb = _guid_key(a), _guid_key(b)
+    return ka and kb and ka == kb
+end
+
 local function _aura_key(spellId, spellName)
     spellId = tonumber(spellId) or 0
     if spellId > 0 then return "id:" .. tostring(spellId) end
@@ -1036,8 +1058,21 @@ local function _aura_key(spellId, spellName)
     return nil
 end
 
+-- Cast spell id → disease / multi-dot search aura id (WotLK + common ranks).
+-- SPELL_CAST_SUCCESS notes the disease immediately so AuraSearch never re-casts
+-- on a unit that just took Plague Strike / Icy Touch while AURA_APPLIED lags.
+local _CAST_TO_DISEASE = {
+    -- Plague Strike ranks → Blood Plague
+    [45462] = 55078, [49917] = 55078, [49918] = 55078, [49919] = 55078,
+    [49920] = 55078, [49921] = 55078, [45513] = 55078,
+    -- Icy Touch ranks → Frost Fever
+    [45477] = 55095, [49896] = 55095, [49903] = 55095, [49904] = 55095,
+    [49909] = 55095, [49910] = 55095,
+}
+
 function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
-    if not guid then return end
+    local gkey = _guid_key(guid)
+    if not gkey then return end
     local sid = tonumber(spellId) or 0
     local dur = tonumber(duration) or 21
     if dur < 1 then dur = 15 end
@@ -1047,13 +1082,13 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     -- RUNTIME is the authority. Lua cache is diagnostic only.
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura", guid, sid, stacks, dur)
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura", gkey, sid, stacks, dur)
     end
     local key = _aura_key(spellId, spellName)
     if not key then return end
     local now = (GetTime and GetTime()) or 0
-    World._aura_by_guid[guid] = World._aura_by_guid[guid] or {}
-    World._aura_by_guid[guid][key] = {
+    World._aura_by_guid[gkey] = World._aura_by_guid[gkey] or {}
+    World._aura_by_guid[gkey][key] = {
         exp = now + dur,
         stacks = stacks,
         name = tostring(spellName or ""),
@@ -1062,18 +1097,19 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     }
     if sid > 0 and spellName and tostring(spellName) ~= "" then
         local nk = "nm:" .. string.lower(tostring(spellName))
-        World._aura_by_guid[guid][nk] = World._aura_by_guid[guid][key]
+        World._aura_by_guid[gkey][nk] = World._aura_by_guid[gkey][key]
     end
 end
 
 function World.clear_aura_on_guid(guid, spellId, spellName)
-    if not guid then return end
+    local gkey = _guid_key(guid)
+    if not gkey then return end
     local sid = tonumber(spellId) or 0
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "ClearUnitAura", guid, sid)
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "ClearUnitAura", gkey, sid)
     end
-    local bag = World._aura_by_guid[guid]
+    local bag = World._aura_by_guid[gkey]
     if not bag then return end
     local key = _aura_key(spellId, spellName)
     if key then bag[key] = nil end
@@ -1083,11 +1119,54 @@ function World.clear_aura_on_guid(guid, spellId, spellName)
     if sid > 0 then bag["id:" .. tostring(sid)] = nil end
 end
 
+-- Push client-visible debuffs (target/focus/mouseover) into runtime notes so
+-- AuraSearch does not re-cast Plague Strike on a unit that already has BP.
+function World.seed_visible_aura_notes(spell_id, aura_name)
+    local sid = tonumber(spell_id) or 0
+    local nm = tostring(aura_name or "")
+    if sid <= 0 and nm == "" then return end
+    if nm == "" and sid > 0 and GetSpellInfo then
+        local ok, n = pcall(GetSpellInfo, sid)
+        if ok and n then nm = tostring(n) end
+    end
+    if not UnitDebuff or not UnitGUID then return end
+    local tokens = { "target", "focus", "mouseover" }
+    for ti = 1, #tokens do
+        local tok = tokens[ti]
+        if UnitExists and UnitExists(tok) then
+            local g = UnitGUID(tok)
+            if g then
+                for i = 1, 40 do
+                    local okd, name, _, _, count, _, duration, expirationTime =
+                        pcall(UnitDebuff, tok, i)
+                    if not okd or not name then break end
+                    local match = (nm ~= "" and string.lower(name) == string.lower(nm))
+                    if match then
+                        local rem = 21
+                        if expirationTime and GetTime then
+                            rem = math.max(1, (tonumber(expirationTime) or 0) - GetTime())
+                        elseif duration and tonumber(duration) and tonumber(duration) > 0 then
+                            rem = tonumber(duration)
+                        end
+                        World.note_aura_on_guid(g, sid, name, count or 1, rem)
+                        break
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- has, stacks, remaining — client UnitAura (when visible) + RUNTIME notes + cache.
 function World.guid_aura_state(guid, spell_id, aura_name)
     if not guid then return false, 0, 0 end
+    local gkey = _guid_key(guid) or tostring(guid)
     local sid = tonumber(spell_id) or 0
     local nm = tostring(aura_name or "")
+    if nm == "" and sid > 0 and GetSpellInfo then
+        local ok, n = pcall(GetSpellInfo, sid)
+        if ok and n then nm = tostring(n) end
+    end
     -- Client-visible: target/focus/mouseover only (NOT nameplate1..40 — that
     -- fan at 50Hz mid-combat was a crash surface). UnitDebuff is authoritative
     -- when the unit is the current selection.
@@ -1095,7 +1174,7 @@ function World.guid_aura_state(guid, spell_id, aura_name)
         local tokens = { "target", "focus", "mouseover" }
         for ti = 1, #tokens do
             local tok = tokens[ti]
-            if UnitExists and UnitExists(tok) and tostring(UnitGUID(tok) or "") == tostring(guid) then
+            if UnitExists and UnitExists(tok) and _guid_eq(UnitGUID(tok), guid) then
                 for i = 1, 40 do
                     -- 3.3.5: name, rank, icon, count, debuffType, duration, expirationTime
                     local okd, name, _, _, count, _, _, expirationTime = pcall(UnitDebuff, tok, i)
@@ -1106,6 +1185,10 @@ function World.guid_aura_state(guid, spell_id, aura_name)
                         if expirationTime and GetTime then
                             rem = math.max(0, (tonumber(expirationTime) or 0) - GetTime())
                         end
+                        -- Seed runtime so multi-dot pack stays coherent after retarget.
+                        if sid > 0 and rem > 0.5 then
+                            pcall(World.note_aura_on_guid, guid, sid, name, count or 1, rem)
+                        end
                         return true, math.max(1, tonumber(count) or 1), rem
                     end
                 end
@@ -1115,14 +1198,14 @@ function World.guid_aura_state(guid, spell_id, aura_name)
     end
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
-        local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", guid, sid)
+        local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", gkey, sid)
         stacks = (ok and tonumber(stacks)) or 0
         if stacks and stacks > 0 then
             return true, stacks, 0
         end
         -- Runtime missing: fall through to Lua cache (optimistic notes).
     end
-    local bag = World._aura_by_guid[guid]
+    local bag = World._aura_by_guid[gkey] or World._aura_by_guid[tostring(guid)]
     if not bag then return false, 0, 0 end
     local now = (GetTime and GetTime()) or 0
     local keys = {}
@@ -1222,11 +1305,25 @@ function World.on_combat_log()
                 end
             end
         end
-        -- Do NOT note SPELL_CAST_SUCCESS with the cast spell id as an "aura".
-        -- Plague Strike id 45513 ≠ Blood Plague 55078 — that polluted search
-        -- (wrong key) and never stopped multi-dot from re-casting.
-        -- Optimistic apply is done in Executor with the aura_search spell_id,
-        -- and confirmed by SPELL_AURA_APPLIED above.
+        -- Do NOT note SPELL_CAST_SUCCESS with the cast spell id as an "aura"
+        -- key (45513 ≠ 55078). Map known disease appliers → disease aura id so
+        -- AuraSearch stops re-casting PS on a unit that just took the disease
+        -- while AURA_APPLIED is still in flight.
+        if subevent == "SPELL_CAST_SUCCESS" then
+            local castId = tonumber(arg9) or 0
+            local diseaseId = _CAST_TO_DISEASE[castId]
+            local from_player = (playerGuid and sourceGUID == playerGuid)
+                or (arg4 and UnitName and arg4 == UnitName("player"))
+            if diseaseId and from_player and destGUID and destGUID ~= playerGuid then
+                local dnm = nil
+                if GetSpellInfo then
+                    local ok, n = pcall(GetSpellInfo, diseaseId)
+                    if ok then dnm = n end
+                end
+                World.note_aura_on_guid(destGUID, diseaseId, dnm, 1, 21)
+            end
+            return
+        end
         if subevent ~= "SPELL_MISSED" then return end
     end
 
@@ -2536,6 +2633,12 @@ function World.find_aura_search_targets(opts)
         return {}
     end
 
+    -- Seed runtime notes from client-visible units BEFORE AuraSearch so a
+    -- target that already has Blood Plague is never returned as "missing".
+    if World.seed_visible_aura_notes then
+        pcall(World.seed_visible_aura_notes, spell_id, aura_name)
+    end
+
     -- Lua-side cache (~80ms) — Engine evaluates aura_search every tick per slot.
     local tnow = (GetTime and GetTime()) or 0
     local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
@@ -2567,6 +2670,8 @@ function World.find_aura_search_targets(opts)
                 if guid then guid = "0x" .. guid end
             end
             if guid then
+                -- Normalize pack GUID so notes / CLEU / cast paths share one key.
+                guid = _guid_key(guid) or guid
                 if not (Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid)) then
                     local d = tonumber(center) or 999
                     local facing = (tonumber(face) or 1) ~= 0

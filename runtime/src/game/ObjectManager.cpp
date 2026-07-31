@@ -934,7 +934,8 @@ void Invalidate() {
 }
 
 // OM lifecycle (fundamental — do not "fix crashes" by disabling discovery):
-//   g_firstPlayerMs  — first time we saw a local player after inject (cold only)
+//   g_firstPlayerMs  — first time we saw a local player THIS warm epoch
+//                      (cold inject OR post-rebind; reset on OnLuaReload)
 //   g_everWalkedOk   — at least one successful list walk this inject
 //   g_rebindQuietUntil — brief pause after lua_State change (FrameXML mid-load)
 // SoftRefresh (multi-dot) and Refresh (om.enable=1) BOTH walk the same list
@@ -944,21 +945,28 @@ static bool g_everWalkedOk = false;
 static ULONGLONG g_rebindQuietUntil = 0;
 static bool g_omWasOn = false;
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
-static constexpr ULONGLONG kRebindQuietMs = 400ull;   // FrameXML flicker only
+static constexpr ULONGLONG kRebindQuietMs = 600ull;   // FrameXML flicker only
 static constexpr ULONGLONG kWalkMinIntervalMs = 80ull; // ~12 Hz max
 // EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
-// List-only until this many successful list walks OR this ms after first player.
+// List-only until this many successful list walks OR this ms after first player
+// IN THE CURRENT WARM EPOCH (must restart after every /reload).
 static constexpr int kListWarmWalks = 8;
 static constexpr ULONGLONG kEnumWarmMs = 5000ull;
 static int g_listWarmWalks = 0;
 
 void OnLuaReload() {
     // lua_State changed. Drop snapshot (pointers belong to old VM epoch) and
-    // pause walks briefly while FrameXML reloads. Do NOT reset cold settle /
-    // everWalked — that forced 6s+ of empty AuraSearch after every rebind.
+    // pause walks briefly while FrameXML reloads. Do NOT reset g_everWalkedOk
+    // (that forced 6s+ of empty AuraSearch after every rebind — multi-dot dies).
+    //
+    // MUST reset g_firstPlayerMs. Live crash after /reload (1.10.33): list warm
+    // counter was zeroed but firstPlayer stayed pre-reload → warmOk true via
+    // (now - firstPlayer) >= 5s → EnumVisibleObjects mid-FrameXML → hard kill.
+    // Proof: runtime.log REBIND → BRIDGE ONLINE medium bits=0xE → death.
     Invalidate();
     g_omWasOn = false;
-    g_listWarmWalks = 0; // re-warm list-only before enum after rebind/load
+    g_listWarmWalks = 0;
+    g_firstPlayerMs = 0;
     g_rebindQuietUntil = GetTickCount64() + kRebindQuietMs;
 }
 

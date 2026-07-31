@@ -181,6 +181,8 @@ function RL:ArmRuntimeSystems()
     self._runtime_armed = true
     pcall(function()
         -- Soft list discovery works with om.enable 0; enable for full path.
+        -- Runtime defers EnumVisibleObjects until list-warm after rebind
+        -- (g_firstPlayerMs reset on OnLuaReload — 1.10.34). Safe to enable.
         self:RuntimeCall("SetSystemVar", "om.enable", "1")
     end)
     -- NEVER InitObjectManager on arm frame (GetObjectCount fan mid-load = crash).

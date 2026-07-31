@@ -63,3 +63,16 @@ use current target / GUID casts; pack multi-dot waits until `Master.suite_om_saf
 2. Confirm suite did not call `SetSystemVar om.enable 1` before 4s
 3. Confirm no enum log before list-only warm-up finished
 4. Lengthen settle / warm-up; never shorten without live proof
+
+## Cast authority (1.10.5-cancast+)
+
+Icy Touch / multi-dot "never casts" is often not a crash — runtime was only a
+verb (CastSpell) while Lua guessed face/LoS. Client refused -> spam/stall.
+
+Runtime now owns:
+- IsFacingGuid / FaceTowardGuid (TurnByDelta + live facing 0x7AC)
+- CanCast / CastSpellEx with FACE_IF_NEEDED | SKIP_IF_NOT_FACING | CHECK_LOS
+- Packed result "1|ok" / "0|facing" so Lua never wires a known-fail cast
+
+Auto Face remains an opt-in slot condition (sets FACE_IF_NEEDED). Without it,
+SKIP_IF_NOT_FACING still prevents spam — slot waits until you face.

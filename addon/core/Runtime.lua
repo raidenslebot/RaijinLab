@@ -212,6 +212,8 @@ do
         elseif not has and had then
             RL._runtime_online_noted = false
             RL._runtime_armed = false
+            RL._runtime_hw_armed = false
+            RL._arm_pos_ok = 0
             print("|cff7ec8e3RaijinLab|r: runtime |cffff5555OFFLINE|r")
         end
         -- ARM UNTIL IT ACTUALLY ARMS - NOT ONCE, ON AN EDGE.

@@ -291,8 +291,25 @@ function M.start_all(reason)
             and RaijinLab.Master._om_gen == om_gen
     end
 
+    local function bridge_ready()
+        return RaijinLab and RaijinLab.HasRuntime and RaijinLab:HasRuntime()
+    end
+
     local function arm_om_native()
         if not still_this_arm() then return end
+        -- After /reload the DLL rebinds slowly. Enabling OM while bridge is
+        -- stock/nil is a no-op at best and a crash co-factor at worst — wait.
+        if not bridge_ready() then
+            local t0 = M._suite_on_t or 0
+            local now = (GetTime and GetTime()) or 0
+            -- Cap defer so a dead inject does not spin forever.
+            if C_Timer and C_Timer.After and (now - t0) < 45.0 then
+                C_Timer.After(2.0, arm_om_native)
+            end
+            local DL = RaijinLab and RaijinLab.DevLog
+            if DL and DL.log then DL.log("master", "OM native defer: bridge not ready") end
+            return
+        end
         pcall(function()
             -- Soft-arm HW gates only if never armed. Do NOT let ArmRuntimeSystems
             -- schedule a competing +3s om.enable (it checks suite gen via
@@ -304,21 +321,30 @@ function M.start_all(reason)
                 RaijinLab:RuntimeCall("SetSystemVar", "om.enable", "1")
             end
             local DL = RaijinLab.DevLog
-            if DL and DL.log then DL.log("master", "OM native enable (suite +6s)") end
+            if DL and DL.log then DL.log("master", "OM native enable (suite warm)") end
         end)
     end
     local function arm_om_lua_frame()
         if not still_this_arm() then return end
+        if not bridge_ready() then
+            local t0 = M._suite_on_t or 0
+            local now = (GetTime and GetTime()) or 0
+            if C_Timer and C_Timer.After and (now - t0) < 45.0 then
+                C_Timer.After(2.0, arm_om_lua_frame)
+            end
+            return
+        end
         pcall(function()
             if RaijinLab.InitObjectManager and RaijinLab.GetObjManagerFrame
                 and not RaijinLab:GetObjManagerFrame() then
                 RaijinLab:InitObjectManager()
             end
             local DL = RaijinLab.DevLog
-            if DL and DL.log then DL.log("master", "OM lua frame (suite +8s)") end
+            if DL and DL.log then DL.log("master", "OM lua frame (suite warm)") end
         end)
     end
     if C_Timer and C_Timer.After then
+        -- Base delays from suite-on. arm_om_native self-defers until bridge ready.
         C_Timer.After(6.0, arm_om_native)
         C_Timer.After(8.0, arm_om_lua_frame)
     else

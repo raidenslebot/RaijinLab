@@ -2283,18 +2283,23 @@ function World.build_context(opts)
     ctx.protection = pmap
     ctx.protection_target = ptarget
     -- Convenience: target_protected[id] = bool for CAST GATES only.
-    -- Protection.is_protected returns protected=true when there is no target
-    -- (reason "no_target"). That must NOT look like immunity to BasicRules /
-    -- Engine — those gates require a real unit. Conditions still use
-    -- ctx.is_spell_protected() which keeps the full Protection semantics.
+    -- is_protected() returns protected=true for relationship states
+    -- (no_target/dead/friendly/cannot_attack). Those are NOT cast immunities.
+    -- Conditions use ctx.is_spell_protected() (full semantics). Cast gates use
+    -- Protection.blocks_cast(reason) only.
     ctx.target_protected = {}
     ctx.target_protected_reason = {}
+    local Prot = RaijinLab and RaijinLab.Protection
     for id, info in pairs(pmap) do
         if type(info) == "table" then
             local r = info.reason
-            local prot = info.protected and true or false
-            if r == "no_target" then
-                prot = false
+            local prot = false
+            if info.protected and Prot and Prot.blocks_cast then
+                prot = Prot.blocks_cast(r) and true or false
+            elseif info.protected and r and r ~= "no_target" and r ~= "target_dead"
+                and r ~= "friendly" and r ~= "cannot_attack" then
+                -- Fallback if Protection module missing: only non-relationship.
+                prot = true
             end
             ctx.target_protected[id] = prot
             ctx.target_protected_reason[id] = r

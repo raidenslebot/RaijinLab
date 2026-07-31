@@ -305,31 +305,34 @@ end
 
 local function check_immunity(ctx, sid)
     if not ctx or not ctx.auto_castable then return true end
-    -- Protection.is_protected returns protected=true when there is NO target
-    -- (reason "no_target"). That is NOT immunity. Treating it as immune froze
-    -- every non-aura_search slot with last_err=immune while tgt=no and
-    -- casts=0 forever. Engine.spell_ready already requires target_exists —
-    -- match that here. aura_search GUID casts are not about the client target.
+    -- Only the client-target protection map, and only REAL combat blocks.
+    -- aura_search GUID casts are re-checked against the search unit later.
+    -- Relationship (no_target / dead / friendly / cannot_attack) is handled
+    -- by check_target_relationship — never renamed to "immune" here.
     if not bool(ctx.target_exists, false) then
         return true
     end
     if ctx.aura_search_hit and ctx.aura_search_hit.guid then
         return true
     end
-    local prot = ctx.target_protected
-    if type(prot) ~= "table" then return true end
-    if not (prot[sid] == true or prot[tostring(sid)] == true) then
-        return true
-    end
-    -- Never alias relationship failures as "immune".
     local reasons = ctx.target_protected_reason
+    local r = nil
     if type(reasons) == "table" then
-        local r = reasons[sid] or reasons[tostring(sid)]
-        if r == "no_target" or r == "target_dead" or r == "friendly" then
-            return true
-        end
+        r = reasons[sid] or reasons[tostring(sid)]
     end
-    return false, "immune"
+    local Prot = RaijinLab and RaijinLab.Protection
+    if Prot and Prot.blocks_cast then
+        if not Prot.blocks_cast(r) then return true end
+        local why = (Prot.cast_block_why and Prot.cast_block_why(r)) or "immune"
+        return false, why
+    end
+    -- Fallback: use pre-filtered target_protected map (World strips non-cast).
+    local prot = ctx.target_protected
+    if type(prot) == "table"
+        and (prot[sid] == true or prot[tostring(sid)] == true) then
+        return false, "immune"
+    end
+    return true
 end
 
 ------------------------------------------------------------

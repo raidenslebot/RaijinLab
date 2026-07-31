@@ -12,13 +12,20 @@ been reproduced multiple times. These rules are non-negotiable.
 with `bits=0xE` only (worldFrame|conn|objMgr — **no** localPlayer/guid/flag).
 Medium-only WorldReady fired mid load; SEH corrupted VM → crash on world entry.
 
-**Cause:** `FrameScript_RegisterFunction` from worker while Lua VM still loading
-or world not fully ready.
+**Proof (3):** 2026-07-31 13:38 after `/reload` — rebind used **short medium**
+settle (`kSettleRebind` ~1.5s) → `Register failed rc=1073741819` at `bits=0xE
+settle=96`; later medium OK. Suite-on in that window hard-crashes.
 
-**Rule:** Register ONLY when STRONG signals hold for a sustained streak:
-`g_InWorld` **or** local player ptr **or** active GUID.
-**Never** medium 0xE alone. No hard-timeout bypass. Failed register → long backoff.
-Soft OM list walks use the same **6s** hard settle as Refresh.
+**Cause:** `FrameScript_RegisterFunction` from worker while Lua VM still loading
+or world not fully ready. Medium rebind must NOT be faster than medium first.
+
+**Rule:**
+- STRONG (flag|local|guid): modest settle; rebind may be faster.
+- MEDIUM (0xE only): **same long settle first AND rebind** (~8s+ continuous).
+  Never short-circuit medium after `/reload`.
+- Failed register → long backoff + extra medium penalty.
+- Soft OM list walks use the same **6s** hard settle as Refresh.
+- Suite OM arm defers while `HasRuntime()` is false (bridge not rebound).
 
 ## Root pattern (OM / suite)
 

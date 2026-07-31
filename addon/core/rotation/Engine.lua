@@ -401,11 +401,20 @@ function Engine.spell_ready(ctx, spell_id)
             if ctx.target_in_los == false then
                 return false, "los"
             end
-            -- (3) Immunity / absorb / reflect: the target can't take this spell.
-            local prot = ctx.target_protected
-            if type(prot) == "table"
-                and (prot[spell_id] == true or prot[tostring(spell_id)] == true) then
-                return false, "immune"
+            -- (3) Real combat protection only (not no_target/friendly/cannot_attack).
+            local reasons = ctx.target_protected_reason
+            local r = type(reasons) == "table"
+                and (reasons[spell_id] or reasons[tostring(spell_id)]) or nil
+            local Prot = RaijinLab and RaijinLab.Protection
+            if Prot and Prot.blocks_cast and Prot.blocks_cast(r) then
+                local why = (Prot.cast_block_why and Prot.cast_block_why(r)) or "immune"
+                return false, why
+            elseif (not Prot or not Prot.blocks_cast) then
+                local prot = ctx.target_protected
+                if type(prot) == "table"
+                    and (prot[spell_id] == true or prot[tostring(spell_id)] == true) then
+                    return false, "immune"
+                end
             end
         end
     elseif ctx.strict_usable then

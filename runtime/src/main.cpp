@@ -109,17 +109,21 @@ static DWORD WINAPI MainThread(LPVOID param) {
     int tick = 0;
     // Registration policy (crash #132 + bridge-never-online balance):
     //   STRONG path (flag/local/guid): modest settle — safe when signals work.
-    //   MEDIUM path (0xE only): LONG continuous streak + long settle. Ascension
-    //     often sits at 0xE forever with flag stuck 0; strong-only left users
-    //     with stock IsLinuxClient. Crash at settle~4s medium → require ~7s+.
-    constexpr int kSettleFirst       = 80;  // ~4 s L stable (both paths min)
+    //   MEDIUM path (0xE only): LONG continuous streak + long settle. ALWAYS.
+    //     Live proof 2026-07-31 13:38 after /reload: rebind used short medium
+    //     settle (~1.5s) → Register failed rc=0xC0000005 at bits=0xE settle~96
+    //     (worker SEH "success" still corrupts VM / hard-crashes suite-on).
+    //     Medium is NEVER allowed a fast rebind. Strong may rebind faster.
+    constexpr int kSettleFirst       = 80;  // ~4 s L stable (strong min)
     constexpr int kStrongFirst       = 30;  // ~1.5 s strong
-    constexpr int kMediumFirst       = 100; // ~5 s continuous medium
-    constexpr int kSettleMediumFirst = 140; // ~7 s before medium-only Register
-    constexpr int kSettleRebind      = 30;  // ~1.5 s
+    constexpr int kMediumStreak      = 100; // ~5 s continuous medium (first+rebind)
+    constexpr int kSettleMedium      = 160; // ~8 s before medium-only Register
+    constexpr int kSettleRebindStrong = 30; // ~1.5 s strong rebind only
     constexpr int kStrongRebind      = 16;  // ~0.8 s
-    constexpr int kMediumRebind      = 40;  // ~2 s
-    constexpr int kFailBackoff       = 120; // ~6 s after Register AV
+    constexpr int kFailBackoff       = 160; // ~8 s after Register AV
+    constexpr int kFailMedExtra      = 40;  // extra medium settle after a fail
+
+    int mediumFailPenalty = 0; // extra settle ticks after medium-path AV
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {
@@ -137,6 +141,8 @@ static DWORD WINAPI MainThread(LPVOID param) {
             strongStreak = 0;
             mediumStreak = 0;
             failBackoff = 0;
+            // Keep mediumFailPenalty across rebind so a just-failed medium
+            // path does not immediately retry short after /reload.
             RL::Bridge::ResetRegistrationState();
         }
 
@@ -152,16 +158,17 @@ static DWORD WINAPI MainThread(LPVOID param) {
         if (!secondary && L && !registered) {
             ++settle;
             const bool first = !everRegistered;
-            const int needSettle = first ? kSettleFirst : kSettleRebind;
+            // Strong: first needs longer L settle; rebind can be faster.
+            const int needSettleStrong = first ? kSettleFirst : kSettleRebindStrong;
             const int needStrong = first ? kStrongFirst : kStrongRebind;
-            const int needMedStr = first ? kMediumFirst : kMediumRebind;
-            const int needMedSet = first ? kSettleMediumFirst : kSettleRebind;
+            // Medium: same long bar first AND rebind. Penalty after AV.
+            const int needMedStr = kMediumStreak;
+            const int needMedSet = kSettleMedium + mediumFailPenalty;
 
-            // Path A: strong signal held — fast, preferred.
+            // Path A: strong signal held — preferred; rebind allowed sooner.
             const bool pathStrong = strong && strongStreak >= needStrong
-                                    && settle >= needSettle;
-            // Path B: medium 0xE held a long time — Ascension when flag/local stuck.
-            // Must be longer than the crash window (~4s medium Register AV).
+                                    && settle >= needSettleStrong;
+            // Path B: medium 0xE only after long settle (never fast rebind).
             const bool pathMedium = medium && mediumStreak >= needMedStr
                                     && settle >= needMedSet;
 
@@ -169,17 +176,23 @@ static DWORD WINAPI MainThread(LPVOID param) {
                 if (RL::Bridge::Register()) {
                     registered = true;
                     everRegistered = true;
+                    mediumFailPenalty = 0;
                     RL::Log::Warn(
                         "BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d strong=%d medium=%d via=%s",
                         RL::Bridge::Version(), L, (unsigned)wbits, settle,
                         strongStreak, mediumStreak,
                         pathStrong ? "strong" : "medium");
                 } else {
-                    RL::Log::Warn("Register failed - backoff %d ticks bits=0x%X settle=%d",
-                                  kFailBackoff, (unsigned)wbits, settle);
+                    RL::Log::Warn(
+                        "Register failed - backoff %d ticks bits=0x%X settle=%d via_would=%s",
+                        kFailBackoff, (unsigned)wbits, settle,
+                        pathStrong ? "strong" : "medium");
                     failBackoff = kFailBackoff;
                     strongStreak = 0;
                     mediumStreak = 0;
+                    // Next medium attempt waits even longer (proven AV window).
+                    if (!pathStrong)
+                        mediumFailPenalty += kFailMedExtra;
                 }
             }
         }

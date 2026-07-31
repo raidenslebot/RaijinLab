@@ -87,9 +87,11 @@ local AURA_CATALOG = {
     -- School-ish creature / boss patterns (matched by name contains)
 }
 
--- Name substrings that imply full or school immunity (case-insensitive)
+-- Name substrings that imply full or school immunity (case-insensitive).
+-- Keep patterns specific: bare "immune"/"evade" as free substrings false-positive
+-- on custom/quest auras and mislabeled units (live: cast gates called everything
+-- immune). Prefer "immunity", school-prefixed forms, and known ability names.
 local NAME_PATTERNS = {
-    { pattern = "immune",           kind = "immune",  schools = { "all" } },
     { pattern = "immunity",         kind = "immune",  schools = { "all" } },
     { pattern = "invulnerab",       kind = "immune",  schools = { "all" } },
     { pattern = "divine shield",    kind = "immune",  schools = { "all" } },
@@ -103,8 +105,10 @@ local NAME_PATTERNS = {
     { pattern = "hand of protection", kind = "immune", schools = { "physical" } },
     { pattern = "blessing of protection", kind = "immune", schools = { "physical" } },
     { pattern = "deterrence",       kind = "deflect", schools = { "physical", "magic" } },
-    { pattern = "evade",            kind = "evade",   schools = { "all" } },
     { pattern = "dodge all",        kind = "deflect", schools = { "physical" } },
+    -- "Immune to X" / "X Immune" forms (not bare substring "immune" alone).
+    { pattern = "immune to ",       kind = "immune",  schools = { "all" } },
+    { pattern = " is immune",       kind = "immune",  schools = { "all" } },
     -- School immunity bosses often use "Fire Immunity" etc.
     { pattern = "fire immune",      kind = "immune",  schools = { "fire" } },
     { pattern = "frost immune",     kind = "immune",  schools = { "frost" } },
@@ -130,6 +134,11 @@ local SPELL_SCHOOL = {
     -- Frost
     [116] = "frost", [122] = "frost", [10] = "frost", [30455] = "frost", [42842] = "frost",
     [42914] = "frost", [44572] = "frost",
+    -- DK frost / disease (common ranks; name fallback also covers variants)
+    [45477] = "frost", [49896] = "frost", [49903] = "frost", [49904] = "frost",
+    [49909] = "frost", -- Icy Touch ranks
+    [45524] = "frost", -- Chains of Ice
+    [49184] = "frost", [51409] = "frost", [51410] = "frost", [51411] = "frost", -- Howling Blast
     -- Arcane
     [1449] = "arcane", [5143] = "arcane", [30451] = "arcane", [42897] = "arcane", [44425] = "arcane",
     -- Nature
@@ -188,8 +197,14 @@ function Protection.guess_school(spell_id, name_hint, explicit)
     if n:find("fire") or n:find("pyro") or n:find("scorch") or n:find("immolate") or n:find("conflag") then
         return "fire"
     end
-    if n:find("frost") or n:find("ice ") or n:find("freeze") or n:find("blizzard") then
+    if n:find("frost") or n:find("ice ") or n:find("icy ") or n:find("icy t")
+        or n:find("freeze") or n:find("blizzard") or n:find("howling blast")
+        or n:find("chains of ice") then
         return "frost"
+    end
+    if n:find("plague strike") or n:find("blood strike") or n:find("heart strike")
+        or n:find("death strike") or n:find("rune strike") or n:find("scourge strike") then
+        return "physical"
     end
     if n:find("arcane") or n:find("missile") then return "arcane" end
     if n:find("shadow") or n:find("mind ") or n:find("vampir") or n:find("haunt") or n:find("death coil") then
@@ -388,6 +403,46 @@ end
 function Protection.can_damage(target, opts)
     local prot, reason, details = Protection.is_protected(target, opts)
     return not prot, reason, details
+end
+
+-- Cast-gate filter: is_protected() returns protected=true for relationship
+-- states (no_target / dead / friendly / cannot_attack) so CONDITIONS like
+-- target_can_take_damage stay correct. CAST GATES must not treat those as
+-- "immune" — that froze non-aura_search slots and mislabeled live targets.
+-- Only real combat protection blocks a cast attempt.
+function Protection.blocks_cast(reason)
+    if reason == nil or reason == false then return false end
+    local r = tostring(reason)
+    if r == "" or r == "vulnerable" then return false end
+    if r == "no_target" or r == "target_dead" or r == "friendly"
+        or r == "cannot_attack" then
+        return false
+    end
+    -- immune:/reflect:/deflect:/evade:/absorb:/heavy_dr:/recent_miss:
+    if r:find("^immune", 1, false) or r:find("^reflect", 1, false)
+        or r:find("^deflect", 1, false) or r:find("^evade", 1, false)
+        or r:find("^absorb", 1, false) or r:find("^heavy_dr", 1, false)
+        or r:find("^recent_miss", 1, false) then
+        return true
+    end
+    -- Bare kind without prefix (catalog may return "immune" alone).
+    if r == "immune" or r == "reflect" or r == "deflect" or r == "evade" then
+        return true
+    end
+    return false
+end
+
+-- Short wait-log label for cast-block reasons (keep "immune" prefix for real ones).
+function Protection.cast_block_why(reason)
+    local r = tostring(reason or "immune")
+    if r:find("^immune", 1, false) or r == "immune" then return "immune" end
+    if r:find("^reflect", 1, false) then return "reflect" end
+    if r:find("^deflect", 1, false) then return "deflect" end
+    if r:find("^evade", 1, false) then return "evade" end
+    if r:find("^absorb", 1, false) then return "absorb" end
+    if r:find("^heavy_dr", 1, false) then return "heavy_dr" end
+    if r:find("^recent_miss", 1, false) then return "recent_miss" end
+    return r
 end
 
 -- Register custom aura (addon or tests)

@@ -82,32 +82,32 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
     RL::Log::Warn("worker %s start om=0 taint=0", RL::Bridge::Version());
 
-    // Registration state machine:
-    //   Initial settle: 8 ticks (~400 ms) after seeing a new non-null lua_State
-    //     before first Register - enough for the Lua VM to be fully constructed.
+    // Registration state machine (CRASH LESSON — permanent):
     //
-    // NOTE (L1 exception, documented): The initial Register call happens from
-    // this worker thread. It is the ONE unavoidable off-main-thread call into
-    // FrameScript_RegisterFunction - without it, IsLinuxClient is never bound
-    // to _G and Lua can never dispatch to us so the self-heal path can never
-    // execute. Periodic re-register was previously also done here every 3 s;
-    // it is REMOVED because those repeat pushcclosure allocations were racing
-    // with main-thread Lua GC. Rely on Lua_IsLinuxClient's own
-    // EnsureMainThreadRegister to re-bind if the global is ever stripped.
+    // 2026-07-31 ERROR #132 @ 0x00857D05, crash time == "Register failed":
+    // worker called FrameScript_RegisterFunction during ADDON_LOADED (Details
+    // loading) because kHardTimeout registered after ~6s WITHOUT g_InWorld==1.
+    // SEH "caught" the worker AV but left the Lua VM corrupt; main thread then
+    // fatally AVd (null [eax] in FrameScript). Hard-timeout bypass is DELETED.
+    //
+    // Rules:
+    //   1) Register ONLY when g_InWorld flag is 1 for a sustained window.
+    //   2) Never register on glue / char-select / load-screen (flag==0).
+    //   3) No hard-timeout fallback that ignores the flag.
+    //   4) Worker uses pure memory reads only (never GetActivePlayer cross-thread).
+    //   5) One-shot bootstrap only (no periodic re-register).
+    //
+    // NOTE (L1 exception): initial Register is still off main-thread — without
+    // it IsLinuxClient is never bound. That is acceptable ONLY after in-world.
     bool registered = false;
     void* lastL = nullptr;
-    int settle = 0;                     // ticks since this lua_State went stable
+    int settle = 0;          // ticks since this lua_State went stable
+    int inWorldStreak = 0;   // consecutive ticks with flag==1
+    int failBackoff = 0;     // ticks to wait after a failed Register
     int tick = 0;
-    // Register once the lua_State has been UNCHANGED for kMinSettle AND the
-    // world is loaded. "World loaded" is read PURELY from the g_InWorld flag
-    // (a plain memory read) - the worker must NEVER call a client function like
-    // ClntObjMgrGetActivePlayer, which can BLOCK the worker for seconds when
-    // called cross-thread during a world load (that hang stalled registration
-    // entirely in 1.7.4-1.7.6). If the flag address is wrong on this build it
-    // reads !=1 forever, so a hard-timeout fallback registers anyway once the
-    // state has been stable long enough that the load has certainly finished.
-    constexpr int kMinSettle    = 30;   // ~1.5 s of stable state before we consider registering
-    constexpr int kHardTimeout  = 120;  // ~6 s stable -> register even if the flag never trips
+    constexpr int kMinSettle       = 60;  // ~3 s stable L before we even look
+    constexpr int kInWorldStreak   = 40;  // ~2 s continuous flag==1 required
+    constexpr int kFailBackoff     = 100; // ~5 s after failed register before retry
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {
@@ -121,46 +121,48 @@ static DWORD WINAPI MainThread(LPVOID param) {
             lastL = L;
             registered = false;
             settle = 0;
-            // A new lua_State means /reload wiped _G - the runtime's own
-            // "already registered" latch is now stale, so the next Register()
-            // would early-return success without actually re-binding
-            // IsLinuxClient into the new _G. Clear the latch so the next
-            // Register() truly re-binds.
+            inWorldStreak = 0;
+            failBackoff = 0;
+            // A new lua_State means /reload wiped _G - clear the latch so the
+            // next Register() truly re-binds into the new _G.
             RL::Bridge::ResetRegistrationState();
         }
 
-        // One-shot bootstrap register only. Do NOT re-register periodically:
-        // that was a prior racecondition - two threads doing pushcclosure
-        // concurrently corrupted the Lua GC freelist.
-        //
-        // Register() calls FrameScript_RegisterFunction, which mutates the Lua
-        // globals table + GC. Doing that during the char->world load (glue VM
-        // torn down, in-world VM built) corrupts the half-built VM and the main
-        // thread AVs (ERROR #132). So we wait until the state is settled AND the
-        // world is loaded - using ONLY pure memory reads (never a client-function
-        // call from this worker; that hangs during load).
-        int flag = RL::Game::Addr::InWorldFlag();       // pure read: 1=in world, 0/-1 otherwise
+        // Pure memory only — never call client functions from this worker.
+        int flag = RL::Game::Addr::InWorldFlag(); // 1=in world, 0=not, -1=unreadable
+        if (flag == 1)
+            ++inWorldStreak;
+        else
+            inWorldStreak = 0;
+
+        if (failBackoff > 0)
+            --failBackoff;
+
         if (!secondary && L && !registered) {
             ++settle;
-            bool worldReady = (flag == 1) || (settle >= kHardTimeout);
-            if (settle >= kMinSettle && worldReady) {
+            // STRICT: flag must be 1 for kInWorldStreak consecutive ticks.
+            // No timeout that registers into a half-built / glue VM.
+            const bool worldReady = (flag == 1) && (inWorldStreak >= kInWorldStreak);
+            if (settle >= kMinSettle && worldReady && failBackoff == 0) {
                 if (RL::Bridge::Register()) {
                     registered = true;
-                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d",
-                                  RL::Bridge::Version(), L, flag, settle);
+                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d inWorldStreak=%d",
+                                  RL::Bridge::Version(), L, flag, settle, inWorldStreak);
                 } else {
-                    RL::Log::Warn("Register failed - retry");
-                    settle = kMinSettle / 2;
+                    // Do NOT hammer Register during load — that is what #132 was.
+                    RL::Log::Warn("Register failed - backoff %d ticks (flag=%d)",
+                                  kFailBackoff, flag);
+                    failBackoff = kFailBackoff;
+                    inWorldStreak = 0; // require a fresh in-world streak
                 }
             }
         }
 
         ++tick;
-        // Frequent WRN heartbeat so a stalled registration is self-explanatory
-        // (flag = in-world memory flag, settle = ticks on this stable state).
-        if ((tick % 100) == 0) {   // ~5 s (was 2s WRN spam; still proves liveness)
-            RL::Log::Info("heartbeat reg=%d sec=%d flag=%d settle=%d L=%p",
-                          (int)registered, (int)secondary, flag, settle, L);
+        if ((tick % 100) == 0) {   // ~5 s heartbeat
+            RL::Log::Info("heartbeat reg=%d sec=%d flag=%d settle=%d inWorld=%d L=%p",
+                          (int)registered, (int)secondary, flag, settle,
+                          inWorldStreak, L);
         }
 
         Sleep(50);

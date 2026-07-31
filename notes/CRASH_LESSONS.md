@@ -1,15 +1,29 @@
 # Crash lessons (permanent — do not regress)
 
-Hard client crashes after **login + suite ON** have been reproduced multiple times.
-These rules are non-negotiable.
+Hard client crashes after **login + suite ON** and **inject during load** have
+been reproduced multiple times. These rules are non-negotiable.
 
-## Root pattern
+## ERROR #132 @ 0x00857D05 — Register during ADDON_LOADED (2026-07-31)
+
+**Proof:** `runtime.log` line `Register failed` timestamp == crash dump time
+`11:38:32.476`. EBX == lua_State from inject log. Stack in FrameScript while
+loading `Details\core\level_scaling_data.lua`. `Last FrameScript_SignalEvent:
+ADDON_LOADED`.
+
+**Cause:** worker `kHardTimeout` (~6s) called `FrameScript_RegisterFunction`
+**without** `g_InWorld==1`. SEH on the worker “caught” an AV but corrupted the
+Lua VM; main thread then null-deref’d (`mov edi,[eax]` with eax=0).
+
+**Rule:** NEVER register unless `InWorldFlag()==1` for a sustained streak.
+**No hard-timeout bypass.** Failed register → multi-second backoff, not spam.
+
+## Root pattern (OM / suite)
 
 Anything that walks the full object manager (list walk, `EnumVisibleObjects`,
 Lua `GetUnitCount` + per-object field fan, Surveyor TraceLine fan) **must not**
 run on the same frames as:
 
-1. Character load / PEW
+1. Character load / PEW / ADDON_LOADED
 2. Suite master ON
 3. Inject / re-register
 

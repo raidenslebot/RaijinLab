@@ -1866,6 +1866,15 @@ function World.build_context(opts)
         ctx.target_is_enemy = UnitCanAttack and UnitCanAttack("player", "target") or false
         ctx.target_is_friend = UnitIsFriend and UnitIsFriend("player", "target") or false
         ctx.target_is_dead = UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") or false
+        -- Target's target is us (aggro / focused on player).
+        do
+            local on_you = false
+            if UnitIsUnit then
+                local ok, r = pcall(UnitIsUnit, "targettarget", "player")
+                on_you = ok and r and true or false
+            end
+            ctx.target_targeting_you = on_you
+        end
         -- Hostility bands from UnitReaction (authoritative nameplate/UI colors):
         --   1-3 hostile (hated/hostile/unfriendly), 4 neutral, 5-8 friendly.
         -- Fallback when reaction is nil: friend -> friendly, can_attack -> hostile,
@@ -2035,6 +2044,8 @@ function World.build_context(opts)
             World._ttd_th = th
             World._ttd_t = now
         end
+    else
+        ctx.target_targeting_you = false
     end
 
     -- GCD first so spell_usable can consult it

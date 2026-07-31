@@ -196,6 +196,13 @@ local COND_SUMMARY = {
     facing_target = function(a)
         return "already facing current target (no turn)"
     end,
+    target_targeting_you = function(a)
+        local st = string.lower(tostring((a and a.state) or "is"))
+        if st == "is_not" or st == "not" or st == "no" then
+            return "target is not targeting you"
+        end
+        return "target is targeting you"
+    end,
     aura = function(a)
         local who = (tostring(a.unit) == "target") and "target" or "you"
         local kind = tostring(a.kind or "buff")

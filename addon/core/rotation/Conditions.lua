@@ -647,6 +647,39 @@ Conditions.register("target_is_dead", {
     end,
 })
 
+-- Is your current target targeting you (targettarget == player)?
+local TARGET_TARGETING_YOU_CYCLE = { "is", "is_not" }
+
+Conditions.register("target_targeting_you", {
+    name = "Target Targeting You",
+    category = "Target",
+    description = "Whether your current target has you as their target (they are targeting / attacking you). Use is_not for units that are free or focused on someone else.",
+    params = {
+        { key = "state", type = "string", default = "is", label = "State", cycle = TARGET_TARGETING_YOU_CYCLE },
+    },
+    eval = function(ctx, args)
+        if not bool(ctx.target_exists, false) then return false end
+        local st = string.lower(tostring((args and args.state) or "is"))
+        local on_you = ctx.target_targeting_you
+        if on_you == nil then
+            -- Live API fallback when World snapshot did not fill the field.
+            if UnitIsUnit then
+                local ok, r = pcall(UnitIsUnit, "targettarget", "player")
+                on_you = ok and r and true or false
+            else
+                on_you = false
+            end
+        else
+            on_you = bool(on_you, false)
+        end
+        if st == "is_not" or st == "not" or st == "no" or st == "false" then
+            return not on_you
+        end
+        -- is / yes / true / default
+        return on_you
+    end,
+})
+
 Conditions.register("target_health_pct", {
     name = "Target Health %",
     category = "Target",
@@ -1087,7 +1120,7 @@ end
 Conditions.register("aura_search", {
     name = "Aura Search",
     category = "Auras",
-    description = "Runtime multi-dot: finds living attackable units (OM) missing/having an aura. Casts Spell_C(guid). Does NOT use mouseover/target. Acquire target is optional selection; default leaves your target alone. Hostility/dead/range are runtime basic gates — use other slot conditions for extra policy, not a separate Hostile toggle.",
+    description = "Runtime multi-dot: finds living attackable units (OM) missing/having an aura. Casts Spell_C(guid). Does NOT use mouseover/target. Acquire target is optional selection; default leaves your target alone. Use Target Hostility / Target Targeting You for extra unit policy.",
     params = {
         { key = "kind",            type = "string", default = "debuff",  label = "Kind",  cycle = KIND_CYCLE },
         { key = "state",           type = "string", default = "missing", label = "State", cycle = STATE_CYCLE },
@@ -1098,9 +1131,6 @@ Conditions.register("aura_search", {
         { key = "max_stacks",      type = "number", default = 0, min = 0, max = 99, label = "Max stacks (0=any)", step = 1, show_if = aura_is_present },
         { key = "acquire_target",  type = "bool",   default = false, label = "Acquire target" },
         { key = "reset_after",     type = "bool",   default = false, label = "Reset after", show_if = show_if_acquire_target },
-        -- Legacy keys kept so old saved rotations load; ignored (runtime basic gates).
-        { key = "hostile_only",    type = "bool",   default = false, label = "Hostile only (legacy/ignored)" },
-        { key = "include_players", type = "bool",   default = false, label = "Include players (legacy)" },
     },
     eval = function(ctx, args)
         args = args or {}
@@ -1873,13 +1903,16 @@ function Conditions.migrate_record(rec)
         rec.args = mig.translate(rec.args or {})
         rec.id = mig.id
     end
-    -- aura_search field rename: retarget -> acquire_target; drop prefer_current.
+    -- aura_search field rename: retarget -> acquire_target; drop prefer_current
+    -- and removed toggles (hostile_only / include_players).
     if rec.id == "aura_search" and type(rec.args) == "table" then
         local a = rec.args
         if a.acquire_target == nil and a.retarget ~= nil then
             a.acquire_target = a.retarget
         end
         a.prefer_current = nil
+        a.hostile_only = nil
+        a.include_players = nil
         -- reset_after only meaningful with acquire; force off when acquire off.
         local acq = a.acquire_target == true or a.acquire_target == 1 or a.acquire_target == "true"
             or a.retarget == true or a.retarget == 1 or a.retarget == "true"

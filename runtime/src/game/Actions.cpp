@@ -220,13 +220,67 @@ static uintptr_t PlayerPtr() {
     return OM::LocalPtr();
 }
 
-// Nested lua_pcall CastSpellByID - safe relative to FrameScript_Execute
-static bool CastViaLuaPCall(lua_State* L, int spellId) {
-    if (!L || spellId <= 0) return false;
-    // Route through AddressDB constants (single source of truth) instead of
-    // duplicating raw VAs here. If a future hotfix shifts any of these, the
-    // rest of the runtime already picks it up via Addr::* - this local list
-    // must not diverge.
+// Nested lua_pcall helpers. CRITICAL: when Dispatch is already inside a Lua C
+// call (IsLinuxClient → RuntimeCall → CastSpell/Attack), FrameScript_Execute
+// re-enters the VM from a second path and hard-crashes (ERROR #132 null EIP /
+// post-cast death). Live proof 2026-07-31 13:51: AA FIRE then client dies —
+// Attack/ClearTarget/TargetLastTarget all used FSExec while g_currentL set.
+// Rule: if g_currentL is set, ONLY nested lua_pcall. Never FSExec.
+
+static bool LuaGlobal0(lua_State* L, const char* fname) {
+    if (!L || !fname || !fname[0]) return false;
+    using namespace RL::Game::Addr;
+    auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
+    auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
+    auto type = reinterpret_cast<fn_type>(lua_type);
+    auto settop = reinterpret_cast<fn_settop>(lua_settop);
+    auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
+    if (!getfield || !pcall || !type || !settop || !gettop) return false;
+    SoftHardwareUnlock();
+    __try {
+        int top = gettop(L);
+        getfield(L, LUA_GLOBALSINDEX, fname);
+        if (type(L, -1) != LUA_TFUNCTION) {
+            settop(L, top);
+            return false;
+        }
+        int rc = pcall(L, 0, 0, 0);
+        settop(L, top);
+        return rc == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool LuaGlobalS(lua_State* L, const char* fname, const char* arg) {
+    if (!L || !fname || !fname[0] || !arg) return false;
+    using namespace RL::Game::Addr;
+    auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
+    auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
+    auto type = reinterpret_cast<fn_type>(lua_type);
+    auto settop = reinterpret_cast<fn_settop>(lua_settop);
+    auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
+    auto pushstring = reinterpret_cast<fn_pushstring>(lua_pushstring);
+    if (!getfield || !pcall || !type || !settop || !gettop || !pushstring) return false;
+    SoftHardwareUnlock();
+    __try {
+        int top = gettop(L);
+        getfield(L, LUA_GLOBALSINDEX, fname);
+        if (type(L, -1) != LUA_TFUNCTION) {
+            settop(L, top);
+            return false;
+        }
+        pushstring(L, arg);
+        int rc = pcall(L, 1, 0, 0);
+        settop(L, top);
+        return rc == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool LuaGlobalN(lua_State* L, const char* fname, double n) {
+    if (!L || !fname || !fname[0]) return false;
     using namespace RL::Game::Addr;
     auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
     auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
@@ -235,43 +289,39 @@ static bool CastViaLuaPCall(lua_State* L, int spellId) {
     auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
     auto pushnumber = reinterpret_cast<fn_pushnumber>(lua_pushnumber);
     if (!getfield || !pcall || !type || !settop || !gettop || !pushnumber) return false;
-
     SoftHardwareUnlock();
     __try {
         int top = gettop(L);
-        getfield(L, LUA_GLOBALSINDEX, "CastSpellByID");
+        getfield(L, LUA_GLOBALSINDEX, fname);
         if (type(L, -1) != LUA_TFUNCTION) {
-            settop(L, top);
-            // try CastSpellByName via GetSpellInfo
-            getfield(L, LUA_GLOBALSINDEX, "GetSpellInfo");
-            if (type(L, -1) != LUA_TFUNCTION) {
-                settop(L, top);
-                return false;
-            }
-            pushnumber(L, (double)spellId);
-            if (pcall(L, 1, 1, 0) != 0) {
-                settop(L, top);
-                return false;
-            }
-            // name on stack
-            getfield(L, LUA_GLOBALSINDEX, "CastSpellByName");
-            if (type(L, -1) != LUA_TFUNCTION) {
-                settop(L, top);
-                return false;
-            }
-            // stack: name, CastSpellByName - need name on top after func
-            // rearrange: push value of name under function
-            // simpler: use FSExec only as last resort for name
             settop(L, top);
             return false;
         }
-        pushnumber(L, (double)spellId);
+        pushnumber(L, n);
         int rc = pcall(L, 1, 0, 0);
         settop(L, top);
         return rc == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// Nested lua_pcall CastSpellByID - safe when already inside Lua C.
+static bool CastViaLuaPCall(lua_State* L, int spellId) {
+    if (!L || spellId <= 0) return false;
+    return LuaGlobalN(L, "CastSpellByID", (double)spellId);
+}
+
+// Run a tiny script ONLY when we are NOT already inside Lua.
+// When g_currentL is set, FSExec is forbidden (nested VM re-entry crash).
+static int SafeScript(const char* code) {
+    if (!code || !code[0]) return 0;
+    if (g_currentL) {
+        // Prefer never reaching here; callers should use LuaGlobal*.
+        RL::Log::Warn("SafeScript refused while in Lua C (would FSExec): %.48s", code);
+        return 0;
+    }
+    return SafeFSExec(code);
 }
 
 } // namespace
@@ -341,70 +391,62 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    RL::Log::Trace("CastSpell enter id=%d guid=0x%llX L=%p hw=%d",
-                   spellId, (unsigned long long)targetGuid, (void*)g_currentL,
-                   (int)Taint::HardwareGatesApplied());
+    lua_State* L = g_currentL;
+    RL::Log::Info("CastSpell enter id=%d guid=0x%llX L=%p hw=%d",
+                  spellId, (unsigned long long)targetGuid, (void*)L,
+                  (int)Taint::HardwareGatesApplied());
 
-    // HARD RULE: when a target GUID is supplied, native Spell_C_CastSpell is
-    // the ONLY correct path. CastSpellByID / FSExec ignore the unit and use
-    // the client's current target — that forced TargetUnit for every multi-dot
-    // and made casts look "mouseover/target only". Never call those with a GUID.
-    if (targetGuid != 0) {
-        // Default multi-dot safe: Spell_C often selects the victim. Snapshot
-        // and restore unless caller opts into keep-selection via CastSpellEx
-        // without NO_TARGET_CHANGE (acquire_target path uses TargetGuid first).
-        uint64_t prev = ReadClientTargetGuid();
-        int nrc = SafeNativeCast(spellId, targetGuid);
-        if (nrc > 0) {
-            // Always restore unless the player ALREADY had this unit selected
-            // (they intentionally multi-dot on their current target).
-            if (prev != targetGuid)
-                RestoreSelectionAfterCast(prev, targetGuid);
+    uint64_t prev = ReadClientTargetGuid();
+
+    // Current-target / self / ground: use nested CastSpellByID (client target).
+    // Do NOT use native Spell_C(guid) when the unit is already selected — that
+    // path + FSExec restore is what killed the client after rotation casts.
+    const bool useCurrentTarget = (targetGuid == 0) || (prev != 0 && prev == targetGuid);
+    if (useCurrentTarget) {
+        if (L && CastViaLuaPCall(L, spellId)) {
             g_cast_ok++;
-            RL::Log::Info("CastSpell path=native_guid id=%d guid=0x%llX prev=0x%llX ok_total=%d",
-                          spellId, (unsigned long long)targetGuid,
-                          (unsigned long long)prev, g_cast_ok);
+            RL::Log::Info("CastSpell path=lua_current id=%d ok_total=%d", spellId, g_cast_ok);
+            return true;
+        }
+        int nrc = SafeNativeCast(spellId, 0);
+        if (nrc > 0) {
+            g_cast_ok++;
+            RL::Log::Info("CastSpell path=native_self id=%d ok_total=%d", spellId, g_cast_ok);
             return true;
         }
         if (nrc < 0)
-            RL::Log::Warn("CastSpell native AV id=%d guid=0x%llX",
-                          spellId, (unsigned long long)targetGuid);
+            RL::Log::Warn("CastSpell native AV id=%d", spellId);
+        if (!L) {
+            char code[96];
+            snprintf(code, sizeof(code), "CastSpellByID(%d)", spellId);
+            if (SafeScript(code) > 0) {
+                g_cast_ok++;
+                RL::Log::Info("CastSpell path=fsexec id=%d ok_total=%d", spellId, g_cast_ok);
+                return true;
+            }
+        }
         g_cast_fail++;
-        RL::Log::Warn("CastSpell FAIL native_guid id=%d fail_total=%d", spellId, g_cast_fail);
+        RL::Log::Warn("CastSpell FAIL current id=%d fail_total=%d", spellId, g_cast_fail);
         return false;
     }
 
-    // No GUID: self / ground / current-target spells. Lua path is fine here.
-    lua_State* L = g_currentL;
-    if (L && CastViaLuaPCall(L, spellId)) {
-        g_cast_ok++;
-        RL::Log::Info("CastSpell path=lua_pcall id=%d ok_total=%d", spellId, g_cast_ok);
-        return true;
-    }
-
-    int nrc = SafeNativeCast(spellId, 0);
+    // Multi-dot: different unit than client target → native Spell_C(guid).
+    // Restore selection ONLY via nested lua_pcall (never FSExec while in Lua).
+    int nrc = SafeNativeCast(spellId, targetGuid);
     if (nrc > 0) {
+        if (prev != targetGuid)
+            RestoreSelectionAfterCast(prev, targetGuid);
         g_cast_ok++;
-        RL::Log::Info("CastSpell path=native_self id=%d ok_total=%d", spellId, g_cast_ok);
+        RL::Log::Info("CastSpell path=native_guid id=%d guid=0x%llX prev=0x%llX ok_total=%d",
+                      spellId, (unsigned long long)targetGuid,
+                      (unsigned long long)prev, g_cast_ok);
         return true;
     }
     if (nrc < 0)
-        RL::Log::Warn("CastSpell native AV id=%d", spellId);
-
-    // FrameScript_Execute ONLY when we are NOT already inside Lua.
-    if (!g_currentL) {
-        char code[96];
-        snprintf(code, sizeof(code), "CastSpellByID(%d)", spellId);
-        int frc = SafeFSExec(code);
-        if (frc > 0) {
-            g_cast_ok++;
-            RL::Log::Info("CastSpell path=fsexec id=%d ok_total=%d", spellId, g_cast_ok);
-            return true;
-        }
-    }
-
+        RL::Log::Warn("CastSpell native AV id=%d guid=0x%llX",
+                      spellId, (unsigned long long)targetGuid);
     g_cast_fail++;
-    RL::Log::Warn("CastSpell FAIL id=%d fail_total=%d", spellId, g_cast_fail);
+    RL::Log::Warn("CastSpell FAIL native_guid id=%d fail_total=%d", spellId, g_cast_fail);
     return false;
 }
 
@@ -800,8 +842,18 @@ float PlayerFacing() {
 bool TargetGuid(uint64_t guid) {
     if (!guid) return ClearTarget();
     SoftHardwareUnlock();
+    char hex[40];
+    snprintf(hex, sizeof(hex), "0x%llX", (unsigned long long)guid);
+    if (g_currentL && LuaGlobalS(g_currentL, "TargetUnit", hex))
+        return true;
+    if (g_currentL) {
+        // Unprefixed form via nested call only.
+        snprintf(hex, sizeof(hex), "%llX", (unsigned long long)guid);
+        if (LuaGlobalS(g_currentL, "TargetUnit", hex))
+            return true;
+        return false; // never FSExec while in Lua C
+    }
     char buf[128];
-    // Try classic hex form first, then unprefixed (some private servers).
     snprintf(buf, sizeof(buf), "TargetUnit(\"0x%llX\")", (unsigned long long)guid);
     if (SafeFSExec(buf) > 0) return true;
     snprintf(buf, sizeof(buf), "TargetUnit(\"%llX\")", (unsigned long long)guid);
@@ -811,6 +863,9 @@ bool TargetGuid(uint64_t guid) {
 bool TargetByName(const char* name) {
     if (!name || !name[0]) return false;
     SoftHardwareUnlock();
+    if (g_currentL && LuaGlobalS(g_currentL, "TargetUnit", name))
+        return true;
+    if (g_currentL) return false;
     char buf[256];
     snprintf(buf, sizeof(buf), "TargetUnit([[%s]])", name);
     return SafeFSExec(buf) > 0;
@@ -829,10 +884,10 @@ bool TargetToken(const char* unitToken) {
         if (!ok) return false;
     }
     SoftHardwareUnlock();
+    if (g_currentL && LuaGlobalS(g_currentL, "TargetUnit", unitToken))
+        return true;
+    if (g_currentL) return false;
     char buf[192];
-    // Unit tokens (nameplateN, target, focus, bossN) — stock TargetUnit path.
-    // C-origin "*" + SoftHardwareUnlock avoids addon taint.
-    // MSVC snprintf has no %q — tokens are validated above.
     snprintf(buf, sizeof(buf),
              "if UnitExists(\"%s\") then TargetUnit(\"%s\") end",
              unitToken, unitToken);
@@ -841,24 +896,37 @@ bool TargetToken(const char* unitToken) {
 
 bool ClearTarget() {
     SoftHardwareUnlock();
+    if (g_currentL && LuaGlobal0(g_currentL, "ClearTarget"))
+        return true;
+    if (g_currentL) return false;
     return SafeFSExec("ClearTarget()") > 0;
 }
 
 bool TargetLastTarget() {
     SoftHardwareUnlock();
-    // Stock client API: restore previous selection after a cast/swap.
-    // More reliable than TargetUnit("0xGUID") for post-Spell_C restore.
+    if (g_currentL && LuaGlobal0(g_currentL, "TargetLastTarget"))
+        return true;
+    if (g_currentL) return false;
     return SafeFSExec("TargetLastTarget()") > 0;
 }
 
 bool AttackTarget() {
     SoftHardwareUnlock();
+    // StartAttack while already in Lua C MUST be nested pcall, not FSExec.
+    if (g_currentL) {
+        if (LuaGlobal0(g_currentL, "StartAttack")) return true;
+        if (LuaGlobal0(g_currentL, "AttackTarget")) return true;
+        return false;
+    }
     if (SafeFSExec("StartAttack()") > 0) return true;
     return SafeFSExec("AttackTarget()") > 0;
 }
 
 bool StopAttack() {
     SoftHardwareUnlock();
+    if (g_currentL && LuaGlobal0(g_currentL, "StopAttack"))
+        return true;
+    if (g_currentL) return false;
     return SafeFSExec("StopAttack()") > 0;
 }
 

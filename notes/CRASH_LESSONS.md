@@ -109,6 +109,20 @@ Runtime now owns:
 Auto Face remains an opt-in slot condition (sets FACE_IF_NEEDED). Without it,
 SKIP_IF_NOT_FACING still prevents spam — slot waits until you face.
 
+## FrameScript_Execute inside Lua C = hard crash (1.10.19-castsafe)
+
+**Proof:** 2026-07-31 13:51 — rotation `FIRE #1 Auto Attack` then client dies.
+Attack/ClearTarget/TargetLastTarget/TargetUnit used `FrameScript_Execute` while
+already inside `IsLinuxClient` → RuntimeCall. Nested VM re-entry → ERROR #132.
+
+**Rule (permanent):**
+- When `g_currentL` is set (Dispatch is inside a Lua C call): **only nested
+  `lua_pcall`** for StartAttack / CastSpellByID / ClearTarget / TargetUnit /
+  TargetLastTarget. **Never** FrameScript_Execute.
+- Current-target casts: `CastSpellByID` via pcall (not Spell_C(guid) + restore).
+- Multi-dot different GUID: native Spell_C(guid), restore via pcall only.
+- FSExec allowed only when not already inside Lua (worker/main non-Lua paths).
+
 ## Multi-dot / aura_search (1.10.11–1.10.12) — FUNDAMENTAL
 
 **Symptom:** Icy Touch only fired with a client target; acquire-off snapped

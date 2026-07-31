@@ -1221,19 +1221,84 @@ static int SoftPodsSeh() {
     }
 }
 
-// Shared gate for SoftRefresh + Refresh list walks.
+// Shared gate for SoftRefresh + Refresh unit discovery.
 static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
     if (!local) return false;
     if (now < g_rebindQuietUntil) return false; // FrameXML rebind flicker only
     if (!g_firstPlayerMs) g_firstPlayerMs = now;
-    // Cold inject only: short settle until first successful walk ever.
+    // Cold inject only: short settle until first successful snapshot ever.
     if (!g_everWalkedOk && (now - g_firstPlayerMs) < kColdSettleMs)
         return false;
     return true;
 }
 
-// List-only soft refresh for multi-dot when om.enable=0 OR as discovery backbone.
-// NEVER EnumVisibleObjects. SEH-isolated walk. Rate-limited.
+// Build g_pods from list + enum, then PodsToVectors → g_all.
+// MUST hold g_mu. On failure leaves prior g_all intact.
+// Foundation for multi-dot: Ascension unit discovery is primarily EnumVisibleObjects;
+// list walk alone often returns 0 world units (that is why om.enum=0 killed aura_search).
+static bool BuildUnitSnapshotLocked() {
+    g_podCount = 0;
+    int listRc = SoftWalkSeh();
+    static Pod s_listPods[kMaxEnum];
+    size_t listN = 0;
+    if (listRc == 1) {
+        listN = g_podCount;
+        if (listN > kMaxEnum) listN = kMaxEnum;
+        for (size_t i = 0; i < listN; ++i) s_listPods[i] = g_pods[i];
+    }
+
+    g_podCount = 0;
+    // Enum is the primary unit source on Ascension (list alone is often empty).
+    // After AV: fall back to list, but retry enum every 10s (not permanent death).
+    static ULONGLONG s_enumRetryAt = 0;
+    ULONGLONG nowEnum = GetTickCount64();
+    if (g_enumDead && nowEnum >= s_enumRetryAt) {
+        g_enumDead = false;
+        RL::Log::Info("EnumVisibleObjects retry after cooldown");
+    }
+    const bool wantEnum = !g_enumDead
+        && RL::Config::Get("om.enum", "1") != "0";
+    int enumRc = 1;
+    if (wantEnum) {
+        enumRc = SafeEnumVisible(); // fills g_pods via callbacks
+        if (enumRc != 1) {
+            if (!g_enumDeadLogged) {
+                g_enumDeadLogged = true;
+                RL::Log::Error(
+                    "EnumVisibleObjects AV 0x%08X — list-only until retry",
+                    enumRc);
+            }
+            g_enumDead = true;
+            s_enumRetryAt = nowEnum + 10000ull;
+            g_lastEnumRc = enumRc;
+            g_podCount = 0;
+        }
+    }
+
+    auto hasGuid = [&](uint64_t g) -> bool {
+        if (!g) return false;
+        for (size_t i = 0; i < g_podCount; ++i)
+            if (g_pods[i].guid == g) return true;
+        return false;
+    };
+    if (listRc == 1) {
+        for (size_t i = 0; i < listN && g_podCount < kMaxEnum; ++i) {
+            if (!hasGuid(s_listPods[i].guid))
+                g_pods[g_podCount++] = s_listPods[i];
+        }
+    }
+
+    if (g_podCount == 0)
+        return false; // keep prior g_all
+
+    if (!SoftPodsSeh())
+        return false;
+
+    g_everWalkedOk = true;
+    return true;
+}
+
+// Soft discovery for multi-dot (works with om.enable 0 or 1). Rate-limited.
 static void SoftRefreshListOnlyForHostiles() {
     static ULONGLONG s_last = 0;
     ULONGLONG now = GetTickCount64();
@@ -1242,17 +1307,16 @@ static void SoftRefreshListOnlyForHostiles() {
     if ((now - s_last) < kWalkMinIntervalMs) return;
     s_last = now;
     std::lock_guard<std::mutex> lock(g_mu);
-    g_podCount = 0;
-    int listRc = SoftWalkSeh();
-    if (listRc != 1 || g_podCount == 0) {
-        return; // keep prior snapshot (do not wipe discovery on a bad frame)
+    if (BuildUnitSnapshotLocked()) {
+        g_lastRefresh = now;
+        static size_t s_lastU = (size_t)-1;
+        size_t u = g_byType[(int)ObjectType::Unit].size();
+        if (u != s_lastU) {
+            s_lastU = u;
+            RL::Log::Info("OM soft discover units=%zu total=%zu enum_dead=%d",
+                          u, g_all.size(), g_enumDead ? 1 : 0);
+        }
     }
-    if (!SoftPodsSeh()) {
-        g_podCount = 0;
-        return;
-    }
-    g_everWalkedOk = true;
-    g_lastRefresh = now;
 }
 
 // ---- Runtime aura table (multi-dot authority; no UnitDebuff tokens) ----
@@ -1608,124 +1672,33 @@ void Refresh(bool force) {
 
     const bool omOn = RL::Config::Get("om.enable", "1") != "0";
     if (!omOn) {
-        // Soft path owns discovery while frozen — do not clear snapshot here.
+        // Soft path (SoftRefresh / AuraSearch) owns discovery while frozen.
         g_omWasOn = false;
         g_lastRefresh = now;
         return;
     }
     if (!g_omWasOn) {
         g_omWasOn = true;
-        RL::Log::Info("OM enable (list walk active, enum=%s)",
-                      RL::Config::Get("om.enum", "0") == "1" ? "on" : "off");
+        RL::Log::Info("OM enable — runtime discovery (enum+list)");
     }
 
-    // Shared gates with SoftRefresh (cold settle + rebind quiet). Never invent
-    // multi-second empty "warm-ups" that blind AuraSearch.
     if (!OmWalkAllowed(now, local)) {
         g_lastRefresh = now;
         return;
     }
 
-    // List walk is the foundation for multi-dot. SEH inside SafeWalkObjectList;
-    // bad frames keep prior snapshot (PodsToVectors only on success).
-    g_podCount = 0;
-    int listRc = SafeWalkObjectList();
-    size_t listCount = g_podCount;
-
-    static Pod s_listPods[kMaxEnum];
-    size_t listN = listCount;
-    if (listN > kMaxEnum) listN = kMaxEnum;
-    for (size_t i = 0; i < listN; ++i) s_listPods[i] = g_pods[i];
-
-    if (RL::Config::Get("om.probe", "0") == "1") {
-        g_probeArmed = true;
-    }
-
-    g_podCount = 0;
-    int enumRc = 1;
-    // Enum is opt-in (om.enum=1). Default list-only — proven stable for multi-dot.
-    const bool wantEnum = !g_enumDead && RL::Config::Get("om.enum", "0") == "1";
-    if (wantEnum) {
-        enumRc = SafeEnumVisible();
-        if (enumRc != 1) {
-            if (!g_enumDeadLogged) {
-                g_enumDeadLogged = true;
-                RL::Log::Error(
-                    "EnumVisibleObjects AV 0x%08X - enumvis OFF, list-only continues",
-                    enumRc);
-            }
-            g_enumDead = true;
-            g_podCount = 0;
-            enumRc = g_lastEnumRc ? g_lastEnumRc : enumRc;
-        }
-    }
-
-    auto hasGuid = [&](uint64_t g) -> bool {
-        if (!g) return false;
-        for (size_t i = 0; i < g_podCount; ++i)
-            if (g_pods[i].guid == g) return true;
-        return false;
-    };
-    if (listRc == 1) {
-        for (size_t i = 0; i < listN && g_podCount < kMaxEnum; ++i) {
-            if (!hasGuid(s_listPods[i].guid)) {
-                g_pods[g_podCount++] = s_listPods[i];
-            }
-        }
-    }
-
-    if (g_podCount == 0) {
-        // Failed walk: keep prior g_all (do not wipe multi-dot targets).
+    // Same builder SoftRefresh uses — enum is required for Ascension units.
+    if (BuildUnitSnapshotLocked()) {
         g_lastRefresh = now;
-        return;
-    }
-
-    if (!SoftPodsSeh()) {
-        g_lastRefresh = now;
-        return;
-    }
-    g_everWalkedOk = true;
-    g_lastRefresh = now;
-
-    // ONE-SHOT probe report - dumps everything a future RE round needs to
-    // converge on the failure mode: list-walk head that won, enum callback
-    // count vs pod count, per-guid ObjectPtr mask outcomes for the first
-    // kProbeMax guids. Only fires when probe was armed this Refresh.
-    if (g_probeArmed) {
-        g_probeArmed = false;
-        RunProbeMaskTrials();
-        RL::Log::Info(
-            "OM PROBE list(mgr=%08X first=%02lX next=%02lX iters=%d count=%zu) enum(cb=%d withGuid=%d pods=%zu ptrMiss=%d dead=%d rc=0x%X)",
-            (unsigned)g_listMgr, (unsigned long)g_listFirstOff,
-            (unsigned long)g_listNextOff, g_listDiagIters, listN,
-            g_enumCbCallCount, g_enumCbSeenGuids, g_podCount, g_objPtrMiss,
-            g_enumDead ? 1 : 0, (unsigned)enumRc);
-        for (size_t i = 0; i < g_probeCount; ++i) {
-            const ProbeEntry& pe = g_probeEntries[i];
-            RL::Log::Info(
-                "OM PROBE[%zu] guid=0x%llX  m-1=%08lX  mFFFF=%08lX  mUnit=%08lX  mPlyr=%08lX  mGO=%08lX",
-                i, (unsigned long long)pe.guid,
-                (unsigned long)pe.ptrMinus1,
-                (unsigned long)pe.ptrMaskFFFF,
-                (unsigned long)pe.ptrMaskUnit,
-                (unsigned long)pe.ptrMaskPlyr,
-                (unsigned long)pe.ptrMaskGO);
+        static size_t s_lastU = (size_t)-1;
+        size_t u = g_byType[(int)ObjectType::Unit].size();
+        if (u != s_lastU) {
+            s_lastU = u;
+            RL::Log::Info("OM ok units=%zu total=%zu enum_dead=%d",
+                          u, g_all.size(), g_enumDead ? 1 : 0);
         }
-    }
-
-    // Log only when the snapshot composition actually changes (no periodic spam).
-    static size_t s_lastLogCount = (size_t)-1;
-    static size_t s_lastU = (size_t)-1, s_lastPl = (size_t)-1, s_lastGo = (size_t)-1;
-    size_t u = g_byType[(int)ObjectType::Unit].size();
-    size_t pl = g_byType[(int)ObjectType::Player].size();
-    size_t go = g_byType[(int)ObjectType::GameObject].size();
-    size_t it = g_byType[(int)ObjectType::Item].size();
-    if (g_all.size() != s_lastLogCount || u != s_lastU || pl != s_lastPl || go != s_lastGo) {
-        s_lastLogCount = g_all.size();
-        s_lastU = u; s_lastPl = pl; s_lastGo = go;
-        RL::Log::Info(
-            "OM ok list=%zu/%d total=%zu units=%zu players=%zu gos=%zu items=%zu ptrMiss=%d",
-            listCount, listRc, g_all.size(), u, pl, go, it, g_objPtrMiss);
+    } else {
+        g_lastRefresh = now; // keep prior snapshot
     }
 }
 

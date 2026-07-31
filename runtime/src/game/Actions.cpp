@@ -398,55 +398,52 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
 
     uint64_t prev = ReadClientTargetGuid();
 
-    // Current-target / self / ground: use nested CastSpellByID (client target).
-    // Do NOT use native Spell_C(guid) when the unit is already selected — that
-    // path + FSExec restore is what killed the client after rotation casts.
-    const bool useCurrentTarget = (targetGuid == 0) || (prev != 0 && prev == targetGuid);
-    if (useCurrentTarget) {
-        if (L && CastViaLuaPCall(L, spellId)) {
-            g_cast_ok++;
-            RL::Log::Info("CastSpell path=lua_current id=%d ok_total=%d", spellId, g_cast_ok);
-            return true;
-        }
-        int nrc = SafeNativeCast(spellId, 0);
+    // RUNTIME AUTHORITY: any non-zero GUID cast is Spell_C(guid) + pcall restore.
+    // Never demote multi-dot / GUID casts to stock CastSpellByID (client target).
+    // Only guid==0 is self / ground / current-target (still prefer nested pcall).
+    if (targetGuid != 0) {
+        int nrc = SafeNativeCast(spellId, targetGuid);
         if (nrc > 0) {
+            if (prev != targetGuid)
+                RestoreSelectionAfterCast(prev, targetGuid);
             g_cast_ok++;
-            RL::Log::Info("CastSpell path=native_self id=%d ok_total=%d", spellId, g_cast_ok);
+            RL::Log::Info("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX ok=%d",
+                          spellId, (unsigned long long)targetGuid,
+                          (unsigned long long)prev, g_cast_ok);
             return true;
         }
         if (nrc < 0)
-            RL::Log::Warn("CastSpell native AV id=%d", spellId);
-        if (!L) {
-            char code[96];
-            snprintf(code, sizeof(code), "CastSpellByID(%d)", spellId);
-            if (SafeScript(code) > 0) {
-                g_cast_ok++;
-                RL::Log::Info("CastSpell path=fsexec id=%d ok_total=%d", spellId, g_cast_ok);
-                return true;
-            }
-        }
+            RL::Log::Warn("CastSpell native AV id=%d guid=0x%llX",
+                          spellId, (unsigned long long)targetGuid);
         g_cast_fail++;
-        RL::Log::Warn("CastSpell FAIL current id=%d fail_total=%d", spellId, g_cast_fail);
+        RL::Log::Warn("CastSpell FAIL runtime_guid id=%d fail=%d", spellId, g_cast_fail);
         return false;
     }
 
-    // Multi-dot: different unit than client target → native Spell_C(guid).
-    // Restore selection ONLY via nested lua_pcall (never FSExec while in Lua).
-    int nrc = SafeNativeCast(spellId, targetGuid);
-    if (nrc > 0) {
-        if (prev != targetGuid)
-            RestoreSelectionAfterCast(prev, targetGuid);
+    // guid==0: self / ground / current target via nested CastSpellByID (in Lua C).
+    if (L && CastViaLuaPCall(L, spellId)) {
         g_cast_ok++;
-        RL::Log::Info("CastSpell path=native_guid id=%d guid=0x%llX prev=0x%llX ok_total=%d",
-                      spellId, (unsigned long long)targetGuid,
-                      (unsigned long long)prev, g_cast_ok);
+        RL::Log::Info("CastSpell path=lua_self id=%d ok=%d", spellId, g_cast_ok);
+        return true;
+    }
+    int nrc = SafeNativeCast(spellId, 0);
+    if (nrc > 0) {
+        g_cast_ok++;
+        RL::Log::Info("CastSpell path=native_self id=%d ok=%d", spellId, g_cast_ok);
         return true;
     }
     if (nrc < 0)
-        RL::Log::Warn("CastSpell native AV id=%d guid=0x%llX",
-                      spellId, (unsigned long long)targetGuid);
+        RL::Log::Warn("CastSpell native AV id=%d", spellId);
+    if (!L) {
+        char code[96];
+        snprintf(code, sizeof(code), "CastSpellByID(%d)", spellId);
+        if (SafeScript(code) > 0) {
+            g_cast_ok++;
+            return true;
+        }
+    }
     g_cast_fail++;
-    RL::Log::Warn("CastSpell FAIL native_guid id=%d fail_total=%d", spellId, g_cast_fail);
+    RL::Log::Warn("CastSpell FAIL self id=%d fail=%d", spellId, g_cast_fail);
     return false;
 }
 

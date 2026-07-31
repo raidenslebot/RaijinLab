@@ -1944,8 +1944,14 @@ function Executor.attempt_action(action, ctx)
                     blacklist_guid(cg, 0.15, last_why)
                 end
             else
-                -- Ground AoE with a GUID still wires without face/target change.
-                local cok = Act.CastSpell(cast_sid, ground_self and nil or cg)
+                -- RUNTIME ONLY: multi-dot and unit casts go CastSpell(id, guid).
+                -- Ground self-AoE uses CastSpell(id) with no unit.
+                local cok
+                if ground_self then
+                    cok = Act.CastSpell(cast_sid)
+                else
+                    cok = Act.CastSpell(cast_sid, cg)
+                end
                 if cok then
                     ok = true
                     if not ground_self then

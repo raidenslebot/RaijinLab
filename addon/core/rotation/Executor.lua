@@ -1222,6 +1222,13 @@ function Executor.get_active_rotation()
     if not RaijinLabDB then return nil end
     local Engine = RaijinLab.RotationEngine
     if not Engine then return nil end
+    -- Heal character/legacy stores before reading (empty shell vs real config).
+    if RaijinLab.MigrateLegacyRotationsToCharacter and UnitName and UnitName("player") then
+        if not Executor._migrated_tick then
+            Executor._migrated_tick = true
+            pcall(RaijinLab.MigrateLegacyRotationsToCharacter, RaijinLab)
+        end
+    end
     local rots, c, legacy = _store()
     local name = _get_active(c, legacy)
 
@@ -1244,11 +1251,30 @@ function Executor.get_active_rotation()
         end
     end
     if type(data) ~= "table" then
+        -- Try account-level legacy once more before inventing empty Default.
+        if type(RaijinLabDB.rotations) == "table" then
+            for n, d in pairs(RaijinLabDB.rotations) do
+                if type(n) == "string" and type(d) == "table" then
+                    if RaijinLab.MergeRotationInto then
+                        RaijinLab.MergeRotationInto(rots, n, d)
+                    elseif rots[n] == nil then
+                        rots[n] = d
+                    end
+                end
+            end
+            data = rots[name] or rots[_first_config_name(rots)]
+            if data then name = name or _first_config_name(rots) end
+        end
+    end
+    if type(data) ~= "table" then
         -- Truly empty store: create one Default so the UI has something.
         name = _set_active(c, legacy, "Default")
         local r = Engine.new_rotation(name)
         Engine.ensure_trailing_empty(r)
-        rots[name] = Engine.serialize(r)
+        -- Only seed if still missing — never clobber a real config.
+        if rots[name] == nil then
+            rots[name] = Engine.serialize(r)
+        end
         data = rots[name]
     end
 
@@ -1452,22 +1478,43 @@ function Executor.copy_config(srcName, destName, opts)
     return true
 end
 
-function Executor.save_rotation(rotation, name)
-    if not RaijinLabDB then return end
+function Executor.save_rotation(rotation, name, opts)
+    if not RaijinLabDB then return false end
+    opts = opts or {}
     local Engine = RaijinLab.RotationEngine
-    if not Engine then return end
+    if not Engine then return false end
     local rots, c, legacy = _store()
     name = name or _get_active(c, legacy) or "Default"
-    rots[name] = Engine.serialize(rotation)
+    local ser = Engine.serialize(rotation)
+    if type(ser) ~= "table" then return false end
+    -- NEVER silently wipe a real config with an empty shell (flush/autocommit/
+    -- deserialize glitch). Explicit editor save may pass force=true to clear.
+    local existing = rots[name]
+    local is_real = RaijinLab.IsRealRotation or function(r)
+        if type(r) ~= "table" then return false end
+        for _, sl in ipairs(r.slots or {}) do
+            if type(sl) == "table" and (tonumber(sl.spell_id) or 0) ~= 0 then return true end
+        end
+        return false
+    end
+    if not opts.force and not is_real(ser) and is_real(existing) then
+        -- Keep the real store; refresh cache from store instead of writing empty.
+        return false, "refuse_empty_overwrite"
+    end
+    rots[name] = ser
     _set_active(c, legacy, name)
-    -- Keep account-level legacy mirror fresh so pre-PEW / migration never
-    -- reintroduces a stale copy of this config.
-    if not legacy and type(RaijinLabDB.rotations) == "table" then
-        RaijinLabDB.rotations[name] = rots[name]
+    -- Safe merge into account mirror (never empty-over-real).
+    if type(RaijinLabDB.rotations) == "table" then
+        if RaijinLab.MergeRotationInto then
+            RaijinLab.MergeRotationInto(RaijinLabDB.rotations, name, ser)
+        elseif is_real(ser) or not is_real(RaijinLabDB.rotations[name]) then
+            RaijinLabDB.rotations[name] = ser
+        end
     end
     Executor._active_cache = rotation
     Executor._active_name = name
     Executor._dirty_since_flush = true
+    return true
 end
 
 -- Re-commit the active rotation into the DB. Used by the PLAYER_LOGOUT flush so
@@ -1475,11 +1522,19 @@ end
 function Executor.flush()
     if not RaijinLabDB then return false end
     local r = Executor._active_cache
-    if r then
-        Executor.save_rotation(r, Executor._active_name)
+    local name = Executor._active_name
+    if r and name then
+        -- Never flush an empty in-memory shell over a real saved rotation.
+        local ok = Executor.save_rotation(r, name)
+        if not ok then
+            -- Drop stale empty cache so next get reloads from DB.
+            Executor._active_cache = nil
+            Executor._active_name = nil
+            Executor._resolved_from = nil
+        end
     else
-        local rot, name = Executor.get_active_rotation()
-        if rot then Executor.save_rotation(rot, name) end
+        local rot, n = Executor.get_active_rotation()
+        if rot and n then Executor.save_rotation(rot, n) end
     end
     if RaijinLab.SyncActiveCharacterToLegacy then
         pcall(RaijinLab.SyncActiveCharacterToLegacy, RaijinLab)

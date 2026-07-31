@@ -273,6 +273,10 @@ function CB.restore(opts)
             if should_fill(RaijinLabDB.rotations[name], data) then
                 RaijinLabDB.rotations[name] = data
                 filled[#filled + 1] = "rotation:" .. tostring(name)
+            elseif RaijinLab.MergeRotationInto then
+                if RaijinLab.MergeRotationInto(RaijinLabDB.rotations, name, data) then
+                    filled[#filled + 1] = "rotation:" .. tostring(name)
+                end
             end
         end
     end
@@ -295,6 +299,16 @@ function CB.restore(opts)
                     if should_fill(dst.rotations[name], data) then
                         dst.rotations[name] = data
                         filled[#filled + 1] = tostring(key) .. "/" .. tostring(name)
+                    elseif RaijinLab.MergeRotationInto then
+                        if RaijinLab.MergeRotationInto(dst.rotations, name, data) then
+                            filled[#filled + 1] = tostring(key) .. "/" .. tostring(name)
+                        end
+                    end
+                end
+                -- Heal active_config if it points at an empty shell.
+                if src.active_config and CB.is_real_rotation(dst.rotations[src.active_config]) then
+                    if not CB.is_real_rotation(dst.rotations[dst.active_config or ""]) then
+                        dst.active_config = src.active_config
                     end
                 end
             end

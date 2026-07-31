@@ -593,7 +593,8 @@ end
 
 function Editor:Save(rotation)
     if RaijinLab.RotationExecutor then
-        RaijinLab.RotationExecutor.save_rotation(rotation)
+        -- force=true: user explicitly saved; empty rotation is allowed (clear all).
+        RaijinLab.RotationExecutor.save_rotation(rotation, nil, { force = true })
     end
 end
 

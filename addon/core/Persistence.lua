@@ -23,6 +23,54 @@ if not RL then return end
 
 RL.DB_SCHEMA_VERSION = 3
 
+-- True when a stored rotation holds at least one real spell (not a blank shell).
+-- Empty "Default" placeholders must NEVER overwrite real configs on sync/migrate.
+function RL.IsRealRotation(rot)
+    if type(rot) ~= "table" then return false end
+    local slots = rot.slots
+    if type(slots) ~= "table" then return false end
+    for _, sl in pairs(slots) do
+        if type(sl) == "table" then
+            local id = tonumber(sl.spell_id or 0) or 0
+            if id ~= 0 then return true end
+        end
+    end
+    return false
+end
+
+-- Merge one rotation into a store: never replace a real rotation with a shell.
+-- Returns true if store[name] changed.
+function RL.MergeRotationInto(store, name, data)
+    if type(store) ~= "table" or type(name) ~= "string" or name == "" then return false end
+    if type(data) ~= "table" then return false end
+    if not RL.IsRealRotation(data) then
+        -- Only seed a placeholder if the name is completely missing.
+        if store[name] == nil then
+            store[name] = data
+            return true
+        end
+        return false
+    end
+    local live = store[name]
+    if live == nil or not RL.IsRealRotation(live) then
+        store[name] = data
+        return true
+    end
+    -- Both real: prefer the one with more filled slots (protect richer edit).
+    local function filled(r)
+        local n = 0
+        for _, sl in ipairs((r and r.slots) or {}) do
+            if type(sl) == "table" and (tonumber(sl.spell_id) or 0) ~= 0 then n = n + 1 end
+        end
+        return n
+    end
+    if filled(data) >= filled(live) then
+        store[name] = data
+        return true
+    end
+    return false
+end
+
 -- Build the per-character namespace key. Falls back to a fixed sentinel when
 -- called at character-select (UnitName/GetRealmName return nil there) so we
 -- don't wipe user data by writing to a "<nil>|<nil>" bucket.
@@ -37,21 +85,45 @@ end
 
 -- Return (or create) the per-character bucket under RaijinLabDB.characters[key].
 -- Returns nil at character-select (no key). Callers must gate on that.
+-- On first create, seeds from account-level legacy rotations (never empty shell
+-- when real account configs exist).
 function RL:CharacterDB()
     local key = self:CharacterKey()
     if not key then return nil end
     RaijinLabDB = RaijinLabDB or {}
     RaijinLabDB.characters = RaijinLabDB.characters or {}
     local c = RaijinLabDB.characters[key]
+    local created = false
     if not c then
         c = {
             rotations = {},           -- name -> serialized rotation
             active_config = "Default",
         }
         RaijinLabDB.characters[key] = c
+        created = true
     end
     c.rotations = c.rotations or {}
     c.active_config = c.active_config or "Default"
+    -- Import / heal from account-level mirror whenever character store is empty
+    -- or only has placeholders (migration race, empty Default seed).
+    if type(RaijinLabDB.rotations) == "table" then
+        local any_real = false
+        for _, r in pairs(c.rotations) do
+            if RL.IsRealRotation(r) then any_real = true; break end
+        end
+        if created or not any_real then
+            for name, data in pairs(RaijinLabDB.rotations) do
+                if type(name) == "string" and type(data) == "table" then
+                    local copy = (self.Sanitize and self.Sanitize(data)) or data
+                    RL.MergeRotationInto(c.rotations, name, copy)
+                end
+            end
+            local act = RaijinLabDB.active_rotation
+            if type(act) == "string" and act ~= "" and c.rotations[act] then
+                c.active_config = act
+            end
+        end
+    end
     return c, key
 end
 
@@ -189,35 +261,54 @@ function RL:MigrateLegacyRotationsToCharacter()
     if type(RaijinLabDB.rotations) == "table" then
         for name, data in pairs(RaijinLabDB.rotations) do
             if type(name) == "string" and name ~= "" and type(data) == "table" then
-                if c.rotations[name] == nil then
-                    local copy = (self.Sanitize and self.Sanitize(data)) or data
-                    if type(copy) == "table" then
-                        c.rotations[name] = copy
-                        moved = moved + 1
-                    end
+                local copy = (self.Sanitize and self.Sanitize(data)) or data
+                -- Empty character shells must not block real legacy configs.
+                if type(copy) == "table" and RL.MergeRotationInto(c.rotations, name, copy) then
+                    if RL.IsRealRotation(copy) then moved = moved + 1 end
                 end
             end
         end
     end
-    -- Repair active pointer if it points at nothing.
+    -- Push real character rotations up into the account mirror too.
+    RaijinLabDB.rotations = RaijinLabDB.rotations or {}
+    for name, data in pairs(c.rotations or {}) do
+        if type(name) == "string" and RL.IsRealRotation(data) then
+            RL.MergeRotationInto(RaijinLabDB.rotations, name, data)
+        end
+    end
+    -- Prefer a REAL active config (never stick on empty Default when better exists).
     local active = c.active_config or "Default"
-    if not c.rotations[active] then
+    if not c.rotations[active] or not RL.IsRealRotation(c.rotations[active]) then
         local fallback = RaijinLabDB.active_rotation
-        if fallback and c.rotations[fallback] then
+        if fallback and RL.IsRealRotation(c.rotations[fallback]) then
             c.active_config = fallback
         else
-            local first = nil
-            for n, _ in pairs(c.rotations) do first = n; break end
-            c.active_config = first or "Default"
-            if not c.rotations[c.active_config] then
-                c.rotations[c.active_config] = { name = c.active_config, enabled = true, slots = {} }
+            local best, bestN = nil, 0
+            for n, r in pairs(c.rotations) do
+                if type(n) == "string" and RL.IsRealRotation(r) then
+                    local cnt = 0
+                    for _, sl in ipairs(r.slots or {}) do
+                        if (tonumber(sl.spell_id) or 0) ~= 0 then cnt = cnt + 1 end
+                    end
+                    if cnt > bestN then best, bestN = n, cnt end
+                end
+            end
+            if best then
+                c.active_config = best
+            elseif not c.rotations[active] then
+                c.active_config = "Default"
+                if not c.rotations[c.active_config] then
+                    c.rotations[c.active_config] = {
+                        name = c.active_config, enabled = true, slots = {},
+                    }
+                end
             end
         end
     end
     RaijinLabDB.active_rotation = c.active_config
     if moved > 0 and not c._legacy_migrated then
         print(string.format(
-            "|cff7ec8e3RaijinLab|r migrated %d legacy rotation%s into %s's bucket",
+            "|cff7ec8e3RaijinLab|r migrated/healed %d rotation%s into %s",
             moved, moved == 1 and "" or "s", key))
     end
     c._legacy_migrated = true
@@ -225,12 +316,13 @@ function RL:MigrateLegacyRotationsToCharacter()
     if Ex then
         Ex._active_cache = nil
         Ex._active_name = nil
+        Ex._resolved_from = nil
     end
     return moved
 end
 
--- Mirror active character rotations to account-level legacy fields so both
--- sources of truth stay aligned (prevents configs "switching" across paths).
+-- Mirror character → account WITHOUT destroying real account configs.
+-- Empty shells must never clobber a populated account-level rotation.
 function RL:SyncActiveCharacterToLegacy()
     local c = self:CharacterDB()
     if not c then return false end
@@ -240,11 +332,22 @@ function RL:SyncActiveCharacterToLegacy()
         if type(name) == "string" and type(data) == "table" then
             local copy = (self.Sanitize and self.Sanitize(data)) or data
             if type(copy) == "table" then
-                RaijinLabDB.rotations[name] = copy
+                RL.MergeRotationInto(RaijinLabDB.rotations, name, copy)
             end
         end
     end
-    RaijinLabDB.active_rotation = c.active_config or RaijinLabDB.active_rotation or "Default"
+    local act = c.active_config
+    if type(act) == "string" and act ~= ""
+        and RL.IsRealRotation(RaijinLabDB.rotations[act]) then
+        RaijinLabDB.active_rotation = act
+    elseif not RL.IsRealRotation(RaijinLabDB.rotations[RaijinLabDB.active_rotation or ""]) then
+        for n, r in pairs(RaijinLabDB.rotations) do
+            if RL.IsRealRotation(r) then
+                RaijinLabDB.active_rotation = n
+                break
+            end
+        end
+    end
     return true
 end
 

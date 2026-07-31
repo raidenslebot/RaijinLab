@@ -1956,15 +1956,15 @@ function Executor.attempt_action(action, ctx)
     local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
     local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
     local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
-    local LOS = (Act.CAST_CHECK_LOS or 8)
-    -- Runtime authority flags for every unit GUID cast:
-    --   SKIP + LOS always (never wire a face/LoS fail → no client UI spam)
-    --   FACE when Auto Face condition is on the slot
-    --   NOTGT when acquire-off multi-dot
+    -- Restored to working baseline flags:
+    --   NOTGT when acquire-off (multi-dot must not sticky-select)
+    --   FACE+SKIP only when Auto Face is on the slot (turn then skip if still off)
+    --   Do NOT force CHECK_LOS — TraceLine false-positives killed every unit cast
+    --   while Consecration (guid=0) still fired.
     local function unit_cast_flags()
-        local f = SKIP + LOS
+        local f = 0
         if not want_acquire then f = f + NOTGT end
-        if want_auto_face then f = f + FACE end
+        if want_auto_face then f = f + FACE + SKIP end
         return f
     end
     for ci = 1, #try_list do
@@ -1976,37 +1976,48 @@ function Executor.attempt_action(action, ctx)
             last_why = "blacklisted"
         else
             if not skip_face_cast and needs_enemy then
-                -- Prefer runtime CastSpellEx: face-turn (if Auto Face), then
-                -- refuse not_ready/facing/los without client UI spam.
-                local reason = nil
-                if Act.CastSpellEx then
-                    ok, reason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
+                local not_facing = W and W.is_not_facing_guid
+                    and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                if not_facing and want_auto_face then
+                    if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
+                    elseif W and W.face_guid then pcall(W.face_guid, cg) end
+                    not_facing = W and W.is_not_facing_guid
+                        and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                end
+                -- Only hard-skip when Auto Face is on and still measured not facing.
+                -- Without Auto Face, wire and let runtime/client decide (was dead
+                -- rotation when SKIP was forced on every unit cast).
+                if not_facing and want_auto_face then
+                    last_why = "facing"
                 else
-                    ok = Act.CastSpell(cast_sid, cg)
-                    reason = ok and "ok" or "cast_fail"
-                end
-                if ok == true or ok == 1 then
-                    ok = true
-                    wire_guid = cg
-                    guid = cg
-                    if search then
-                        search.guid = cg
-                        search.token = cand.token
-                        if ctx then ctx.aura_search_hit = search end
+                    local reason = nil
+                    if Act.CastSpellEx then
+                        ok, reason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
+                    else
+                        ok = Act.CastSpell(cast_sid, cg)
+                        reason = ok and "ok" or "cast_fail"
                     end
-                    break
-                end
-                ok = false
-                last_why = reason or "cast_fail"
-                -- facing/los: try next candidate same tick (awareness, no pause).
-                if tostring(last_why) == "facing" or tostring(last_why) == "los"
-                    or tostring(last_why) == "oor" then
-                    -- fall through to next cand
-                elseif tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
-                    break -- list-level; don't thrash other GUIDs
+                    if ok == true or ok == 1 then
+                        ok = true
+                        wire_guid = cg
+                        guid = cg
+                        if search then
+                            search.guid = cg
+                            search.token = cand.token
+                            if ctx then ctx.aura_search_hit = search end
+                        end
+                        break
+                    end
+                    ok = false
+                    last_why = reason or "cast_fail"
+                    if tostring(last_why) == "facing" or tostring(last_why) == "los"
+                        or tostring(last_why) == "oor" then
+                        -- try next candidate
+                    elseif tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
+                        break
+                    end
                 end
             else
-                -- Ground self-AoE / no unit face: CastSpell(id) only.
                 local cok, creason
                 if ground_self then
                     if Act.CastSpellEx then

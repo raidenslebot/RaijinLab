@@ -33,7 +33,8 @@ bool FaceTowardGuid(uint64_t guid);
 bool IsFacingGuid(uint64_t guid, float halfArcRad = 1.5707963f);
 // Pre-wire gates only (no Spell_C). reason always set.
 CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags);
-// Optional face + gates + Spell_C. Never wire if SKIP_IF_NOT_FACING and not facing.
+// Optional face + gates + Spell_C. SKIP/LOS only apply when those flags are set.
+// Default multi-dot flags = NO_TARGET_CHANGE only (Lua owns soft face/ready).
 CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags);
 bool Jump();                 // one-shot hop (land lip)
 bool StopMoving();

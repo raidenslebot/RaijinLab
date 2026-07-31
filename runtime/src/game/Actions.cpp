@@ -38,7 +38,6 @@ using fn_settop = void(__cdecl*)(lua_State*, int);
 using fn_gettop = int(__cdecl*)(lua_State*);
 using fn_pushnumber = void(__cdecl*)(lua_State*, double);
 using fn_pushstring = void(__cdecl*)(lua_State*, const char*);
-using fn_tonumber = double(__cdecl*)(lua_State*, int);
 
 static constexpr int LUA_GLOBALSINDEX = -10002;
 static constexpr int LUA_TFUNCTION = 6;
@@ -313,65 +312,6 @@ static bool CastViaLuaPCall(lua_State* L, int spellId) {
     return LuaGlobalN(L, "CastSpellByID", (double)spellId);
 }
 
-// Sample one spell's remaining CD. SEH-only (no C++ dtors) for MSVC.
-static float SpellReadyRemOne(lua_State* L, int id) {
-    if (!L || id <= 0) return 0.f;
-    using namespace RL::Game::Addr;
-    auto getfield = reinterpret_cast<fn_getfield>(lua_getfield);
-    auto pcall = reinterpret_cast<fn_pcall>(lua_pcall);
-    auto type = reinterpret_cast<fn_type>(lua_type);
-    auto settop = reinterpret_cast<fn_settop>(lua_settop);
-    auto gettop = reinterpret_cast<fn_gettop>(lua_gettop);
-    auto pushnumber = reinterpret_cast<fn_pushnumber>(lua_pushnumber);
-    auto tonumber = reinterpret_cast<fn_tonumber>(0x0084E030);
-    if (!getfield || !pcall || !type || !settop || !gettop || !pushnumber || !tonumber)
-        return 0.f;
-    __try {
-        int top = gettop(L);
-        getfield(L, LUA_GLOBALSINDEX, "GetSpellCooldown");
-        if (type(L, -1) != LUA_TFUNCTION) {
-            settop(L, top);
-            return 0.f;
-        }
-        pushnumber(L, (double)id);
-        if (pcall(L, 1, 3, 0) != 0) {
-            settop(L, top);
-            return 0.f;
-        }
-        double start = tonumber(L, -3);
-        double dur = tonumber(L, -2);
-        settop(L, top);
-        if (dur <= 0.0) return 0.f;
-        getfield(L, LUA_GLOBALSINDEX, "GetTime");
-        if (type(L, -1) != LUA_TFUNCTION) {
-            settop(L, top);
-            return 0.f;
-        }
-        if (pcall(L, 0, 1, 0) != 0) {
-            settop(L, top);
-            return 0.f;
-        }
-        double nowt = tonumber(L, -1);
-        settop(L, top);
-        float rem = (float)((start + dur) - nowt);
-        return rem > 0.f ? rem : 0.f;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0.f;
-    }
-}
-
-// Live remaining cooldown/GCD (seconds). 0 = ready/unknown. No invent pads.
-// Only treat as "on CD" when rem is in a sane combat band — garbage from a
-// bad nested GetSpellCooldown must never freeze the rotation forever.
-static float SpellReadyRem(lua_State* L, int spellId) {
-    float best = SpellReadyRemOne(L, spellId);
-    float gcd = SpellReadyRemOne(L, 61304);
-    float rem = (gcd > best) ? gcd : best;
-    if (rem < 0.05f) return 0.f;
-    if (rem > 30.f) return 0.f; // nonsense → treat as ready (fail open)
-    return rem;
-}
-
 // Run a tiny script ONLY when we are NOT already inside Lua.
 // When g_currentL is set, FSExec is forbidden (nested VM re-entry crash).
 static int SafeScript(const char* code) {
@@ -578,44 +518,44 @@ bool FaceTowardGuid(uint64_t guid) {
     if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
         return false;
 
-    // Up to 3 TurnByDelta steps same call — large rear angles used to leave
-    // one partial turn then cast → "not facing". No waits; pure awareness.
-    for (int step = 0; step < 3; ++step) {
-        float face = PlayerFacing();
-        if (face > 1e8f || face != face) {
-            face = OM::Facing(me);
-            if (face != face || face < -0.01f || face > 12.f)
-                return false;
-        }
-        float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
-        float diff = NormPi(ang - face);
-        if (std::fabs(diff) <= 0.12f)
-            return true;
-        float d = diff;
-        if (d > 1.4f) d = 1.4f;
-        if (d < -1.4f) d = -1.4f;
-        if (!TurnByDelta(d))
+    // Live facing (0x7AC), not stale 0x7A4.
+    float face = PlayerFacing();
+    if (face > 1e8f || face != face) {
+        face = OM::Facing(me);
+        if (face != face || face < -0.01f || face > 12.f)
             return false;
     }
-    return IsFacingGuidEx(guid, 1.5707963f) != 0;
+
+    float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
+    float diff = NormPi(ang - face);
+    if (std::fabs(diff) <= 0.12f)
+        return true; // already on-angle enough for cast cone
+
+    // One TurnByDelta step (capped). Multi-step same-frame caused thrash/crash.
+    if (diff > 1.4f) diff = 1.4f;
+    if (diff < -1.4f) diff = -1.4f;
+    return TurnByDelta(diff);
 }
 
-static bool LosClear(uint64_t guid) {
+// LoS for optional CHECK_LOS flag. Fail OPEN: only refuse when TraceLineEx
+// is DEFINITELY blocked (rc==0). Unknown/throw → allow cast (client is last word).
+// TraceLineEx: 1=clear, 0=blocked, -1=unknown.
+static bool LosDefinitelyBlocked(uint64_t guid) {
     uint64_t me = ActiveGuid();
-    if (!me || !guid) return true; // undetermined: do not hard-block
+    if (!me || !guid) return false;
     Vec3 a = OM::Position(me);
     Vec3 b = OM::Position(guid);
     if ((a.x == 0.f && a.y == 0.f) || (b.x == 0.f && b.y == 0.f))
-        return true;
+        return false;
+    float dx = a.x - b.x, dy = a.y - b.y;
+    // Point-blank: model hitboxes false-block TraceLine (live: edge=0yd los refuse).
+    if ((dx * dx + dy * dy) < 64.f) // 8 yd
+        return false;
     a.z += 2.f;
     b.z += 2.f;
     Vec3 hit{};
-    // OM::TraceLineEx: 1 = CLEAR, 0 = BLOCKED, -1 = unknown.
-    // (bool TraceLine returns true on CLEAR — NOT "blocked". 1.10.36 bug:
-    // LosClear treated clear as blocked → every unit cast refused "los".)
     int rc = OM::TraceLineEx(a, b, &hit, 0x100111u);
-    if (rc < 0) return true;  // unknown: do not invent a wall
-    return rc == 1;           // clear
+    return rc == 0; // only hard-block on measured blocked
 }
 
 CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
@@ -623,11 +563,8 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
     if (spellId <= 0) return r;
     uint64_t me = ActiveGuid();
     if (!me) { r.reason = "no_player"; return r; }
-
-    if (g_currentL) {
-        float rem = SpellReadyRem(g_currentL, spellId);
-        if (rem > 0.05f) { r.reason = "not_ready"; return r; }
-    }
+    // Readiness is Lua Executor GetSpellCooldown — never nested pcall here
+    // (1.10.36 nested CD + TraceLine thrash → dead rotation / crash).
 
     if (targetGuid != 0) {
         Vec3 pb = OM::Position(targetGuid);
@@ -643,11 +580,12 @@ CastGateResult CanCast(int spellId, uint64_t targetGuid, uint32_t flags) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
+        // Only refuse when SKIP set AND measured not-facing. Undetermined allows.
         if (face == 0 && (flags & kCastSkipIfNotFacing)) {
             r.reason = "facing";
             return r;
         }
-        if ((flags & kCastCheckLos) && !LosClear(targetGuid)) {
+        if ((flags & kCastCheckLos) && LosDefinitelyBlocked(targetGuid)) {
             r.reason = "los";
             return r;
         }
@@ -667,39 +605,28 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // RUNTIME AUTHORITY:
-    //   1) Live GetSpellCooldown — refuse not_ready before Spell_C
-    //   2) Face: turn if FACE_IF_NEEDED; refuse measured not-facing when SKIP set
-    //   3) LoS: refuse measured blocked when CHECK_LOS set
-    // Fail open on undetermined (no invent walls / freezes).
-    if (g_currentL) {
-        float rem = SpellReadyRem(g_currentL, spellId);
-        if (rem > 0.05f) {
-            r.reason = "not_ready";
-            return r;
-        }
-    }
-
+    // Wire path restored to 1.10.35 behaviour (working baseline):
+    //   * NO nested GetSpellCooldown (Lua owns readiness; nested pcall crash surface)
+    //   * Face turn only if FACE_IF_NEEDED; refuse only if SKIP + measured
+    //   * LoS refuse only if CHECK_LOS + DEFINITELY blocked (fail open otherwise)
+    //   * Default Lua flags are NOTGT only — unit casts fire again
     if (targetGuid != 0) {
         int face = IsFacingGuidEx(targetGuid, 1.5707963f);
         if (face == 0 && (flags & kCastFaceIfNeeded)) {
             FaceTowardGuid(targetGuid);
             face = IsFacingGuidEx(targetGuid, 1.5707963f);
         }
-        // SKIP_IF_NOT_FACING (default from Lua unit casts): refuse measured only.
         if (face == 0 && (flags & kCastSkipIfNotFacing)) {
             r.reason = "facing";
             return r;
         }
-        if ((flags & kCastCheckLos) && !LosClear(targetGuid)) {
+        if ((flags & kCastCheckLos) && LosDefinitelyBlocked(targetGuid)) {
             r.reason = "los";
             return r;
         }
     }
 
     // CastSpell is pin-free Spell_C(guid) + descriptor restore if selection moved.
-    // NO_TARGET_CHANGE: double-ensure restore (acquire-off multi-dot).
-    // Without NO_TARGET_CHANGE and acquire ON, Lua already Target'd so prev==victim.
     uint64_t prev = (targetGuid != 0) ? ReadClientTargetGuid() : 0;
     bool ok = CastSpell(spellId, targetGuid);
     if (ok) {
@@ -713,7 +640,6 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         r.ok = true;
         r.reason = "ok";
     } else {
-        // Fail: still restore if cast path mutated selection before failing.
         if (targetGuid != 0) {
             uint64_t nowSel = ReadClientTargetGuid();
             if (nowSel != prev)

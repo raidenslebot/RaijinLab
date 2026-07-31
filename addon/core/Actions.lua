@@ -103,10 +103,10 @@ function A.CastSpell(spellId, unitOrGuid)
     -- (acquire-off multi-dot). NO_TARGET_CHANGE restores if Spell_C stuck victim.
     local res
     if g then
-        -- Unit casts: runtime refuses not_ready / measured face / LoS before wire.
-        local flags = (A.CAST_NO_TARGET_CHANGE or 2)
-            + (A.CAST_SKIP_IF_NOT_FACING or 4)
-            + (A.CAST_CHECK_LOS or 8)
+        -- Acquire-off multi-dot: NO_TARGET_CHANGE only. Do NOT force SKIP/LOS —
+        -- that made every unit cast refuse (face/los false-positives) while
+        -- Consecration (guid=0) still fired. Lua BasicRules owns soft gates.
+        local flags = A.CAST_NO_TARGET_CHANGE or 2
         local ex = rt("CastSpellEx", spellId, g, flags)
         if type(ex) == "string" then
             local okb = ex:match("^(%d+)|")

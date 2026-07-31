@@ -369,6 +369,14 @@ function World.is_los_guid(guid)
     local px, py, pz = RaijinLab:ObjectPosition("player")
     local tx, ty, tz = RaijinLab:ObjectPosition(guid)
     if not px or not tx then return nil end
+    -- Melee / point-blank: unit model geometry often false-blocks TraceLine.
+    -- Live 1.10.36: edge=0yd still los:Icy_Touch — rotation only Consecration.
+    local dx, dy = (px - tx), (py - ty)
+    local center = math.sqrt(dx * dx + dy * dy)
+    if center < 8.0 then
+        World._los_guid_cache = { key = guid, t = tnow, v = true }
+        return true
+    end
     local ok, blocked = pcall(RaijinLab.TraceLine, RaijinLab,
         px, py, (pz or 0) + 2, tx, ty, (tz or 0) + 2, 0x100111)
     if not ok then return nil end

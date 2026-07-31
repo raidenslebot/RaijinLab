@@ -59,32 +59,37 @@ echo.
 "%LOADER%" --dll "%DLL%"
 set ERR=%ERRORLEVEL%
 echo.
-if %ERR% equ 0 (
-  echo [OK] inject finished exit=0
-  echo [OK] Watch for: BRIDGE ONLINE ver=...
-  echo [OK] Then in-game: /raijin status   (HasRuntime should be true^)
-  echo.
-  echo [!] Do NOT /reload just for the runtime — /reload WIPES the bridge
-  echo     binding and forces a rebind (~2s). Only /reload if you deployed
-  echo     new addon Lua files; then wait for a second BRIDGE ONLINE line.
-  echo.
-  echo ------------------------------------------------------------
-  echo  LIVE LOG - every runtime event streams below.
-  echo  Window stays open. Ctrl+C stops tail only; then press a key.
-  echo  Log file: %LOG%
-  echo ------------------------------------------------------------
-  echo.
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Host '[tail] waiting for runtime.log ...'; $p='%LOG%'; if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p -Force | Out-Null }; Get-Content -LiteralPath $p -Wait -Tail 100"
-) else (
-  echo [FAIL] inject exit=%ERR%
-  echo Common causes:
-  echo   - Ascension.exe not running / not in-world
-  echo   - Need admin
-  echo   - Wrong DLL arch
-  echo.
-  echo Last log lines:
-  if exist "%LOG%" type "%LOG%"
-)
+if %ERR% equ 0 goto inject_ok
+goto inject_fail
+
+:inject_ok
+echo [OK] inject finished exit=0
+echo [OK] Watch for: BRIDGE ONLINE ver=...
+echo [OK] Then in-game: /raijin status
+echo.
+echo [!] Do NOT /reload just for the runtime - /reload WIPES the bridge
+echo     binding and forces a rebind about 2s. Only /reload if you deployed
+echo     new addon Lua files; then wait for a second BRIDGE ONLINE line.
+echo.
+echo ------------------------------------------------------------
+echo  LIVE LOG - every runtime event streams below.
+echo  Window stays open. Ctrl+C stops tail only; then press a key.
+echo  Log file: %LOG%
+echo ------------------------------------------------------------
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Write-Host '[tail] waiting for runtime.log ...'; $p='%LOG%'; if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p -Force | Out-Null }; Get-Content -LiteralPath $p -Wait -Tail 100"
+goto end
+
+:inject_fail
+echo [FAIL] inject exit=%ERR%
+echo Common causes:
+echo   - Ascension.exe not running / not in-world
+echo   - Need admin
+echo   - Wrong DLL arch
+echo.
+echo Last log lines:
+if exist "%LOG%" type "%LOG%"
+goto end
 
 :end
 echo.

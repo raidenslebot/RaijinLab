@@ -167,6 +167,9 @@ function RaijinLab:RunCommand(msg)
             local hasRt = RaijinLab:HasRuntime()
             SendSystemMessage("|cff7ec8e3RaijinLab|r HasRuntime=" .. tostring(hasRt) ..
                 " ver=" .. tostring(hasRt and RaijinLab:RuntimeVersion() or "nil"))
+            if not hasRt and RaijinLab.RuntimeDetectDiag then
+                SendSystemMessage("|cff7ec8e3RaijinLab|r detect: " .. tostring(RaijinLab:RuntimeDetectDiag()))
+            end
         elseif (a == "stats" or a == "metrics") and Ex then
             local lines = Ex.metrics_report and Ex.metrics_report() or { "no metrics" }
             SendSystemMessage("|cff7ec8e3RaijinLab|r rotation metrics:")
@@ -1965,6 +1968,9 @@ function RaijinLab:RunCommand(msg)
         end
         table.insert(out, "  RaijinLab:HasRuntime()   = " .. tostring(RaijinLab:HasRuntime()))
         table.insert(out, "  RaijinLab:RuntimeVersion = " .. tostring(RaijinLab:RuntimeVersion()))
+        if RaijinLab.RuntimeDetectDiag then
+            table.insert(out, "  detect: " .. tostring(RaijinLab:RuntimeDetectDiag()))
+        end
         local d = RaijinLab:RuntimeCall("DiagPlayer")
         table.insert(out, "  DiagPlayer               = " .. tostring(d))
         if RaijinLab.RotationExecutor and RaijinLab.RotationExecutor.status then

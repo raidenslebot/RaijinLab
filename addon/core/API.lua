@@ -1318,6 +1318,22 @@ function RaijinLab:ObjectPosition(object)
             local g2 = UnitGUID and UnitGUID(object)
             if g2 then raw = RLCall("ObjectPosition", tostring(g2)) end
         end
+        -- Hostiles pack snapshot (NearbyHostiles) — same frame positions for
+        -- multi-dot GUIDs when ObjectPtr is cold. Measurement, not a guess.
+        if (type(raw) ~= "string" or raw == "0.000|0.000|0.000") then
+            local W = RaijinLab.World
+            local c = W and W._hostiles_cache
+            local key = tostring(resolved or object or "")
+            if c and c.by_guid and key ~= "" then
+                local row = c.by_guid[key] or c.by_guid[key:lower()]
+                if not row and type(object) == "string" then
+                    row = c.by_guid[tostring(object)]
+                end
+                if row and row.x and row.y and not (row.x == 0 and row.y == 0) then
+                    return row.x, row.y, row.z or 0
+                end
+            end
+        end
     end
     if type(raw) == "string" then
         local x, y, z = raw:match("([%-%d%.]+)|([%-%d%.]+)|([%-%d%.]+)")

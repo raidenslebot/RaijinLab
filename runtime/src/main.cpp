@@ -100,14 +100,22 @@ static DWORD WINAPI MainThread(LPVOID param) {
     // NOTE (L1 exception): initial Register is still off main-thread — without
     // it IsLinuxClient is never bound. That is acceptable ONLY after in-world.
     bool registered = false;
+    bool everRegistered = false; // after first success, /reload can rebind faster
     void* lastL = nullptr;
     int settle = 0;          // ticks since this lua_State went stable
     int inWorldStreak = 0;   // consecutive ticks with flag==1
     int failBackoff = 0;     // ticks to wait after a failed Register
     int tick = 0;
-    constexpr int kMinSettle       = 60;  // ~3 s stable L before we even look
-    constexpr int kInWorldStreak   = 40;  // ~2 s continuous flag==1 required
-    constexpr int kFailBackoff     = 100; // ~5 s after failed register before retry
+    // First bind of the session: conservative (crash lesson #132).
+    constexpr int kMinSettleFirst    = 60;  // ~3 s
+    constexpr int kInWorldStreakFirst = 40; // ~2 s
+    // Rebind after /reload: IsLinuxClient is wiped from _G but the world is
+    // already live. Wait only long enough for the new VM to finish ADDON_LOADED.
+    // (Log proof 2026-07-31: BRIDGE ONLINE then L changes — addon went blind
+    // until a full 5s settle; users checked status immediately → "no runtime".)
+    constexpr int kMinSettleRebind    = 24; // ~1.2 s
+    constexpr int kInWorldStreakRebind = 16; // ~0.8 s
+    constexpr int kFailBackoff       = 60;  // ~3 s after failed Register
 
     while (g_run) {
         if (GetAsyncKeyState(VK_END) & 1) {
@@ -117,14 +125,14 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
         void* L = RL::Game::Addr::LuaState();
         if (L != lastL) {
-            RL::Log::Warn("lua_State %p -> %p", lastL, L);
+            RL::Log::Warn("lua_State %p -> %p%s", lastL, L,
+                          everRegistered ? " (need REBIND after /reload)" : "");
             lastL = L;
             registered = false;
             settle = 0;
             inWorldStreak = 0;
             failBackoff = 0;
-            // A new lua_State means /reload wiped _G - clear the latch so the
-            // next Register() truly re-binds into the new _G.
+            // /reload wiped _G — latch must clear so Register truly rebinds.
             RL::Bridge::ResetRegistrationState();
         }
 
@@ -140,28 +148,32 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
         if (!secondary && L && !registered) {
             ++settle;
-            // STRICT: flag must be 1 for kInWorldStreak consecutive ticks.
-            // No timeout that registers into a half-built / glue VM.
-            const bool worldReady = (flag == 1) && (inWorldStreak >= kInWorldStreak);
-            if (settle >= kMinSettle && worldReady && failBackoff == 0) {
+            const int needSettle = everRegistered ? kMinSettleRebind : kMinSettleFirst;
+            const int needWorld  = everRegistered ? kInWorldStreakRebind : kInWorldStreakFirst;
+            // STRICT: flag must be 1 for needWorld consecutive ticks.
+            // Never register on glue / load screen (flag!=1).
+            const bool worldReady = (flag == 1) && (inWorldStreak >= needWorld);
+            if (settle >= needSettle && worldReady && failBackoff == 0) {
                 if (RL::Bridge::Register()) {
                     registered = true;
-                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d inWorldStreak=%d",
-                                  RL::Bridge::Version(), L, flag, settle, inWorldStreak);
+                    everRegistered = true;
+                    RL::Log::Warn("BRIDGE ONLINE ver=%s L=%p flag=%d settle=%d inWorldStreak=%d rebind=%d",
+                                  RL::Bridge::Version(), L, flag, settle, inWorldStreak,
+                                  everRegistered && settle <= kMinSettleRebind + 5 ? 1 : 0);
                 } else {
-                    // Do NOT hammer Register during load — that is what #132 was.
                     RL::Log::Warn("Register failed - backoff %d ticks (flag=%d)",
                                   kFailBackoff, flag);
                     failBackoff = kFailBackoff;
-                    inWorldStreak = 0; // require a fresh in-world streak
+                    inWorldStreak = 0;
                 }
             }
         }
 
         ++tick;
-        if ((tick % 100) == 0) {   // ~5 s heartbeat
-            RL::Log::Info("heartbeat reg=%d sec=%d flag=%d settle=%d inWorld=%d L=%p",
-                          (int)registered, (int)secondary, flag, settle,
+        // Heartbeat every ~2.5s so a stuck rebind is obvious in the inject tail.
+        if ((tick % 50) == 0) {
+            RL::Log::Info("heartbeat reg=%d ever=%d sec=%d flag=%d settle=%d inWorld=%d L=%p",
+                          (int)registered, (int)everRegistered, (int)secondary, flag, settle,
                           inWorldStreak, L);
         }
 

@@ -53,15 +53,33 @@ function RL:RuntimeVersion()
     return nil
 end
 
+-- Why HasRuntime is false (for /raijin status). Distinguishes stock stub vs missing.
+function RL:RuntimeDetectDiag()
+    local t = type(IsLinuxClient)
+    if t ~= "function" then
+        return "IsLinuxClient type=" .. tostring(t) .. " (not injected or wiped)"
+    end
+    local ok, ver = pcall(IsLinuxClient, "GetRuntimeVersion")
+    if not ok then
+        return "probe error: " .. tostring(ver)
+    end
+    if is_our_version(ver) then
+        return "ok ver=" .. tostring(ver)
+    end
+    -- Stock 3.3.5 stub: function exists, returns nil / wrong value
+    return "stock IsLinuxClient (bridge not bound yet — wait for BRIDGE ONLINE after inject//reload; do not /reload after inject unless deploying addon files)"
+end
+
 function RL:AssertRuntime(feature)
     if self:HasRuntime() then
         return true
     end
     if not self._runtime_warned then
         self._runtime_warned = true
-        print("|cff7ec8e3RaijinLab|r: runtime not loaded - privileged features disabled (" ..
+        print("|cff7ec8e3RaijinLab|r: runtime not detected (" ..
                   tostring(feature or "generic") .. ")")
-        print("|cff7ec8e3RaijinLab|r: inject AFTER fully in-world (not login/loading screen)")
+        print("|cff7ec8e3RaijinLab|r: " .. tostring(self:RuntimeDetectDiag()))
+        print("|cff7ec8e3RaijinLab|r: inject IN-WORLD, wait for BRIDGE ONLINE in inject log, then /raijin status — avoid /reload right after inject")
     end
     return false
 end

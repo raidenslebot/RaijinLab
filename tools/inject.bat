@@ -61,7 +61,12 @@ set ERR=%ERRORLEVEL%
 echo.
 if %ERR% equ 0 (
   echo [OK] inject finished exit=0
-  echo [OK] Next: /reload in-game, then /raijin status
+  echo [OK] Watch for: BRIDGE ONLINE ver=...
+  echo [OK] Then in-game: /raijin status   (HasRuntime should be true^)
+  echo.
+  echo [!] Do NOT /reload just for the runtime — /reload WIPES the bridge
+  echo     binding and forces a rebind (~2s). Only /reload if you deployed
+  echo     new addon Lua files; then wait for a second BRIDGE ONLINE line.
   echo.
   echo ------------------------------------------------------------
   echo  LIVE LOG - every runtime event streams below.

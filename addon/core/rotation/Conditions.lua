@@ -1184,22 +1184,8 @@ Conditions.register("aura_search", {
             return false
         end
 
-        -- Prefer a unit that is NOT the current client target so multi-dot
-        -- spreads (Plague Strike was always "best=current" when current also
-        -- lacked the debuff, masking the GUID cast path).
+        -- list is already ranked by runtime: closest first, FOV centre on ties.
         local best = list[1]
-        do
-            local cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
-            if cur then
-                for i = 1, #list do
-                    local c = list[i]
-                    if c and c.guid and tostring(c.guid) ~= tostring(cur) then
-                        best = c
-                        break
-                    end
-                end
-            end
-        end
         ctx.aura_search_hit = {
             token = nil,
             guid = best.guid,

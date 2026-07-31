@@ -1225,6 +1225,10 @@ static int SoftPodsSeh() {
 static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
     if (!local) return false;
     if (now < g_rebindQuietUntil) return false; // FrameXML rebind flicker only
+    // Player must resolve a real position (not just a GUID) before any walk.
+    Vec3 pp = Position(local);
+    if (std::fabs(pp.x) < 0.01f && std::fabs(pp.y) < 0.01f)
+        return false;
     if (!g_firstPlayerMs) g_firstPlayerMs = now;
     // Cold inject only: short settle until first successful snapshot ever.
     if (!g_everWalkedOk && (now - g_firstPlayerMs) < kColdSettleMs)
@@ -1585,6 +1589,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     struct Hit {
         uint64_t g; int entry;
         float center, edge;
+        float face_err; // |delta yaw| rad — 0 = dead center of FOV
         int face, hp, mhp;
     };
     std::vector<Hit> cands;
@@ -1598,6 +1603,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
             if (o.maxHealth > 0 && o.health <= 0) return;
             if (o.unitFlags & kUF_NOT_SELECTABLE) return;
             float cx = 999.f, edge = 999.f;
+            float face_err = 3.14159265f; // worst until measured
             int face = 1;
             if (havePlayer) {
                 float dx = o.pos.x - playerPos.x;
@@ -1606,14 +1612,21 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                 if (cx > maxRange + 1.f) return;
                 edge = cx - 3.f;
                 if (edge < 0.f) edge = 0.f;
-                if (haveFace)
-                    face = IsFacingPos(playerFace, playerPos.x, playerPos.y,
-                                       o.pos.x, o.pos.y, kDefaultCastFaceArc) ? 1 : 0;
+                if (haveFace) {
+                    float ang = std::atan2(dy, dx);
+                    float diff = ang - playerFace;
+                    const float pi = 3.14159265f;
+                    const float two = 6.2831853f;
+                    while (diff > pi) diff -= two;
+                    while (diff < -pi) diff += two;
+                    face_err = std::fabs(diff);
+                    face = (face_err <= kDefaultCastFaceArc) ? 1 : 0;
+                }
             }
             bool has = hasAura(o.guid);
             if (wantMissing) { if (has) return; }
             else { if (!has) return; }
-            cands.push_back({ o.guid, o.entry, cx, edge, face, o.health, o.maxHealth });
+            cands.push_back({ o.guid, o.entry, cx, edge, face_err, face, o.health, o.maxHealth });
         };
         for (const auto& o : g_byType[(int)ObjectType::Unit])
             consider(o);
@@ -1627,10 +1640,16 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     size_t nh = cands.size();
     if (nh > maxN) nh = maxN;
     if (nh > 12) nh = 12;
+    // Ranking (user): 1) closest to me  2) on distance tie, closer to FOV centre
+    // (smallest |face_err|). Facing cone is NOT a hard primary key.
     if (nh > 0) {
         std::partial_sort(cands.begin(), cands.begin() + (std::ptrdiff_t)nh, cands.end(),
                           [](const Hit& a, const Hit& b) {
-                              if (a.face != b.face) return a.face > b.face;
+                              const float dist_tie = 0.75f; // yards — "same range"
+                              if (std::fabs(a.center - b.center) > dist_tie)
+                                  return a.center < b.center;
+                              if (std::fabs(a.face_err - b.face_err) > 0.02f)
+                                  return a.face_err < b.face_err;
                               return a.center < b.center;
                           });
     }

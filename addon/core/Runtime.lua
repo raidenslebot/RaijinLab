@@ -146,9 +146,23 @@ function RL:ArmRuntimeSystems()
     if self._runtime_armed then return end
     if not self:HasRuntime() then return end
     if UnitName and not UnitName("player") then return end
+    -- World-ready gate (no wall-clock delay): refuse arm until player position
+    -- resolves. Live crash 2026-07-31 15:09 — PEW + om.enable=1 while medium
+    -- bridge had no local GUID bits and ObjectPosition was still cold → AV.
+    -- should_arm retries every 0.5s; do NOT set _runtime_armed until this passes.
+    do
+        local ready = false
+        if self.ObjectPosition then
+            local ok, x, y = pcall(self.ObjectPosition, self, "player")
+            if ok and type(x) == "number" and type(y) == "number"
+                and (math.abs(x) > 0.01 or math.abs(y) > 0.01) then
+                ready = true
+            end
+        end
+        if not ready then return end
+    end
     self._runtime_armed = true
-    -- ONE-SHOT arm. No delayed OM enable. No freeze. No thrash.
-    -- Native Refresh is SEH-guarded and settles itself after first local GUID.
+    -- ONE-SHOT arm. No freeze thrash. Native Refresh SEH-settles itself.
     -- Flipping om.enable 0→1 repeatedly was the suite crash (rising-edge warm).
     pcall(function()
         self:RuntimeCall("SetSystemVar", "taint.patch", "0")

@@ -387,14 +387,13 @@ local function format_trace_compact(trace)
             local why
             if v == "CAST" then
                 why = "CAST"
-            elseif v == "cond_fail" then
-                why = tostring(tr.why or "cond")
-            elseif v == "not_ready" then
-                why = tostring(tr.why or "wait")
+            elseif v == "cond_fail" or v == "not_ready" or v == "basic_deny" then
+                -- Always surface the real gate (was hiding as "basic_deny").
+                why = tostring(tr.why or v)
             else
                 why = v
             end
-            if #why > 12 then why = why:sub(1, 10) .. ".." end
+            if #why > 14 then why = why:sub(1, 12) .. ".." end
             parts[#parts + 1] = string.format("%s=%s", short, why)
         end
     end
@@ -1855,6 +1854,15 @@ function Executor.attempt_action(action, ctx)
     end
     if #try_list == 0 and guid then try_list[1] = { guid = guid } end
 
+    local ground_self = is_ground_self_aoe(sid, name)
+    -- Ground/self casts (Consecration, optional buffs): no unit GUID required.
+    -- Live bug: policy=optional (target_exists any + ground-AoE force) left
+    -- try_list empty → last_why=no_candidate forever, rotation froze, client
+    -- crashed ~4s later when OM re-armed mid-stuck combat.
+    local self_cast_ok = ground_self
+        or policy == "optional" or policy == "forbid"
+        or (not needs_enemy and not search)
+
     local function restore_selection()
         if not preserve_selection or not Act then return end
         local cur = (UnitGUID and UnitExists and UnitExists("target") and UnitGUID("target")) or nil
@@ -1927,15 +1935,29 @@ function Executor.attempt_action(action, ctx)
                     blacklist_guid(cg, 0.15, last_why)
                 end
             else
-                local cok = Act.CastSpell(cast_sid, cg)
+                -- Ground AoE with a GUID still wires without face/target change.
+                local cok = Act.CastSpell(cast_sid, ground_self and nil or cg)
                 if cok then
                     ok = true
-                    wire_guid = cg
-                    guid = cg
+                    if not ground_self then
+                        wire_guid = cg
+                        guid = cg
+                    end
                     break
                 end
                 last_why = "cast_failed"
             end
+        end
+    end
+
+    -- No unit candidates: self/ground cast path (Consecration etc.).
+    if not ok and #try_list == 0 and self_cast_ok then
+        local cok = Act.CastSpell(cast_sid)
+        if cok then
+            ok = true
+            last_why = "ok"
+        else
+            last_why = "cast_failed"
         end
     end
 
@@ -1952,6 +1974,12 @@ function Executor.attempt_action(action, ctx)
         Executor._next_gap = 0
         Executor._pending = nil
         clear_sid_soft_locks(sid)
+        -- Brief soft lock so a broken slot cannot monopolize every tick.
+        if tostring(last_why or ""):find("no_candidate", 1, true)
+            or tostring(last_why or ""):find("cast_failed", 1, true) then
+            Executor._recent = Executor._recent or {}
+            Executor._recent[sid] = now() + 0.35
+        end
         return false, tostring(last_why or "cast_failed") .. ":" .. tostring(name)
     end
 

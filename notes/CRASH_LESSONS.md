@@ -44,11 +44,28 @@ run on the same frames as:
 `SetSystemVar("om.enable","1")` on the same frame. PEW `ArmRuntimeSystems`
 delayed timers could also re-enable mid-warm. Client hard-crashed.
 
-**Rule:** Only `Master.start_all` timers may re-enable OM after suite-on.
+**Proof (rotation-only thrash):** 2026-07-31 13:43 master ON
+`modules=rotation` only still froze OM + re-armed at +6s/+8s while stuck on
+`no_candidate:Consecration` mid-combat → hard crash ~4s later. Freezing OM is
+for **heavy** modules (quest/grind/gather), not rotation alone.
+
+**Rule:** Only `Master.start_all` timers may re-enable OM after **heavy** suite-on.
+- Rotation-only / combat-only: **never** DestroyObjectManager or force om.enable=0
 - `Suite.start` must NEVER set `om.enable` or `InitObjectManager`
 - `Suite.ensure_om` / `tick` fail-closed while `Master.in_suite_warm()`
 - PEW `enable_om` timers must check `in_suite_warm` / `_om_gen`
 - Runtime rising-edge `om.enable` always restarts list-only warm-up
+
+## Ground AoE cast path (Consecration) — freeze → crash
+
+**Proof:** `Consecration=CAST` then `wait no_candidate:Consecration x238` with
+target present. Policy becomes `optional` (target_exists any + ground-AoE rule),
+so `needs_enemy=false` → no GUID in try_list → empty wire loop → infinite
+no_candidate. Higher slots (PS/IT) denied; list stuck; OM re-arm kills client.
+
+**Rule:** Ground/self optional casts MUST `CastSpell(id)` with no unit when
+try_list is empty. Soft-lock failed no_candidate slots (~0.35s) so they cannot
+monopolize every tick.
 
 ## Mandatory stagger (current policy)
 

@@ -394,9 +394,10 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
     MainThread::PulseFromMainThread();
 
     lua_State* L = g_currentL;
-    RL::Log::Info("CastSpell enter id=%d guid=0x%llX L=%p hw=%d",
-                  spellId, (unsigned long long)targetGuid, (void*)L,
-                  (int)Taint::HardwareGatesApplied());
+    // Success path is Trace-only (Warn every cast spiked FPS under RL_LOG=1).
+    RL::Log::Trace("CastSpell enter id=%d guid=0x%llX L=%p hw=%d",
+                   spellId, (unsigned long long)targetGuid, (void*)L,
+                   (int)Taint::HardwareGatesApplied());
 
     // Readiness is Lua-side (Executor GetSpellCooldown). Do NOT nested-pcall
     // GetSpellCooldown here — extra VM re-entry during IsLinuxClient is avoidable
@@ -421,10 +422,12 @@ bool CastSpell(int spellId, uint64_t targetGuid) {
             WriteClientTargetGuid(prev);
         if (nrc > 0) {
             g_cast_ok++;
-            RL::Log::Warn("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX now=0x%llX ok=%d",
-                          spellId, (unsigned long long)targetGuid,
-                          (unsigned long long)prev, (unsigned long long)nowSel,
-                          g_cast_ok);
+            // Throttle success logs: every 32nd cast (diagnostics without I/O storm).
+            if ((g_cast_ok & 31) == 1) {
+                RL::Log::Info("CastSpell path=runtime_guid id=%d guid=0x%llX prev=0x%llX ok=%d",
+                              spellId, (unsigned long long)targetGuid,
+                              (unsigned long long)prev, g_cast_ok);
+            }
             return true;
         }
         if (nrc < 0)

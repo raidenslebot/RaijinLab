@@ -1747,12 +1747,12 @@ function World.build_context(opts)
     local cache_key = string.format("%d:%d:%d:%s:%s:%s:%d:%d",
         nk, sk, ss, tostring(sid0), tostring(sidN), tostring(tguid), combat, sl)
     local cc = World._ctx_frame_cache
-    -- In combat with a target: reuse for 1 frame only. OOC / no target: up to 50ms.
-    local ttl = (combat == 1 and tguid ~= "-") and 0.0 or 0.05
+    -- Combat: reuse ~16ms (one frame) for identical fingerprint. OOC: 50ms.
+    -- Same-frame always hits. Cuts duplicate build_context work at 40–60Hz.
+    local ttl = (combat == 1) and 0.016 or 0.05
     if cc and cc.key == cache_key and cc.ctx and (tnow - (cc.t or 0)) <= ttl then
         return cc.ctx
     end
-    -- Same GetTime stamp = same frame even when ttl is 0.
     if cc and cc.key == cache_key and cc.ctx and cc.t == tnow then
         return cc.ctx
     end

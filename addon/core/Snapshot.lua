@@ -199,11 +199,33 @@ function S.tick(force)
         and RaijinLab.Master.suppressed() then
         gap = 5.0
     end
+    -- UI open / OOC: amortize snapshot domains (major hitch when opening menu).
+    if not force then
+        local Menu = RaijinLab and RaijinLab.Menu
+        local ui = (Menu and Menu.frame and Menu.frame.IsShown and Menu.frame:IsShown())
+            or (RaijinLab and RaijinLab._ui_open_hint)
+        if ui then
+            gap = 2.5
+        elseif not (UnitAffectingCombat and UnitAffectingCombat("player")) then
+            gap = 1.5
+        end
+    end
     if not force and (t - (S._t or 0)) < gap then return end
     S._t = t
     local Tel = TT()
     if not Tel then return end
-    for _, d in ipairs(DOMAINS) do
+    -- When UI open: only player+perf+rotation (drop world mesh dumps).
+    local Menu = RaijinLab and RaijinLab.Menu
+    local ui = (Menu and Menu.frame and Menu.frame.IsShown and Menu.frame:IsShown())
+    local domains = DOMAINS
+    if ui and not force then
+        domains = {
+            { "player", S.player },
+            { "perf", S.perf },
+            { "rotation", S.rotation },
+        }
+    end
+    for _, d in ipairs(domains) do
         local name, fn = d[1], d[2]
         local ok, kv = pcall(fn)
         if ok and kv and next(kv) then

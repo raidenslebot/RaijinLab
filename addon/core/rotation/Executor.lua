@@ -910,8 +910,37 @@ local function live_castable(sid, name, opts)
     return true, nil
 end
 
--- Authoritative per-spell readiness from the client THIS frame.
--- Overwrites ctx cooldowns / usable / range / instant so evaluate never uses stale data.
+-- Static meta cache (name / instant / known) — rarely changes mid-session.
+local _spell_meta = {}
+local function spell_meta(id)
+    local m = _spell_meta[id]
+    if m then return m end
+    local name = spell_name(id)
+    local instant = true
+    if GetSpellInfo then
+        local _, _, _, _, _, _, castTime = GetSpellInfo(id)
+        castTime = tonumber(castTime)
+        if castTime and castTime > 0 then instant = false end
+    end
+    local known = true
+    if IsSpellKnown then
+        local okk, k = pcall(IsSpellKnown, id)
+        if okk and k == false then
+            known = false
+            if GetSpellInfo then
+                local okn, sn = pcall(GetSpellInfo, id)
+                if okn and sn and sn ~= "" then known = true end
+            end
+        end
+    end
+    local minR, maxR = spell_range_info(id)
+    m = { name = name, instant = instant, known = known, minR = minR, maxR = maxR }
+    _spell_meta[id] = m
+    return m
+end
+
+-- Authoritative per-spell readiness THIS frame.
+-- Optimized: one shared range model, cached meta, light path under GCD.
 local function fill_live_spell_state(ctx, spell_ids)
     ctx = ctx or {}
     ctx.cooldowns = ctx.cooldowns or {}
@@ -920,96 +949,111 @@ local function fill_live_spell_state(ctx, spell_ids)
     ctx.spell_instant = ctx.spell_instant or {}
     ctx.spell_targeted = ctx.spell_targeted or {}
     ctx.known_spells = ctx.known_spells or {}
+    ctx.spell_range_diag = ctx.spell_range_diag or {}
     local t = now()
     local gcd_rem = 0
     local has_target = UnitExists and UnitExists("target")
+    local gcd_lock = ctx.gcd_active and true or false
+    -- Shared range model once per tick (was N full ObjectPosition fan-outs).
+    local edge, aoe, center, pr, tr, precise
+    if has_target and not gcd_lock then
+        edge, aoe, center, pr, tr, precise = live_range_model(ctx)
+    end
     for _, id in ipairs(spell_ids or {}) do
         id = tonumber(id) or 0
         if id > 0 then
-            local name = spell_name(id)
-            -- Cooldown
+            local meta = spell_meta(id)
+            local name = meta.name
+            -- Cooldown (id first — cheaper; name fallback if needed)
             local rem = 0
             if GetSpellCooldown then
-                local s, d = GetSpellCooldown(name)
-                if (not s or s == 0) then s, d = GetSpellCooldown(id) end
+                local s, d = GetSpellCooldown(id)
+                if (not d or d == 0) and name then s, d = GetSpellCooldown(name) end
                 s, d = tonumber(s) or 0, tonumber(d) or 0
                 if d > 0 then
                     rem = (s + d) - t
                     if rem < 0 then rem = 0 end
-                    -- Track real GCD window from any short CD
                     if d <= 1.6 and rem > gcd_rem then gcd_rem = rem end
                 end
             end
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
-            -- Usable (resource/stance) - definitive false only
-            if IsUsableSpell then
-                local u, nomana = IsUsableSpell(name)
-                if u == nil then u, nomana = IsUsableSpell(id) end
+
+            -- Usable: skip dual probes under GCD (only off_gcd can cast).
+            if not gcd_lock and IsUsableSpell then
+                local u, nomana = IsUsableSpell(id)
+                if u == nil and name then u, nomana = IsUsableSpell(name) end
                 local can = not not u
                 if nomana then can = false end
                 ctx.spell_usable[id] = can
                 ctx.spell_usable[tostring(id)] = can
+            elseif ctx.spell_usable[id] == nil then
+                ctx.spell_usable[id] = true
+                ctx.spell_usable[tostring(id)] = true
             end
-            -- Always probe live client state. No sticky hard-blocks.
-            ctx.spell_range_diag = ctx.spell_range_diag or {}
-            ctx.spell_sticky = ctx.spell_sticky or {}
+
             local targeted = false
             local inr = true
-            if has_target then
-                local ok, why, diag = spell_in_range_vs_target(id, name, ctx)
-                ctx.spell_range_diag[id] = diag
-                ctx.spell_range_diag[tostring(id)] = diag
-                local self_aoe = (diag and diag.kind == "aoe") or is_self_aoe_spell(id, name)
-                if not ok and (why == "oor" or why == "facing" or why == "los") then
-                    inr = false
-                    targeted = not self_aoe
-                elseif self_aoe then
-                    targeted = false
-                else
-                    local _, maxR_live = spell_range_info(id)
-                    if maxR_live and maxR_live > 0 then targeted = true end
-                    if IsSpellInRange and name and name ~= "" then
-                        local rok, r = pcall(IsSpellInRange, name, "target")
-                        if rok and r ~= nil then targeted = true end
-                    end
+            local self_aoe = is_self_aoe_spell(id, name) or is_ground_self_aoe(id, name)
+            if gcd_lock then
+                -- Keep last range verdict; only CD matters until GCD free.
+                if ctx.spell_in_range[id] == nil then
+                    ctx.spell_in_range[id] = true
+                    ctx.spell_in_range[tostring(id)] = true
                 end
+            elseif self_aoe or is_ground_self_aoe(id, name) then
+                inr = true
+                targeted = false
+                ctx.spell_range_diag[id] = { sid = id, name = name, kind = "ground_aoe", verdict = "in_ground_aoe" }
+            elseif has_target then
+                -- Cheap band check from shared model; client IsSpellInRange once.
+                local minR, maxR = meta.minR, meta.maxR
+                local band = (maxR and maxR > 0) and maxR or 5.0
+                local client_r = nil
+                if IsSpellInRange and name and name ~= "" then
+                    local rok, r = pcall(IsSpellInRange, name, "target")
+                    if rok then client_r = r end
+                end
+                if client_r == 0 then
+                    inr = false
+                    targeted = true
+                elseif client_r == 1 then
+                    inr = true
+                    targeted = true
+                    if precise and edge and maxR and maxR > 0 and edge > (maxR + 0.75) then
+                        inr = false
+                    end
+                elseif precise and edge ~= nil then
+                    targeted = (maxR and maxR > 0) and true or false
+                    if minR and minR > 0 and edge + RANGE_EPS < minR then inr = false
+                    elseif edge > band + RANGE_EPS then inr = false
+                    end
+                else
+                    -- No measure: fail closed for targeted.
+                    if maxR and maxR > 0 then targeted = true; inr = false end
+                end
+                ctx.spell_range_diag[id] = {
+                    sid = id, name = name, minR = minR, maxR = maxR, band = band,
+                    edge = edge, center = center, precise = precise and true or false,
+                    client = client_r == nil and "nil" or tostring(client_r),
+                    verdict = inr and "in" or "oor",
+                }
             else
-                local minR, maxR = spell_range_info(id)
-                if maxR and maxR > 0 and not is_self_aoe_spell(id, name) then
+                local maxR = meta.maxR
+                if maxR and maxR > 0 and not self_aoe then
                     targeted = true
                     inr = false
                 end
-                ctx.spell_range_diag[id] = { sid = id, name = name, minR = minR, maxR = maxR, verdict = "no_target" }
+                ctx.spell_range_diag[id] = { sid = id, name = name, minR = meta.minR, maxR = maxR, verdict = "no_target" }
             end
             ctx.spell_in_range[id] = inr
             ctx.spell_in_range[tostring(id)] = inr
             ctx.spell_targeted[id] = targeted
             ctx.spell_targeted[tostring(id)] = targeted
-            -- Instant?
-            local instant = true
-            if GetSpellInfo then
-                local _, _, _, _, _, _, castTime = GetSpellInfo(id)
-                castTime = tonumber(castTime)
-                if castTime and castTime > 0 then instant = false end
-            end
-            ctx.spell_instant[id] = instant
-            ctx.spell_instant[tostring(id)] = instant
-            -- Known: Ascension custom IDs often fail IsSpellKnown while still
-            -- castable. If GetSpellInfo resolves a name, treat as known.
-            local k = true
-            if IsSpellKnown then
-                local okk, known = pcall(IsSpellKnown, id)
-                if okk and known == false then
-                    k = false
-                    if GetSpellInfo then
-                        local okn, sn = pcall(GetSpellInfo, id)
-                        if okn and sn and sn ~= "" then k = true end
-                    end
-                end
-            end
-            ctx.known_spells[id] = k
-            ctx.known_spells[tostring(id)] = k
+            ctx.spell_instant[id] = meta.instant
+            ctx.spell_instant[tostring(id)] = meta.instant
+            ctx.known_spells[id] = meta.known
+            ctx.known_spells[tostring(id)] = meta.known
         end
     end
     ctx.live_gcd_remaining = gcd_rem
@@ -2582,14 +2626,7 @@ function Executor._tick_body()
         ctx._has_no_target_slot = any_nt
     end
 
-    -- AUTHORITATIVE live client readiness THIS frame (overwrites snapshot).
-    fill_live_spell_state(ctx, spell_ids)
-    -- Corpse / Target Existence any|no_target policy overrides.
-    apply_slot_policy_overrides(ctx, rotation)
-
-    -- GCD freeze — ONLY real cast bar / channel / our short provisional clock.
-    -- NEVER treat a per-spell cooldown on slots 1..6 as global GCD (that froze
-    -- the entire rotation whenever any early ability had a CD remaining).
+    -- GCD freeze first so fill_live can take the light path under GCD.
     local casting_now = (UnitCastingInfo and UnitCastingInfo("player"))
         or (UnitChannelInfo and UnitChannelInfo("player"))
     local gcd_active = false
@@ -2598,16 +2635,24 @@ function Executor._tick_body()
     elseif t < (Executor._gcd_until or 0) then
         gcd_active = true
     end
-    -- Optional: real global GCD witness (short CD on the cast spell only is
-    -- handled in BasicRules per-slot via fill_live_spell_state / cooldowns).
     pend = Executor._pending
     if pend then
         ctx.pending_sid = pend.sid
         ctx.pending_no_gcd = (pend.no_gcd or pend.multidot) and true or false
-        -- Multi-dot / unconfirmed wire: do NOT lock the whole list.
         if not pend.off_gcd and not pend.no_gcd and not pend.multidot then
             gcd_active = true
         end
+    end
+    ctx.gcd_active = gcd_active
+
+    -- AUTHORITATIVE live client readiness THIS frame (overwrites snapshot).
+    fill_live_spell_state(ctx, spell_ids)
+    -- Corpse / Target Existence any|no_target policy overrides.
+    apply_slot_policy_overrides(ctx, rotation)
+
+    -- Recompute pending expiry (may free GCD) after fill.
+    pend = Executor._pending
+    if pend then
         local age = t - (pend.cast_t or t)
         local grace = pend.grace or 0.12
         if age > (grace + 0.05) then
@@ -2645,6 +2690,7 @@ function Executor._tick_body()
             end
             pend = nil
             ctx.pending_sid = nil
+            ctx.pending_no_gcd = nil
         end
     end
     -- Provisional GCD tracks real GCD (~0.75–1.5s) after wire. Cap only at
@@ -2657,6 +2703,14 @@ function Executor._tick_body()
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         gcd_active = false
+    end
+    -- Re-sync after pending expiry may have cleared GCD.
+    if not casting_now and t >= (Executor._gcd_until or 0) then
+        gcd_active = false
+        if pend and not pend.off_gcd and not pend.no_gcd and not pend.multidot
+            and t < (Executor._gcd_until or 0) then
+            gcd_active = true
+        end
     end
     ctx.gcd_active = gcd_active
     ctx.live_gcd_remaining = math.max(0, (Executor._gcd_until or 0) - t)
@@ -2976,29 +3030,34 @@ end
 
 -- Adaptive tick cadence: full rate when something can cast, calmer OOC / UI open.
 -- Capability unchanged — work is amortized, not dropped forever.
+local function ui_open()
+    if RaijinLab and RaijinLab._ui_open_hint then return true end
+    local Menu = RaijinLab and RaijinLab.Menu
+    if Menu and Menu.frame and Menu.frame.IsShown and Menu.frame:IsShown() then return true end
+    local Ed = RaijinLab and RaijinLab.RotationEditor
+    if Ed and Ed.frame and Ed.frame.IsShown and Ed.frame:IsShown() then return true end
+    return false
+end
+
 local function adaptive_tick_interval()
     if Executor._pending then return 0 end
-    -- Full rate in combat or with multi-dot / hostiles work.
-    if UnitAffectingCombat and UnitAffectingCombat("player") then return 0 end
+    local combat = UnitAffectingCombat and UnitAffectingCombat("player")
+    local ui = ui_open()
+    -- UI open: leave frame budget for paint (hitches when opening menu).
+    -- Combat still ~30Hz (not stopped); multi-dot remains fully capable.
+    if ui then
+        return combat and 0.033 or 0.08
+    end
+    -- Full rate in combat or with multi-dot / live target work.
+    if combat then return 0 end
     if UnitExists and UnitExists("target") then
         if UnitCanAttack and UnitCanAttack("player", "target")
             and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
             return 0
         end
     end
-    -- Rotation with aura_search: never drop to 80ms idle (misses pack swaps).
     local nc = Executor._needs_cache
-    if nc and nc.aura then return 0 end
-    -- Menu / editor open: leave headroom for UI paint (major hitch source).
-    if RaijinLab and RaijinLab._ui_open_hint then return 0.12 end
-    local Menu = RaijinLab and RaijinLab.Menu
-    if Menu and Menu.frame and Menu.frame.IsShown and Menu.frame:IsShown() then
-        return 0.12
-    end
-    local Ed = RaijinLab and RaijinLab.RotationEditor
-    if Ed and Ed.frame and Ed.frame.IsShown and Ed.frame:IsShown() then
-        return 0.12
-    end
+    if nc and nc.aura then return 0.016 end -- ~60Hz multi-dot OOC packs
     return 0.05 -- OOC no target, no aura_search
 end
 

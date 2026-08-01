@@ -908,10 +908,13 @@ local function live_castable(sid, name, opts)
     end
     -- IsUsableSpell greys targeted spells when client has no "target" unit even
     -- if we will CastSpell(guid). With aura_search_hit.guid, only trust nomana.
+    -- On Ascension, IsUsableSpell may return nil for custom spell IDs — treat
+    -- nil as "unknown, assume usable" (fail-open, server is final authority).
     if not opts.skip_usable and IsUsableSpell then
         local usable, nomana = IsUsableSpell(name)
         if usable == nil and sid then usable, nomana = IsUsableSpell(sid) end
-        if not usable then
+        -- nil=unknown → assume usable; only fail on explicit false or nomana
+        if usable == false then
             if nomana then return false, "no_resource" end
             if policy == "require" and not search_guid then
                 return false, "unusable"
@@ -995,10 +998,13 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[tostring(id)] = rem
 
             -- Usable: skip dual probes under GCD (only off_gcd can cast).
+            -- On Ascension custom spells, IsUsableSpell may return nil (unknown).
+            -- Treat unknown as usable — fail-open, server is final authority.
             if not gcd_lock and IsUsableSpell then
                 local u, nomana = IsUsableSpell(id)
                 if u == nil and name then u, nomana = IsUsableSpell(name) end
-                local can = not not u
+                -- nil=unknown (not on action bar or custom spell) → assume usable
+                local can = (u == nil) or (not not u)
                 if nomana then can = false end
                 ctx.spell_usable[id] = can
                 ctx.spell_usable[tostring(id)] = can

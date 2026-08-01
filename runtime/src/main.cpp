@@ -37,20 +37,12 @@ static DWORD WINAPI MainThread(LPVOID param) {
     RL::Log::Init("C:\\Ascension\\Workspace\\logs\\runtime.log");
     RL::Config::Init(cfgPath);
 
-    // Cold inject defaults. om.enable stays 0 until PEW arm (addon ArmRuntimeSystems)
-    // - Refresh already no-ops without an active player, but char-select Lua can
-    // still spam GetObjectCount; keep the list path quiet until fully in-world.
-    // After arm, om.enable=1 for the whole session (normal play). User may set 0
-    // to kill the world list; single-GUID reads keep working either way.
     RL::Config::Set("om.enable", "0");
-    // Taint stays ENTIRELY enabled for the session. The patches themselves are
-    // applied from the MAIN THREAD (see Dispatch's ArmUnlock) - never from this
-    // worker, which is what froze clients before. This flag only records intent.
     RL::Config::Set("taint.patch", "1");
     RL::Config::Flush();
 
-    RL::Log::Info("worker boot self=%p", self);
-    RL::Log::Info("env RL_LOG set (verbose file) + load-stealth applied in DllMain");
+    LOG_I("sys.boot", "self=%p ver=%s om=0 taint=0",
+          self, RL::Bridge::Version());
 
     // Single-instance guard. The previous code used an ANONYMOUS mutex, which
     // can never detect a second instance (each injection made its own unnamed
@@ -67,20 +59,16 @@ static DWORD WINAPI MainThread(LPVOID param) {
     }
 
     RL::Game::Offsets::InitFromPatterns();
-    RL::Log::Info("offsets ready Spell_C_CastSpell=0x%08X ObjectPtr=0x%08X",
-                  (unsigned)RL::Game::Offsets::F().Spell_C_CastSpell,
-                  (unsigned)RL::Game::Offsets::F().ClntObjMgrObjectPtr);
+    LOG_I("sys.offsets", "Spell_C=0x%08X ObjPtr=0x%08X",
+          (unsigned)RL::Game::Offsets::F().Spell_C_CastSpell,
+          (unsigned)RL::Game::Offsets::F().ClntObjMgrObjectPtr);
 
     RL::Lua::Init();
-    RL::Log::Info("lua api init done");
+    LOG_I("sys.lua", "api=%s", RL::Lua::Ready() ? "1" : "0");
 
-    // Control channel. Safe to open this early: the pipe thread only queues
-    // strings - it never touches Lua or the object manager. The ADDON drains the
-    // queue from its OnUpdate, i.e. on the game's main thread, which is the only
-    // place client state may be touched at all.
     RL::Ipc::Start();
 
-    RL::Log::Warn("worker %s start om=0 taint=0", RL::Bridge::Version());
+    LOG_W("sys.worker", "start ver=%s om=0 taint=0", RL::Bridge::Version());
 
     // Registration state machine (CRASH LESSON — permanent):
     //
@@ -138,7 +126,7 @@ static DWORD WINAPI MainThread(LPVOID param) {
         // Mark offline once so we force a real rebind when L returns.
         if (!L) {
             if (registered) {
-                RL::Log::Warn("lua_State null — bridge offline until rebind");
+                LOG_W("br.offline", "reason=null_L");
                 registered = false;
                 pendingRebind = everRegistered;
                 RL::Bridge::ResetRegistrationState();
@@ -161,8 +149,8 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
         if (L != lastL) {
             const bool rebind = everRegistered || pendingRebind;
-            RL::Log::Warn("lua_State %p -> %p%s", lastL, L,
-                          rebind ? " (REBIND)" : "");
+            LOG_W("br.rebind", "old=%p new=%p rebind=%s",
+                  lastL, L, rebind ? "1" : "0");
             lastL = L;
             registered = false;
             settle = 0;
@@ -172,11 +160,10 @@ static DWORD WINAPI MainThread(LPVOID param) {
             pendingRebind = false;
             RL::Bridge::ResetRegistrationState();
             // Freeze OM across rebind — FrameXML load + list walk = crash.
-            // Re-enable only via addon ArmRuntimeSystems after PEW.
             if (rebind || everRegistered) {
                 RL::Config::Set("om.enable", "0");
                 RL::Game::OM::OnLuaReload();
-                RL::Log::Warn("OM frozen for rebind (om.enable=0)");
+                LOG_W("om.frozen", "reason=rebind");
             }
         }
 
@@ -208,23 +195,19 @@ static DWORD WINAPI MainThread(LPVOID param) {
                                     && settle >= needMedSet;
 
             if ((pathStrong || pathMedium) && failBackoff == 0) {
-                // force=true: always FrameScript_RegisterFunction on new L
-                // (never skip as "already registered" after a wipe).
                 if (RL::Bridge::Register(true)) {
                     registered = true;
                     everRegistered = true;
                     pendingRebind = false;
                     mediumFailPenalty = 0;
-                    RL::Log::Warn(
-                        "BRIDGE ONLINE ver=%s L=%p bits=0x%X settle=%d strong=%d medium=%d via=%s",
-                        RL::Bridge::Version(), L, (unsigned)wbits, settle,
-                        strongStreak, mediumStreak,
-                        pathStrong ? "strong" : "medium");
+                    LOG_W("br.online", "ver=%s L=%p bits=0x%X settle=%d str=%d med=%d via=%s",
+                          RL::Bridge::Version(), L, (unsigned)wbits, settle,
+                          strongStreak, mediumStreak,
+                          pathStrong ? "strong" : "medium");
                 } else {
-                    RL::Log::Warn(
-                        "Register failed - backoff %d ticks bits=0x%X settle=%d via_would=%s",
-                        kFailBackoff, (unsigned)wbits, settle,
-                        pathStrong ? "strong" : "medium");
+                    LOG_W("br.regfail", "bits=0x%X settle=%d backoff=%d via=%s",
+                          (unsigned)wbits, settle, kFailBackoff,
+                          pathStrong ? "strong" : "medium");
                     failBackoff = kFailBackoff;
                     strongStreak = 0;
                     mediumStreak = 0;
@@ -234,14 +217,11 @@ static DWORD WINAPI MainThread(LPVOID param) {
             }
         }
 
-        ++tick;
-        // bits: flag|wf|conn|mgr|localPly|guid
         if ((tick % 40) == 0) {
-            RL::Log::Warn(
-                "heartbeat reg=%d ever=%d bits=0x%X settle=%d str=%d med=%d L=%p waiting=%d",
-                (int)registered, (int)everRegistered, (unsigned)wbits, settle,
-                strongStreak, mediumStreak, L,
-                (!registered && L) ? 1 : 0);
+            LOG_W("hb.worker", "reg=%d ever=%d bits=0x%X settle=%d str=%d med=%d L=%p wait=%d",
+                  (int)registered, (int)everRegistered, (unsigned)wbits, settle,
+                  strongStreak, mediumStreak, L,
+                  (!registered && L) ? 1 : 0);
         }
 
         Sleep(50);

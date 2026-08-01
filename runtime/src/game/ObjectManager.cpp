@@ -993,8 +993,7 @@ void OnLuaReload() {
     g_rebindQuietUntil = now + kRebindQuietMs;
     g_omHardFreezeUntil = now + kRebindHardFreezeMs;
     g_freezeOkTicks = 0;
-    RL::Log::Warn("OM hard rebind freeze %llums (no walks, no om.enable=1)",
-                  (unsigned long long)kRebindHardFreezeMs);
+    LOG_W("om.freeze", "durMs=%llu reason=reload", (unsigned long long)kRebindHardFreezeMs);
 }
 
 // After the minimum freeze time, require player GUID + real position for
@@ -1016,8 +1015,7 @@ static bool RebindFrozen(ULONGLONG now) {
     if (g_freezeOkTicks >= kFreezeOkNeeded) {
         g_omHardFreezeUntil = 0;
         g_freezeOkTicks = 0;
-        RL::Log::Info("OM rebind hard-freeze cleared (player stable %d ticks)",
-                      kFreezeOkNeeded);
+        LOG_I("om.freeze_clear", "ticks=%d", kFreezeOkNeeded);
         return false;
     }
     return true; // building stable streak

@@ -108,29 +108,71 @@ static constexpr int kGlobals = -10002;
 
 double SpellCooldownMs(lua_State* L, int spellId) {
     if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
-        return 0.0;
-    int top = p_gettop(L);
+        return -1.0; // sentinel: cannot determine
+
+    static bool s_first = true;
+    int top = 0;
+    __try {
+        top = p_gettop(L);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (s_first) { RL::Log::Warn("SpellCooldownMs: gettop AV"); s_first = false; }
+        return -1.0;
+    }
 
     // 1) GetSpellCooldown(spellId) → start, duration (game-time seconds)
-    p_getfield(L, kGlobals, "GetSpellCooldown");
-    p_pushnumber(L, (double)spellId);
-    int rc = p_pcall(L, 1, 2, 0);
-    if (rc != 0) { p_settop(L, top); return 0.0; }
-    double start    = p_tonumber(L, -2);
-    double duration = p_tonumber(L, -1);
-    p_settop(L, top);
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "GetSpellCooldown");
+        p_pushnumber(L, (double)spellId);
+        rc = p_pcall(L, 1, 2, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (s_first) { RL::Log::Warn("SpellCooldownMs: getfield/pcall AV (func ptrs invalid for build)"); s_first = false; }
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1.0;
+    }
+    if (rc != 0) {
+        if (s_first) { RL::Log::Warn("SpellCooldownMs: GetSpellCooldown pcall rc=%d", rc); s_first = false; }
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1.0;
+    }
+
+    double start = 0.0, duration = 0.0;
+    __try {
+        start    = p_tonumber(L, -2);
+        duration = p_tonumber(L, -1);
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1.0;
+    }
     if (duration <= 0.0) return 0.0; // no cooldown on this spell
 
     // 2) GetTime() → current game-time seconds (same clock as GetSpellCooldown)
-    p_getfield(L, kGlobals, "GetTime");
-    rc = p_pcall(L, 0, 1, 0);
-    if (rc != 0) { p_settop(L, top); return 0.0; }
-    double now = p_tonumber(L, -1);
-    p_settop(L, top);
+    __try {
+        p_getfield(L, kGlobals, "GetTime");
+        rc = p_pcall(L, 0, 1, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1.0;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return -1.0; }
+
+    double now = 0.0;
+    __try {
+        now = p_tonumber(L, -1);
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1.0;
+    }
 
     double end = start + duration;
     if (now >= end) return 0.0; // cooldown expired
-    return (end - now) * 1000.0; // remaining milliseconds
+    double rem = (end - now) * 1000.0;
+    if (s_first) {
+        RL::Log::Info("SpellCooldownMs OK id=%d start=%.3f dur=%.3f now=%.3f rem=%.0fms",
+                      spellId, start, duration, now, rem);
+        s_first = false;
+    }
+    return rem; // remaining milliseconds
 }
 
 } // namespace RL::Lua

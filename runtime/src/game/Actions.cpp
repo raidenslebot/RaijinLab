@@ -605,15 +605,25 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // Pre-cast cooldown check via Lua GetSpellCooldown (C++ → Lua pcall, no
-    // client error frame triggered). Reject before Spell_C_CastSpell so we
-    // never get "spell not ready yet" / "ability not ready yet" notifications.
+    // Pre-cast cooldown check via Lua GetSpellCooldown (C++ → Lua pcall).
+    // Returns -1 when the Lua pcall path is unavailable (wrong function pointers
+    // for this client build); gracefully allow the cast in that case.
     if (g_currentL) {
         double cdMs = RL::Lua::SpellCooldownMs(g_currentL, spellId);
-        if (cdMs > 30.0) { // >30ms → genuinely on cooldown (sub-frame jitter tolerance)
+        if (cdMs > 30.0) { // >30ms → genuinely on cooldown
             r.reason = "cooldown";
             r.cooldownMs = cdMs;
             return r;
+        }
+        if (cdMs < -0.5) {
+            // Sentinel: Lua pcall path not available. Log once, then allow cast
+            // normally (client will handle cooldown rejection via error frame).
+            static bool s_logged = false;
+            if (!s_logged) {
+                RL::Log::Warn("SpellCooldownMs unavailable (pcall path broken); "
+                              "cooldown gating disabled this session");
+                s_logged = true;
+            }
         }
     }
 

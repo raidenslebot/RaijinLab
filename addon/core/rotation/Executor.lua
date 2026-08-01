@@ -2034,62 +2034,36 @@ function Executor.attempt_action(action, ctx)
                 end
             end
             if not last_why then
-                    local reason, cdMs = nil, 0
-                    if Act.CastSpellEx then
-                        ok, reason, cdMs = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
-                    else
-                        ok = Act.CastSpell(cast_sid, cg)
-                        reason = ok and "ok" or "cast_fail"
-                    end
-                    if ok == true or ok == 1 then
-                        ok = true
-                        wire_guid = cg
-                        guid = cg
-                        if search then
-                            search.guid = cg
-                            search.token = cand.token
-                            if ctx then ctx.aura_search_hit = search end
-                        end
-                        break
-                    end
-                    ok = false
-                    last_why = reason or "cast_fail"
-                    if tostring(last_why):find("^cooldown") then
-                        cdMs = tonumber(cdMs) or 0
-                        if cdMs > 0 then
-                            Executor._gcd_until = now() + (cdMs / 1000)
-                            Executor._gcd_src = "cd_precast"
-                        end
-                        break
-                    elseif tostring(last_why) == "facing" or tostring(last_why) == "los"
-                        or tostring(last_why) == "oor" then
-                    elseif tostring(last_why) == "not_ready" then
-                        break
-                    end
-                end
-            else
-                local cok, creason
-                if ground_self then
-                    if Act.CastSpellEx then
-                        cok, creason = Act.CastSpellEx(cast_sid, nil, 0)
-                    else
-                        cok = Act.CastSpell(cast_sid)
-                    end
-                elseif Act.CastSpellEx then
-                    cok, creason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
+                local reason, cdMs = nil, 0
+                if Act.CastSpellEx then
+                    ok, reason, cdMs = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
                 else
-                    cok = Act.CastSpell(cast_sid, cg)
+                    ok = Act.CastSpell(cast_sid, cg)
+                    reason = ok and "ok" or "cast_fail"
                 end
-                if cok then
+                if ok == true or ok == 1 then
                     ok = true
-                    if not ground_self then
-                        wire_guid = cg
-                        guid = cg
+                    wire_guid = cg
+                    guid = cg
+                    if search then
+                        search.guid = cg
+                        search.token = cand.token
+                        if ctx then ctx.aura_search_hit = search end
                     end
                     break
                 end
-                last_why = creason or "cast_failed"
-                if tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
+                ok = false
+                last_why = reason or "cast_fail"
+                if tostring(last_why):find("^cooldown") then
+                    cdMs = tonumber(cdMs) or 0
+                    if cdMs > 0 then
+                        Executor._gcd_until = now() + (cdMs / 1000)
+                        Executor._gcd_src = "cd_precast"
+                    end
+                    break
+                elseif tostring(last_why) == "facing" or tostring(last_why) == "los"
+                    or tostring(last_why) == "oor" then
+                elseif tostring(last_why) == "not_ready" then
                     break
                 end
             end

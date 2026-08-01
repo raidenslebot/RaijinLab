@@ -19,10 +19,15 @@
 #include "lua/Lua.h"
 #include "bridge/Dispatch.h"
 
-// ---- Runtime Address Resolver — finds ALL taint globals dynamically ------
-// Scans .text for cmp/mov/inc [disp32] patterns, groups addresses by proximity
-// to find the taint structure (TaintContext, ExecCounter, CombatLockdown,
-// EventHandlerPtr) and the standalone HardwareEventFlag.
+// ---- Runtime Address Resolver — pattern-specific scanning -----------------
+// Different taint globals have different access patterns:
+//   cmp [addr], 0  (83 3D) → HardwareEventFlag (checked by gate code)
+//   mov [addr], 0  (C7 05) → TaintContext (zeroed to clear taint)
+//   inc [addr]     (FF 05) → ExecCounter (incremented on taint)
+//   mov [addr], 1  (C7 05) → also HardwareEventFlag (set before cast)
+// We track counts per pattern per address and resolve each global by its
+// dominant pattern.
+
 struct ResolvedAddrs {
     uintptr_t HardwareEventFlag = 0;
     uintptr_t TaintContext = 0;
@@ -50,54 +55,77 @@ static ResolvedAddrs ScanAllTaintAddresses() {
     }
     if (!textS) return out;
 
-    std::map<uintptr_t, int> refCounts;
+    // Per-pattern reference counts
+    std::map<uintptr_t, int> cmpRefs;  // cmp [addr], 0 → HW flag
+    std::map<uintptr_t, int> mov0Refs; // mov [addr], 0 → TaintContext
+    std::map<uintptr_t, int> incRefs;  // inc [addr]    → ExecCounter
+    std::map<uintptr_t, int> mov1Refs; // mov [addr], 1 → HW flag (alternate)
+
+    auto isWritable = [](uintptr_t addr) -> bool {
+        if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) return false;
+        if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) return false;
+        return (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
+    };
+
     for (uintptr_t p = textS; p + 10 < textE; ++p) {
         uint8_t* bp = reinterpret_cast<uint8_t*>(p);
         uintptr_t addr = 0;
-        if (bp[0] == 0x83 && bp[1] == 0x3D)      addr = *reinterpret_cast<uint32_t*>(bp + 2);
-        else if (bp[0] == 0xC7 && bp[1] == 0x05)   addr = *reinterpret_cast<uint32_t*>(bp + 2);
-        else if (bp[0] == 0xFF && bp[1] == 0x05)   addr = *reinterpret_cast<uint32_t*>(bp + 2);
-        else continue;
-        if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) continue;
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) continue;
-        if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) continue;
-        if (!(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY))) continue;
-        refCounts[addr]++;
-    }
-    if (refCounts.empty()) { LOG_W("sys.scan", "no writable refs"); return out; }
-
-    // Group by proximity
-    struct Group { std::vector<uintptr_t> a; int n = 0; };
-    std::vector<Group> groups;
-    for (auto& kv : refCounts) {
-        bool placed = false;
-        for (auto& g : groups) {
-            for (auto ga : g.a) {
-                if (std::abs((int64_t)(kv.first - ga)) < 0x100) { g.a.push_back(kv.first); g.n += kv.second; placed = true; break; }
+        if (bp[0] == 0x83 && bp[1] == 0x3D) {
+            addr = *reinterpret_cast<uint32_t*>(bp + 2);
+            if (isWritable(addr)) cmpRefs[addr]++;
+        } else if (bp[0] == 0xC7 && bp[1] == 0x05) {
+            addr = *reinterpret_cast<uint32_t*>(bp + 2);
+            uint32_t imm = *reinterpret_cast<uint32_t*>(bp + 6);
+            if (isWritable(addr)) {
+                if (imm == 0) mov0Refs[addr]++;
+                else if (imm == 1) mov1Refs[addr]++;
             }
-            if (placed) break;
+        } else if (bp[0] == 0xFF && bp[1] == 0x05) {
+            addr = *reinterpret_cast<uint32_t*>(bp + 2);
+            if (isWritable(addr)) incRefs[addr]++;
         }
-        if (!placed) { Group ng; ng.a.push_back(kv.first); ng.n = kv.second; groups.push_back(ng); }
     }
-    Group* best = nullptr;
-    for (auto& g : groups) { if (!best || g.n > best->n) best = &g; }
-    if (!best || best->a.empty()) return out;
-    std::sort(best->a.begin(), best->a.end());
-    uintptr_t baseAddr = best->a[0];
-    out.TaintContext = baseAddr;
-    out.ExecCounter = baseAddr + 0x04;
-    out.CombatLockdown = baseAddr + 0x08;
-    out.EventHandlerPtr = baseAddr + 0x14;
 
+    // HardwareEventFlag: most cmp-referenced OR most mov1-referenced
     uintptr_t bestHw = 0; int bestHwN = 0;
-    for (auto& kv : refCounts) {
-        if (kv.first >= baseAddr && kv.first < baseAddr + 0x100) continue;
-        if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; }
-    }
+    for (auto& kv : cmpRefs) { if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; } }
+    for (auto& kv : mov1Refs) { if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; } }
     if (bestHw && bestHwN >= 3) out.HardwareEventFlag = bestHw;
-    LOG_W("sys.scan", "taint=0x%08X sz=%d refs=%d hw=0x%08X refs=%d",
-          (unsigned)baseAddr, (int)best->a.size(), best->n, (unsigned)out.HardwareEventFlag, bestHwN);
+
+    // TaintContext: most mov0-referenced address
+    uintptr_t bestTc = 0; int bestTcN = 0;
+    for (auto& kv : mov0Refs) { if (kv.second > bestTcN) { bestTcN = kv.second; bestTc = kv.first; } }
+    if (bestTc && bestTcN >= 2) out.TaintContext = bestTc;
+
+    // ExecCounter: most inc-referenced address (may be same as TaintContext zone)
+    uintptr_t bestEc = 0; int bestEcN = 0;
+    for (auto& kv : incRefs) { if (kv.second > bestEcN) { bestEcN = kv.second; bestEc = kv.first; } }
+    if (bestEc && bestEcN >= 2) out.ExecCounter = bestEc;
+
+    // CombatLockdown: second most mov0-referenced, near TaintContext
+    for (auto& kv : mov0Refs) {
+        if (kv.first != bestTc && std::abs((int64_t)(kv.first - bestTc)) < 0x20 && kv.second >= 2) {
+            out.CombatLockdown = kv.first;
+            break;
+        }
+    }
+
+    // EventHandlerPtr: near TaintContext, not already identified
+    for (auto& kv : mov0Refs) {
+        if (kv.first != bestTc && kv.first != out.CombatLockdown
+            && std::abs((int64_t)(kv.first - bestTc)) < 0x20) {
+            out.EventHandlerPtr = kv.first;
+            break;
+        }
+    }
+
+    LOG_W("sys.scan", "hw=0x%08X(cmp=%d,mov1=%d) taint=0x%08X(mov0=%d) exec=0x%08X(inc=%d) cl=0x%08X eh=0x%08X",
+          (unsigned)out.HardwareEventFlag, bestHwN, (int)mov1Refs[out.HardwareEventFlag],
+          (unsigned)out.TaintContext, bestTcN,
+          (unsigned)out.ExecCounter, bestEcN,
+          (unsigned)out.CombatLockdown, (unsigned)out.EventHandlerPtr);
     return out;
 }
 

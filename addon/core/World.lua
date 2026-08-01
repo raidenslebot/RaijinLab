@@ -2155,8 +2155,8 @@ function World.build_context(opts)
                 ctx.target_aoe_gap = aoe
                 ctx.target_aoe_extend = extend
                 ctx.target_distance_center = center
-                ctx.target_distance = center  -- spell range is center-to-center; edge is a secondary field
                 ctx.target_distance_edge = edge
+                ctx.target_distance = edge  -- edge is the established contract; center is new secondary
                 ctx.target_distance_precise = true
                 have_precise = true
             end
@@ -2170,8 +2170,8 @@ function World.build_context(opts)
                 ctx.player_combat_reach = pReach
                 ctx.target_combat_reach = tReach
                 ctx.target_distance_center = ctr
-                ctx.target_distance = ctr  -- center-to-center matches spell range
                 ctx.target_distance_edge = edge
+                ctx.target_distance = edge or ctr  -- edge is the established contract
                 ctx.target_distance_precise = true
                 have_precise = true
                 if RaijinLab.AoEDistance then
@@ -2936,8 +2936,8 @@ function World.sync_ctx_target(ctx)
         unit_distances(tguid, "target")
     if precise then
         ctx.target_distance_center = center
-        ctx.target_distance = center     -- spell range semantics
         ctx.target_distance_edge = edge
+        ctx.target_distance = edge or center  -- edge is the established contract; center is secondary
         ctx.target_distance_precise = true
         ctx.player_combat_reach = pr
         ctx.target_combat_reach = tr

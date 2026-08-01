@@ -73,28 +73,16 @@ micro_lock = function()
     return 0.016
 end
 
--- Authoritative remaining GCD/CD for a spell (seconds). Prefer runtime
--- SpellCooldownMs (C++ reads client cooldown data directly via lua_getfield pcall,
--- no Blizzard API round-trip). Also honor Executor._gcd_until.
+-- Authoritative remaining GCD/CD for a spell (seconds). Prefer Blizzard
+-- GetSpellCooldown (reliable on all clients). Runtime SpellCooldownMs as
+-- optional supplement (fails on clients with wrong lua_getfield offset).
 local function spell_ready_remaining(sid, name)
     local t = now()
     local best = 0
     local until_t = tonumber(Executor._gcd_until) or 0
     if until_t > t then best = until_t - t end
-    -- Primary: runtime C++ SpellCooldownMs (sub-ms precision, no Blizzard API)
-    local RL = RaijinLab
-    if RL and RL.RuntimeCall and sid and sid > 0 then
-        local ok, packed = pcall(RL.RuntimeCall, RL, "SpellCooldownMs", sid)
-        if ok and type(packed) == "string" then
-            local cdMs = tonumber(packed) or 0
-            if cdMs > 0 then
-                local rem = cdMs / 1000
-                if rem > best then best = rem end
-            end
-        end
-    end
-    -- Fallback: Blizzard GetSpellCooldown (still works, just slower)
-    if best <= 0 and GetSpellCooldown then
+    -- Primary: Blizzard GetSpellCooldown (works on every client)
+    if GetSpellCooldown then
         local function sample(key)
             if not key then return end
             local s, d = GetSpellCooldown(key)
@@ -106,6 +94,18 @@ local function spell_ready_remaining(sid, name)
         end
         if name and name ~= "" then sample(name) end
         if sid and sid > 0 then sample(sid) end
+    end
+    -- Secondary: runtime SpellCooldownMs (sub-ms precision when available)
+    local RL = RaijinLab
+    if RL and RL.RuntimeCall and sid and sid > 0 then
+        local ok, packed = pcall(RL.RuntimeCall, RL, "SpellCooldownMs", sid)
+        if ok and type(packed) == "string" then
+            local cdMs = tonumber(packed) or 0
+            if cdMs > 0 then
+                local rem = cdMs / 1000
+                if rem > best then best = rem end
+            end
+        end
     end
     return best
 end

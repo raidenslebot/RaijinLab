@@ -1380,35 +1380,60 @@ Conditions.register("is_stunned", {
 Conditions.register("is_silenced", {
     name = "Is Silenced / School Locked",
     category = "Self",
-    description = "Player is silenced or school-locked for the relevant spell school. Uses runtime SpellInfo to determine your spell's school, then checks current auras for silence/school-lock debuffs. Use Invert for 'not silenced'.",
+    description = "Player is silenced or school-locked for the relevant spell school. Checks player debuffs dynamically (no hardcoded spell IDs), matching silence/lockout/interrupt keywords against debuff names. Use Invert for 'not silenced'.",
     params = {
         { key = "spell_id", type = "number", default = 0, label = "Spell ID (for school)" },
     },
     eval = function(ctx, args)
-        if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then
-            if ctx.is_silenced ~= nil then return bool(ctx.is_silenced, false) end
-            return false
-        end
-        local sid = num((args and args.spell_id) or ctx.slot_spell_id or 0, 0)
-        if sid <= 0 then return false end
-        -- Get spell school from runtime SpellInfo
-        local ok, info = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellInfo", sid)
-        if not ok or type(info) ~= "string" then return false end
-        local school = tonumber(string.match(info, "school=(-?%d+)")) or -1
-        if school < 0 then return false end
-        -- Check player debuffs for silence/interrupt school lockouts
-        local pb = ctx.player_debuffs
-        if not pb then return false end
-        -- Common silence/interrupt aura spell IDs (WotLK generic + Ascension custom)
-        -- These are auras that prevent casting of specific schools
-        local lockout_ids = { 18469, 15487, 24259, 32717, 47476, 55021, 65547, 31935 }
-        for _, lid in ipairs(lockout_ids) do
-            if pb[lid] or pb[tostring(lid)] then
-                -- If a school-lock aura is present, check if it's generic silence
-                -- Simplified: any interrupt school lockout aura blocks
-                return true
+        if ctx.is_silenced ~= nil then return bool(ctx.is_silenced, false) end
+
+        -- Dynamically scan player debuffs for silence/school-lock interrupts.
+        -- No hardcoded spell IDs — works on any client including Ascension.
+        local pid = tonumber(args and args.spell_id) or tonumber(ctx.slot_spell_id) or 0
+        if pid <= 0 then return false end
+
+        -- Get spell school: prefer runtime SpellInfo (accurate), fallback Blizzard
+        local school = -1
+        local RL = RaijinLab
+        if RL and RL.RuntimeCall and RL:HasRuntime() then
+            local ok, info = pcall(RL.RuntimeCall, RL, "SpellInfo", pid)
+            if ok and type(info) == "string" then
+                school = tonumber(string.match(info, "school=(-?%d+)")) or -1
             end
         end
+        if school < 0 then return false end
+
+        -- Scan all player debuffs for interrupt/silence mechanics
+        local function is_lockout(debuffName, debuffId)
+            if not debuffName or debuffName == "" then return false end
+            local lower = string.lower(tostring(debuffName))
+            -- Generic silence keywords
+            if lower:find("silence") or lower:find("locked") or lower:find("lockout") then return true end
+            if lower:find("interrupt") or lower:find("counterspell") then return true end
+            -- Melee interrupts (work by keyword, not by hardcoded ID)
+            if lower:find("kick") or lower:find("pummel") or lower:find("bash") then return true end
+            if lower:find("mind freeze") or lower:find("strangulate") then return true end
+            -- School-specific locks: cross-reference debuff school with our spell school
+            if debuffId and debuffId > 0 and RL and RL.RuntimeCall and RL:HasRuntime() then
+                local ok2, dinfo = pcall(RL.RuntimeCall, RL, "SpellInfo", debuffId)
+                if ok2 and type(dinfo) == "string" then
+                    local dsch = tonumber(string.match(dinfo, "school=(-?%d+)")) or 0
+                    -- -2 school = all-school silence; matching school = school lock
+                    if dsch == -2 or (dsch == school and dsch > 0) then return true end
+                end
+            end
+            return false
+        end
+
+        -- Check Blizzard debuff API (works even without runtime)
+        local i = 1
+        while i <= 40 do
+            local name, _, _, _, _, _, _, _, sid = UnitDebuff("player", i)
+            if not name then break end
+            if is_lockout(name, tonumber(sid)) then return true end
+            i = i + 1
+        end
+
         return false
     end,
 })

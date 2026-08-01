@@ -1056,6 +1056,18 @@ static int Handle(lua_State* L, const char* name) {
         int form = OM::ShapeshiftForm();
         return PushNumber(L, (double)form);
     }
+    // Unit relationship (faction-based): "self","friendly","hostile","neutral","unknown"
+    if (!std::strcmp(name, "UnitRelationship")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) return PushString(L, "unknown");
+        return PushString(L, OM::UnitRelationship(g));
+    }
+    // Spell info packed: "maxRange=F|castMs=N|powerType=N|school=N"
+    if (!std::strcmp(name, "SpellInfo") || !std::strcmp(name, "GetSpellInfo")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        auto s = OM::SpellInfoPacked(spellId);
+        return PushString(L, s.c_str());
+    }
     // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
         static char s_mapBuf[128] = {};

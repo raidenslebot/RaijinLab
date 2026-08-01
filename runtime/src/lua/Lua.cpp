@@ -319,4 +319,53 @@ void ShapeshiftFormFromLua(int* outForm) {
     }
 }
 
+// Spell school from Lua — reads GetSpellInfo powerType as a proxy, plus spell name heuristic
+int SpellSchoolFromLua(lua_State* L, int spellId) {
+    if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tolstring || !p_tonumber || !p_settop || spellId <= 0)
+        return -1;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "GetSpellInfo");
+        p_pushnumber(L, (double)spellId);
+        rc = p_pcall(L, 1, 9, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return -1; }
+
+    int school = -1;
+    __try {
+        // Spell name at position -9 (first return)
+        const char* name = p_tolstring(L, -9, nullptr);
+        if (name) {
+            // Heuristic: school from common spell name patterns
+            // This is crude — proper school read needs DBC access
+            if (strstr(name, "Frost") || strstr(name, "Ice") || strstr(name, "Chill"))
+                school = 16;  // SPELL_SCHOOL_FROST
+            else if (strstr(name, "Fire") || strstr(name, "Flame") || strstr(name, "Burn"))
+                school = 4;   // SPELL_SCHOOL_FIRE
+            else if (strstr(name, "Shadow") || strstr(name, "Dark"))
+                school = 32;  // SPELL_SCHOOL_SHADOW
+            else if (strstr(name, "Holy") || strstr(name, "Light") || strstr(name, "Smite"))
+                school = 2;   // SPELL_SCHOOL_HOLY
+            else if (strstr(name, "Nature") || strstr(name, "Lightning") || strstr(name, "Thunder"))
+                school = 8;   // SPELL_SCHOOL_NATURE
+            else if (strstr(name, "Arcane") || strstr(name, "Mana"))
+                school = 64;  // SPELL_SCHOOL_ARCANE
+            else if (strstr(name, "Physical") || strstr(name, "Strike") || strstr(name, "Slash")
+                     || strstr(name, "Attack") || strstr(name, "Hit") || strstr(name, "Stab"))
+                school = 1;   // SPELL_SCHOOL_PHYSICAL
+        }
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    return school;
+}
+
 } // namespace RL::Lua

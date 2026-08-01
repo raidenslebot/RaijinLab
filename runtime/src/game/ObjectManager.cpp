@@ -2282,6 +2282,65 @@ int ShapeshiftForm() {
     RL::Lua::ShapeshiftFormFromLua(&s_cached);
     return s_cached;
 }
+
+// ---- Unit relationship (faction-based, verified descriptor offsets) --------
+const char* UnitRelationship(uint64_t guid) {
+    uint64_t local = SafeGetActive();
+    if (!guid) return "unknown";
+    if (guid == local) return "self";
+
+    // Read faction template from descriptor 0xDC
+    int localFaction = 0, targetFaction = 0;
+    uintptr_t lp = Ptr(local);
+    if (lp && AcceptObjPtr(lp)) {
+        uintptr_t ld = Mem::Read<uintptr_t>(lp + Offsets::O().Descriptor);
+        if (ld && AcceptObjPtr(ld))
+            localFaction = Mem::Read<int>(ld + Offsets::D().FactionTemplate);
+    }
+    uintptr_t tp = Ptr(guid);
+    if (tp && AcceptObjPtr(tp)) {
+        uintptr_t td = Mem::Read<uintptr_t>(tp + Offsets::O().Descriptor);
+        if (td && AcceptObjPtr(td))
+            targetFaction = Mem::Read<int>(td + Offsets::D().FactionTemplate);
+    }
+
+    if (localFaction == 0 || targetFaction == 0) return "unknown";
+
+    // Same faction template → friendly/allied
+    if (localFaction == targetFaction) return "friendly";
+
+    // Different faction: check unit flags for PLAYER_CONTROLLED → PvP hostile
+    uint32_t tFlags = UnitFlags(guid);
+    if (tFlags & 0x01000000u) { // UNIT_FLAG_PLAYER_CONTROLLED
+        // Player or player pet — different faction means hostile (PvP)
+        return "hostile";
+    }
+
+    // NPC with different faction: check if attackable
+    if (tFlags & 0x00000002u) return "neutral"; // NON_ATTACKABLE
+    if (tFlags & 0x02000000u) return "neutral"; // NOT_SELECTABLE
+
+    return "hostile";
+}
+
+// ---- Spell info cache (extends Actions.cpp range cache with more fields) ----
+std::string SpellInfoPacked(int spellId) {
+    if (spellId <= 0) return "maxRange=-1|castMs=-1|powerType=-1|school=-1";
+    float mr = -1.f; int castMs = -1, pt = -1;
+    void* L = RL::Game::Addr::LuaState();
+    if (L) {
+        RL::Lua::SpellInfoFromLua((lua_State*)L, spellId, &mr, &castMs, &pt);
+    }
+    // School: try Lua GetSpellInfo + resolve from spell name/description
+    int school = -1;
+    if (L) {
+        school = RL::Lua::SpellSchoolFromLua((lua_State*)L, spellId);
+    }
+    char buf[96];
+    snprintf(buf, sizeof(buf), "maxRange=%.1f|castMs=%d|powerType=%d|school=%d",
+             mr, castMs, pt, school);
+    return std::string(buf);
+}
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at
 // UNIT_DYNAMIC_FLAGS (0x13C) - see the derivation in Offsets.h. Using the unit

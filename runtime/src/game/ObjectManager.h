@@ -115,6 +115,11 @@ uint64_t UnitTargetGuid(uint64_t guid);
 // Current shapeshift form (0=normal, 1=bear, 2=aquatic, 3=cat, 4=travel, 5=moonkin, 6=flight).
 // Returns -1 if unreadable. Cached ~200ms via Lua GetShapeshiftForm() pcall.
 int ShapeshiftForm();
+// Unit relationship relative to local player: "self","friendly","hostile","neutral","unknown"
+// Uses faction template (descriptor 0xDC) + unit flags + PvP status.
+const char* UnitRelationship(uint64_t guid);
+// Packed spell info string: "maxRange=F|castMs=N|powerType=N|school=N" from cached DB + Lua
+std::string SpellInfoPacked(int spellId);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

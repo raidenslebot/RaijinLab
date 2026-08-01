@@ -48,4 +48,7 @@ void MapInfoFromLua(char* buf, size_t bufSize);
 // Call Lua's GetShapeshiftForm(). Returns form index (0=normal, 1=bear, etc.) or -1.
 void ShapeshiftFormFromLua(int* outForm);
 
+// Try to resolve spell school from Lua (GetSpellInfo + school lookup). Returns -1 if unknown.
+int SpellSchoolFromLua(lua_State* L, int spellId);
+
 } // namespace RL::Lua

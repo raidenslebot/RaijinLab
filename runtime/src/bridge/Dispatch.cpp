@@ -25,7 +25,7 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.41-polish";
+const char* kVersion = "1.10.42-rebindfreeze";
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -245,7 +245,7 @@ static uint64_t GuidArg(lua_State* L, int idx) {
 //   user kill     -> om.enable=0 via SetSystemVar / cfg
 //   enum AV once  -> EnumIsDead(); list-only continues; enable stays 1
 static bool OmEnabled() {
-    return RL::Config::Get("om.enable", "1") != "0";
+    return RL::Game::OM::IsEnabled();
 }
 
 // Single-return packed "x|y|z" - FrameScript multi-return is unreliable on this client
@@ -581,7 +581,14 @@ static int Handle(lua_State* L, const char* name) {
     }
     // One-shot diagnostic: everything /raijin om needs in a single string return.
     if (!std::strcmp(name, "OmProbe") || !std::strcmp(name, "GetOmStatus")) {
-        RL::Config::Set("om.enable", "1");
+        // Never force om.enable=1 during post-reload hard freeze — it would
+        // immediately unblock SoftRefresh/Refresh the instant the freeze
+        // expires, before FrameXML has finished settling.
+        if (OM::IsEnabled()) {
+            RL::Config::Set("om.enable", "1");
+        } else {
+            RL::Log::Info("OmProbe deferring om.enable=1 (OM frozen)");
+        }
         RL::Config::Flush();
         RL::Game::MainThread::PulseFromMainThread();
         auto snap = RL::Game::MainThread::Get();

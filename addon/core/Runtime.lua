@@ -249,10 +249,18 @@ do
         -- The settle is kept: arming before the world is up is what caused the
         -- world-load access violation (#132), and ArmRuntimeSystems' own
         -- UnitName gate is the second line of defence.
+        --
+        -- Post-reload crash (2026-07-31): should_arm had no settle (0s), so
+        -- ArmRuntimeSystems set om.enable=1 ~1s after BRIDGE ONLINE while
+        -- FrameXML was still settling. The native hard freeze guards against
+        -- walks, but om.enable=1 takes effect the instant the freeze clears.
+        -- A 6s settle after bridge-online ensures the freeze has fully
+        -- expired AND the world is stable before OM discovery begins.
+        local settle = 6
         if RL.ArmRuntimeSystems and RL.should_arm(
                 has, RL._runtime_armed,
                 RL._runtime_online_t or 0, GetTime and GetTime() or 0,
-                UnitName and UnitName("player") and true or false) then
+                UnitName and UnitName("player") and true or false, settle) then
             RL:ArmRuntimeSystems()
         end
         had = has

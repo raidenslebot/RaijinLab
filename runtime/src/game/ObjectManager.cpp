@@ -1,5 +1,6 @@
 #include "ObjectManager.h"
 #include "Offsets.h"
+#include "AddressDB.h"
 #include "Mem.h"
 #include "core/Config.h"
 #include "core/Log.h"
@@ -960,9 +961,14 @@ void Invalidate() {
 static ULONGLONG g_firstPlayerMs = 0;
 static bool g_everWalkedOk = false;
 static ULONGLONG g_rebindQuietUntil = 0;
+static ULONGLONG g_omHardFreezeUntil = 0;
 static bool g_omWasOn = false;
+static int g_freezeStableTicks = 0; // consecutive ticks world stayed stable after time expiry
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
 static constexpr ULONGLONG kRebindQuietMs = 2000ull;  // FrameXML /reload settle
+static constexpr ULONGLONG kRebindHardFreezeMs = 10000ull; // outlast medium Register (~8s) + SEAL settle
+static constexpr ULONGLONG kFreezeExtendMs = 3000ull;     // re-extend when world not ready yet
+static constexpr int kFreezeStableNeeded = 3;              // consecutive stable ticks to clear
 static constexpr ULONGLONG kWalkMinIntervalMs = 100ull; // ~10 Hz max (lag: 80→50Hz thrash)
 // EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
 // List-only until this many successful list walks OR this ms after first player
@@ -984,7 +990,59 @@ void OnLuaReload() {
     g_omWasOn = false;
     g_listWarmWalks = 0;
     g_firstPlayerMs = 0;
-    g_rebindQuietUntil = GetTickCount64() + kRebindQuietMs;
+    const ULONGLONG now = GetTickCount64();
+    g_rebindQuietUntil = now + kRebindQuietMs;
+    g_omHardFreezeUntil = now + kRebindHardFreezeMs;
+    g_freezeStableTicks = 0;
+    RL::Log::Warn("OM hard rebind freeze %llums (no walks, no om.enable=1)",
+                  (unsigned long long)kRebindHardFreezeMs);
+}
+
+// World-is-stable check: player GUID exists + position resolves + medium world bits.
+// Called only after the hard-time window has elapsed. Returns true only when
+// the world has stayed stable for kFreezeStableNeeded consecutive calls.
+static bool WorldLooksStable() {
+    uint64_t local = SafeGetActive();
+    if (!local) return false;
+    Vec3 pp = Position(local);
+    if (std::fabs(pp.x) < 0.01f && std::fabs(pp.y) < 0.01f) return false;
+    uint32_t bits = ::RL::Game::Addr::WorldReadyBits();
+    if (!::RL::Game::Addr::WorldReadyMedium(bits)) return false;
+    return true;
+}
+
+static bool RebindFrozen(ULONGLONG now) {
+    if (!g_omHardFreezeUntil) return false;
+    // Hard minimum: wall-clock freeze must elapse.
+    if (now < g_omHardFreezeUntil) return true;
+    // After minimum time: require sustained world stability.
+    if (WorldLooksStable()) {
+        ++g_freezeStableTicks;
+        if (g_freezeStableTicks >= kFreezeStableNeeded) {
+            g_omHardFreezeUntil = 0;
+            g_freezeStableTicks = 0;
+            RL::Log::Info("OM rebind hard-freeze cleared (world stable %d ticks)",
+                          kFreezeStableNeeded);
+            return false;
+        }
+        // Still building stable streak — stay frozen one more tick.
+        return true;
+    }
+    // World not ready: reset streak and extend the freeze window.
+    g_freezeStableTicks = 0;
+    g_omHardFreezeUntil = now + kFreezeExtendMs;
+    static int s_extendLog = 0;
+    if (s_extendLog < 8) {
+        RL::Log::Info("OM freeze extended +%llums (world not yet stable)",
+                      (unsigned long long)kFreezeExtendMs);
+        s_extendLog++;
+    }
+    return true;
+}
+
+bool IsEnabled() {
+    if (RebindFrozen(GetTickCount64())) return false;
+    return RL::Config::Get("om.enable", "1") != "0";
 }
 
 bool EnumIsDead() { return g_enumDead; }
@@ -1069,7 +1127,7 @@ std::string NearbyUnitsPacked(float maxRange, size_t maxN) {
     // Soft list-only when om frozen — same rule as hostiles (rotation needs units).
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
-    if (RL::Config::Get("om.enable", "1") != "0")
+    if (IsEnabled())
         Refresh(false);
     else
         SoftRefreshListOnlyForHostiles();
@@ -1256,6 +1314,7 @@ static int SoftPodsSeh() {
 static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
     if (!local) return false;
     if (now < g_rebindQuietUntil) return false; // FrameXML rebind flicker only
+    if (RebindFrozen(now)) return false;       // hard post-reload freeze
     // Player must resolve a real position (not just a GUID) before any walk.
     Vec3 pp = Position(local);
     if (std::fabs(pp.x) < 0.01f && std::fabs(pp.y) < 0.01f)
@@ -1414,8 +1473,7 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     // (never EnumVisibleObjects while disabled — that is the crash vector).
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
-    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
-    if (omOn) {
+    if (IsEnabled()) {
         Refresh(false);
     } else {
         SoftRefreshListOnlyForHostiles();
@@ -1621,7 +1679,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     // Do NOT also force Refresh on the same call — SoftRefresh already ran the
     // same BuildUnitSnapshotLocked; double walks were a combat lag spike.
     SoftRefreshListOnlyForHostiles();
-    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    const bool omOn = IsEnabled();
     // Only Refresh if soft path was quiet for a while (e.g. om just turned on).
     if (omOn && (!g_lastRefresh || (now - g_lastRefresh) >= 250ull))
         Refresh(false);
@@ -1759,7 +1817,7 @@ void Refresh(bool force) {
         return;
     }
 
-    const bool omOn = RL::Config::Get("om.enable", "1") != "0";
+    const bool omOn = IsEnabled();
     if (!omOn) {
         // Soft path (SoftRefresh / AuraSearch) owns discovery while frozen.
         g_omWasOn = false;

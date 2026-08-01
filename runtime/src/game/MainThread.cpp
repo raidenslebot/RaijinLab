@@ -67,7 +67,7 @@ bool OmWanted() {
     // Default "1": after PEW arm the suite expects a live world list. Inject still
     // forces 0 until ArmRuntimeSystems / Master turns it on; cold inject never
     // enums without an active player (Refresh no-ops).
-    g_omWanted = (RL::Config::Get("om.enable", "1") == "1");
+    g_omWanted = OM::IsEnabled();
     g_omWantedInit = true;
     return g_omWanted;
 }

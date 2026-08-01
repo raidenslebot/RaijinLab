@@ -2002,8 +2002,9 @@ function Executor.attempt_action(action, ctx)
         elseif Executor.guid_blacklisted(cg) then
             last_why = "blacklisted"
         else
-            -- FACING GATE (always enforced — never wire a cast destined to fail).
-            -- Auto Face only controls whether we attempt to turn first.
+            -- FACING GATE: only hard-skip when Auto Face is ON and still not
+            -- facing after the turn attempt. Without Auto Face, the player chose
+            -- manual facing — wire and let the server decide (old behavior).
             if not skip_face_cast and needs_enemy then
                 local not_facing = W and W.is_not_facing_guid
                     and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
@@ -2014,12 +2015,14 @@ function Executor.attempt_action(action, ctx)
                         elseif W and W.face_guid then pcall(W.face_guid, cg) end
                         not_facing = W and W.is_not_facing_guid
                             and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                        if not_facing then
+                            -- Auto-face failed: skip this GUID, don't wire a guaranteed fail
+                            last_why = "facing"
+                        end
                     end
-                    if not_facing then
-                        -- Still not facing after auto-face attempt (or auto-face off).
-                        -- Skip this GUID; do NOT wire a guaranteed failure.
-                        last_why = "facing"
-                    end
+                    -- Without Auto Face: fall through and wire (old behavior).
+                    -- Server may still refuse with "wrong way" — event handler
+                    -- cleans up and rotation retries next tick.
                 end
             end
             -- WIRE (range was already validated in live_castable; facing gate above)

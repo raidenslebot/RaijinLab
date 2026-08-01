@@ -1068,6 +1068,13 @@ static int Handle(lua_State* L, const char* name) {
         auto s = OM::SpellInfoPacked(spellId);
         return PushString(L, s.c_str());
     }
+    // Unit aura list from runtime aura table: "n|spellId:stacks:remMs|..."
+    if (!std::strcmp(name, "UnitAuras") || !std::strcmp(name, "GetUnitAuras")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        auto s = OM::UnitAurasPacked(g);
+        return PushString(L, s.c_str());
+    }
     // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
         static char s_mapBuf[128] = {};

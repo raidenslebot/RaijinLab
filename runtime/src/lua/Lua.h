@@ -51,4 +51,8 @@ void ShapeshiftFormFromLua(int* outForm);
 // Try to resolve spell school from Lua (GetSpellInfo + school lookup). Returns -1 if unknown.
 int SpellSchoolFromLua(lua_State* L, int spellId);
 
+// Read all auras (buff+debuff) for a unit. `unitToken` is "player" or guid "0xHEX".
+// Writes packed "n|spellId:stacks:durationMs:isDebuff|..." into buf.
+void UnitAurasFromLua(lua_State* L, const char* unitToken, char* buf, size_t bufSize);
+
 } // namespace RL::Lua

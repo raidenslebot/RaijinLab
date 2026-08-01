@@ -2341,6 +2341,44 @@ std::string SpellInfoPacked(int spellId) {
              mr, castMs, pt, school);
     return std::string(buf);
 }
+
+// ---- Runtime aura table query (zero Lua — reads g_auras directly) ----------
+std::string UnitAurasPacked(uint64_t guid) {
+    if (!guid) return "0";
+    static ULONGLONG s_lastTime = 0;
+    static uint64_t s_lastGuid = 0;
+    static std::string s_lastResult;
+    ULONGLONG now = GetTickCount64();
+    if (s_lastGuid == guid && s_lastTime && (now - s_lastTime) < 80ull)
+        return s_lastResult;
+
+    std::lock_guard<std::mutex> lock(g_auraMu);
+    // Collect matching auras from the runtime aura table
+    struct AuraHit { int spellId; int stacks; ULONGLONG expMs; };
+    AuraHit hits[128];
+    size_t n = 0;
+    for (size_t i = 0; i < g_auraN && n < 128; ++i) {
+        if (g_auras[i].guid == guid && g_auras[i].spellId > 0) {
+            hits[n].spellId = g_auras[i].spellId;
+            hits[n].stacks  = g_auras[i].stacks;
+            hits[n].expMs   = g_auras[i].expMs;
+            ++n;
+        }
+    }
+    char buf[4096];
+    size_t off = 0;
+    off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%zu", n);
+    for (size_t i = 0; i < n && off + 64 < sizeof(buf); ++i) {
+        long long remMs = (long long)hits[i].expMs - (long long)now;
+        if (remMs < 0) remMs = 0;
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                                "|%d:%d:%lld", hits[i].spellId, hits[i].stacks, remMs);
+    }
+    s_lastGuid = guid;
+    s_lastTime = now;
+    s_lastResult = std::string(buf, off);
+    return s_lastResult;
+}
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at
 // UNIT_DYNAMIC_FLAGS (0x13C) - see the derivation in Offsets.h. Using the unit

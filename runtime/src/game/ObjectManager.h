@@ -120,6 +120,10 @@ int ShapeshiftForm();
 const char* UnitRelationship(uint64_t guid);
 // Packed spell info string: "maxRange=F|castMs=N|powerType=N|school=N" from cached DB + Lua
 std::string SpellInfoPacked(int spellId);
+// Packed aura string: "n|spellId:stacks:durationMs:isDebuff|..."
+// Reads all auras (buff+debuff) from client via batched Lua UnitBuff/UnitDebuff pcall.
+// Cached per guid for 80ms. Returns empty "0" if no auras or unreadable.
+std::string UnitAurasPacked(uint64_t guid);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

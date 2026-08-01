@@ -1366,10 +1366,12 @@ Conditions.register("is_stunned", {
         local mask = tonumber(packed) or 0
         if mask < 0 then return false end
         local kind = string.lower(tostring((args and args.kind) or "stunned"))
-        if kind == "stunned"  then return (mask & 1) ~= 0 end
-        if kind == "disarmed" then return (mask & 2) ~= 0 end
-        if kind == "confused" then return (mask & 4) ~= 0 end
-        if kind == "fleeing"  then return (mask & 8) ~= 0 end
+        -- Use bit.band (Lua 5.1 compat) — no & operator on WoW 3.3.5
+        local function has_bit(m, b) return (math.floor(m / b) % 2) ~= 0 end
+        if kind == "stunned"  then return has_bit(mask, 1) end
+        if kind == "disarmed" then return has_bit(mask, 2) end
+        if kind == "confused" then return has_bit(mask, 4) end
+        if kind == "fleeing"  then return has_bit(mask, 8) end
         if kind == "any" then return mask ~= 0 end
         return false
     end,

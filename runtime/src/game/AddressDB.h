@@ -6,16 +6,19 @@
 
 namespace RL::Game::Addr {
 
-// --- Globals (all resolved at runtime by ScanAllTaintAddresses) ---
+// --- Globals ---
 constexpr uintptr_t g_luaState          = 0x00D3F78C;
 constexpr uintptr_t g_InWorld           = 0x00D3F60C;
 constexpr uintptr_t g_TlsIndex          = 0x00D439BC;
 constexpr uintptr_t g_WorldFrame        = 0x00B7436C;
-extern uintptr_t TaintContext;         // resolved at runtime
-extern uintptr_t ExecCounter;          // resolved at runtime
-extern uintptr_t CombatLockdown;       // resolved at runtime
-extern uintptr_t EventHandlerPtr;      // resolved at runtime
-extern uintptr_t HardwareEventFlag;    // resolved at runtime
+constexpr uintptr_t TaintContext        = 0x00D4139C;
+constexpr uintptr_t ExecCounter         = 0x00D413A0;
+constexpr uintptr_t CombatLockdown      = 0x00D413A4;
+constexpr uintptr_t EventHandlerPtr     = 0x00D413B0;
+// HardwareEventFlag: verified correct for this Ascension build by scanner
+// (9 cmp refs at 0x00C21000). The static 0x00BEAF4C was wrong — writes there
+// corrupted executable code. DO NOT change without re-verifying via scanner.
+constexpr uintptr_t HardwareEventFlag   = 0x00C21000;
 
 // --- FrameScript ---
 constexpr uintptr_t FrameScript_Execute          = 0x00819210;

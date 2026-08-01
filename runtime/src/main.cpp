@@ -159,15 +159,6 @@ static volatile bool g_run = true;
 static HANDLE g_mutex = nullptr;
 static HMODULE g_self = nullptr;
 
-// Mutable globals — resolved at runtime by scanner, not hardcoded.
-namespace RL::Game::Addr {
-    uintptr_t HardwareEventFlag = 0x00BEAF4C;
-    uintptr_t TaintContext      = 0x00D4139C;
-    uintptr_t ExecCounter       = 0x00D413A0;
-    uintptr_t CombatLockdown    = 0x00D413A4;
-    uintptr_t EventHandlerPtr   = 0x00D413B0;
-}
-
 // ---- Vectored Exception Handler — crash diagnostics ----------------------
 // Captures FULL register + stack context on ANY access violation and logs
 // to runtime.log BEFORE the process terminates. This is the "black box"
@@ -248,17 +239,12 @@ static DWORD WINAPI MainThread(LPVOID param) {
     AddVectoredExceptionHandler(1, CrashHandler);
     LOG_W("sys.crash", "handler installed");
 
-    // Resolve HardwareEventFlag and TaintContext dynamically.
-    g_resolved = ScanAllTaintAddresses();
-    RL::Game::Addr::HardwareEventFlag = g_resolved.HardwareEventFlag ? g_resolved.HardwareEventFlag : 0x00BEAF4C;
-    RL::Game::Addr::TaintContext      = g_resolved.TaintContext      ? g_resolved.TaintContext      : 0x00D4139C;
-    RL::Game::Addr::ExecCounter       = g_resolved.ExecCounter       ? g_resolved.ExecCounter       : 0x00D413A0;
-    RL::Game::Addr::CombatLockdown    = g_resolved.CombatLockdown    ? g_resolved.CombatLockdown    : 0x00D413A4;
-    RL::Game::Addr::EventHandlerPtr   = g_resolved.EventHandlerPtr   ? g_resolved.EventHandlerPtr   : 0x00D413B0;
-    LOG_W("sys.boot", "self=%p ver=%s hwflag=0x%08X taint=0x%08X",
-          self, RL::Bridge::Version(),
-          (unsigned)RL::Game::Addr::HardwareEventFlag,
-          (unsigned)RL::Game::Addr::TaintContext);
+    RL::Config::Set("om.enable", "0");
+    RL::Config::Set("taint.patch", "1");
+    RL::Config::Flush();
+
+    LOG_W("sys.boot", "self=%p ver=%s hwflag=0x%08X",
+          self, RL::Bridge::Version(), (unsigned)RL::Game::Addr::HardwareEventFlag);
 
     RL::Config::Set("om.enable", "0");
     RL::Config::Set("taint.patch", "1");

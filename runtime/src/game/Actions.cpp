@@ -165,6 +165,10 @@ static thread_local lua_State* g_currentL = nullptr;
 } // namespace
 
 void SoftHardwareUnlock() {
+    // Only HardwareEventFlag (0x00C21000 — verified correct for this build
+    // by scanner: 9 cmp refs in writable data. No crash, no side effects).
+    // TaintContext/ExecCounter/CombatLockdown addresses are UNVERIFIED for
+    // this Ascension build — writing to wrong addresses corrupts client state.
     auto safeWrite = [](uintptr_t addr, uint32_t value) -> bool {
         if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
         MEMORY_BASIC_INFORMATION mbi{};
@@ -180,9 +184,6 @@ void SoftHardwareUnlock() {
         }
     };
     safeWrite(Addr::HardwareEventFlag, 1);
-    // TaintContext: cross-reference scanner now requires BOTH mov0+inc patterns
-    // for identification — eliminates false positives from generic zeroed globals.
-    safeWrite(Addr::TaintContext, 0);
 }
 
 namespace {

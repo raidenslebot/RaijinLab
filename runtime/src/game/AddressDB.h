@@ -15,7 +15,10 @@ constexpr uintptr_t TaintContext        = 0x00D4139C;
 constexpr uintptr_t ExecCounter         = 0x00D413A0;
 constexpr uintptr_t CombatLockdown      = 0x00D413A4;
 constexpr uintptr_t EventHandlerPtr     = 0x00D413B0;
-constexpr uintptr_t HardwareEventFlag   = 0x00BEAF4C;
+// HardwareEventFlag is RESOLVED AT RUNTIME by scanning .text for cmp [addr],0
+// and picking the most-referenced writable data address. The static fallback
+// (0x00BEAF4C) is ONLY used if the scan fails.
+extern uintptr_t HardwareEventFlag;   // mutable — set by ScanHardwareEventFlag()
 
 // --- FrameScript ---
 constexpr uintptr_t FrameScript_Execute          = 0x00819210;

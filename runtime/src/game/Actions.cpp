@@ -165,16 +165,28 @@ static thread_local lua_State* g_currentL = nullptr;
 } // namespace
 
 void SoftHardwareUnlock() {
-    __try {
-        volatile uint32_t* hw = reinterpret_cast<volatile uint32_t*>(Addr::HardwareEventFlag);
-        if (hw) *hw = 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-    __try {
-        volatile uint32_t* tc = reinterpret_cast<volatile uint32_t*>(Addr::TaintContext);
-        if (tc) *tc = 0;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
+    // CRITICAL: validate that the target address is writable DATA, not
+    // executable CODE. Wrong flag address → write to .text section →
+    // corrupt instruction → ILLEGAL_INSTRUCTION crash (observed at 0x387C262D).
+    // Use VirtualQuery to check page protection before every write.
+    auto safeWrite = [](uintptr_t addr, uint32_t value) -> bool {
+        if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) return false;
+        // Refuse to write to executable pages — this is code, not data
+        if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
+            return false;
+        // Must be writable
+        if (!(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY))) return false;
+        __try {
+            *reinterpret_cast<volatile uint32_t*>(addr) = value;
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    };
+    safeWrite(Addr::HardwareEventFlag, 1);
+    safeWrite(Addr::TaintContext, 0);
 }
 
 namespace {

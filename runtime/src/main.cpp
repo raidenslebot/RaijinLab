@@ -2,6 +2,8 @@
 #include <string>
 #include <cstdio>
 #include <cinttypes>
+#include <map>
+#include <algorithm>
 #include "bridge/Ipc.h"
 #include "core/Log.h"
 #include "core/Config.h"
@@ -15,9 +17,75 @@
 #include "lua/Lua.h"
 #include "bridge/Dispatch.h"
 
+// ---- Runtime HardwareEventFlag resolver ----------------------------------
+// The hardcoded address from AddressDB (0x00BEAF4C) is wrong for this Ascension
+// build — writes to it corrupt executable code causing ILLEGAL_INSTRUCTION.
+// Instead, scan .text for 'cmp [addr], 0' patterns, filter for addresses in
+// writable data sections, and pick the most-referenced one. This is the
+// definitive HardwareEventFlag for THIS build.
+static uintptr_t ScanHardwareEventFlag() {
+    HMODULE base = GetModuleHandleA(nullptr);
+    if (!base) return RL::Game::Addr::HardwareEventFlag; // fallback
+
+    auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+    auto nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<uint8_t*>(base) + dos->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    uintptr_t textS = 0, textE = 0;
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        if (memcmp(sec[i].Name, ".text", 5) == 0) {
+            textS = reinterpret_cast<uintptr_t>(base) + sec[i].VirtualAddress;
+            textE = textS + sec[i].Misc.VirtualSize;
+            break;
+        }
+    }
+    if (!textS) return RL::Game::Addr::HardwareEventFlag;
+
+    // Collect all cmp [disp32], 0 addresses
+    std::map<uintptr_t, int> refCounts;
+    uint8_t pattern[7] = {0x83, 0x3D, 0, 0, 0, 0, 0x00}; // cmp [disp32], 0
+    for (uintptr_t p = textS; p + 7 < textE; ++p) {
+        if (memcmp(reinterpret_cast<void*>(p), pattern, 3) == 0) { // match opcode bytes
+            uintptr_t addr = *reinterpret_cast<uint32_t*>(p + 2); // displacement
+            // Verify it's a writable data address (not executable code)
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) {
+                if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+                    if (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) {
+                        refCounts[addr]++;
+                    }
+                }
+            }
+        }
+    }
+
+    // Pick most-referenced writable address
+    uintptr_t best = 0;
+    int bestN = 0;
+    for (auto& kv : refCounts) {
+        if (kv.second > bestN) {
+            bestN = kv.second;
+            best = kv.first;
+        }
+    }
+
+    if (best && bestN >= 3) {
+        LOG_I("sys.scan", "HardwareEventFlag resolved: 0x%08X (refs=%d, was 0x%08X)",
+              (unsigned)best, bestN, (unsigned)RL::Game::Addr::HardwareEventFlag);
+        return best;
+    }
+    LOG_W("sys.scan", "HardwareEventFlag scan FAILED (best=0x%08X refs=%d), using fallback 0x%08X",
+          (unsigned)best, bestN, (unsigned)RL::Game::Addr::HardwareEventFlag);
+    return RL::Game::Addr::HardwareEventFlag;
+}
+
 static volatile bool g_run = true;
 static HANDLE g_mutex = nullptr;
 static HMODULE g_self = nullptr;
+
+// Mutable HardwareEventFlag — resolved at runtime by scanner, not hardcoded.
+namespace RL::Game::Addr {
+    uintptr_t HardwareEventFlag = 0x00BEAF4C; // fallback, overwritten by scanner
+}
 
 // ---- Vectored Exception Handler — crash diagnostics ----------------------
 // Captures FULL register + stack context on ANY access violation and logs
@@ -99,12 +167,17 @@ static DWORD WINAPI MainThread(LPVOID param) {
     AddVectoredExceptionHandler(1, CrashHandler);
     LOG_I("sys.crash", "handler installed");
 
+    // Resolve HardwareEventFlag dynamically — the hardcoded address in
+    // AddressDB is wrong for this Ascension build. Scanner finds the real
+    // flag by looking for 'cmp [addr], 0' references in .text and picking
+    // the most-referenced writable data address.
+    RL::Game::Addr::HardwareEventFlag = ScanHardwareEventFlag();
+    LOG_I("sys.boot", "self=%p ver=%s om=0 taint=0 hwflag=0x%08X",
+          self, RL::Bridge::Version(), (unsigned)RL::Game::Addr::HardwareEventFlag);
+
     RL::Config::Set("om.enable", "0");
     RL::Config::Set("taint.patch", "1");
     RL::Config::Flush();
-
-    LOG_I("sys.boot", "self=%p ver=%s om=0 taint=0",
-          self, RL::Bridge::Version());
 
     // Single-instance guard. The previous code used an ANONYMOUS mutex, which
     // can never detect a second instance (each injection made its own unnamed

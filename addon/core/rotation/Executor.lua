@@ -282,15 +282,17 @@ local function apply_pending_refuse(reason, fail_name)
     Executor._next_gap = 0
 
     if refuse_is_not_ready(rl) then
-        -- Awareness only: floor THIS spell to live remaining. No min invent.
-        -- Free global GCD unless we can measure a real GCD from any source.
+        -- Floor THIS spell to live remaining. When GetSpellCooldown returns nil
+        -- for Ascension custom spells, spell_ready_remaining may return 0 even
+        -- when the spell genuinely IS on cooldown. Minimum floor prevents
+        -- immediate re-fire → refuse → re-fire loops (observed: Consecration
+        -- casting 3x in 3 seconds on an 8-second CD).
         local hold = spell_ready_remaining(sid, name)
         if hold > 10.0 then hold = 10.0 end
+        if hold < 0.35 then hold = 0.35 end  -- minimum 350ms after "not ready"
         Executor._recent = Executor._recent or {}
-        if sid and hold > 0.02 then
+        if sid and hold > 0 then
             Executor._recent[sid] = now() + hold
-        elseif sid then
-            Executor._recent[sid] = nil
         end
         -- Probe GCD from multiple sources (spell 61304 may be nil on Ascension)
         local gcd_rem = 0
@@ -2512,9 +2514,25 @@ function Executor._tick_body()
             Executor._pending = nil
             Executor._unconf = nil
             Executor._refuse = nil
-            -- Micro lock only after REAL land (anti double-fire).
+            -- Set spell CD floor from observed cooldown AFTER landing.
+            -- GetSpellCooldown may work post-cast even for Ascension custom
+            -- spells (the client updates its internal CD table on successful
+            -- cast). If it returns nil, fall back to the GCD duration.
             Executor._recent = Executor._recent or {}
-            Executor._recent[p.sid] = t + micro_lock()
+            local cd_end = t + micro_lock()  -- minimum anti-double-fire
+            if GetSpellCooldown and p.sid > 0 then
+                local s, d = GetSpellCooldown(p.sid)
+                s, d = tonumber(s) or 0, tonumber(d) or 0
+                if d > 1.6 then  -- real spell CD (not GCD)
+                    local end_t = s + d
+                    if end_t > cd_end then cd_end = end_t end
+                end
+            end
+            -- If no spell CD detected, use GCD end as minimum floor
+            if (Executor._gcd_until or 0) > cd_end then
+                cd_end = Executor._gcd_until
+            end
+            Executor._recent[p.sid] = cd_end
             do
                 local G = gate()
                 if G and G.note_landed then

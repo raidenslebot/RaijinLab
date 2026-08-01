@@ -78,6 +78,27 @@ uint8_t ReadByte(uintptr_t addr) {
 }
 
 void ZeroDword(uintptr_t addr) {
+    // Validate address before blind write — a wrong offset in AddressDB
+    // corrupts random client memory leading to ACCESS_VIOLATION crashes
+    // (observed: 0x00000065 NULL vtable dereference from corrupted globals).
+    if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) {
+        RL::Log::Error("taint: ZeroDword REFUSED invalid addr 0x%08X", (unsigned)addr);
+        return;
+    }
+    // Read existing value — if it looks like a valid pointer (>0x00400000),
+    // this is probably NOT a taint counter and zeroing it would corrupt state.
+    __try {
+        DWORD cur = *reinterpret_cast<DWORD*>(addr);
+        if (cur > 0x00400000 && cur < 0x07FFFFFF) {
+            RL::Log::Warn("taint: ZeroDword SKIP addr 0x%08X contains pointer-like 0x%08X",
+                          (unsigned)addr, (unsigned)cur);
+            return;
+        }
+        RL::Log::Info("taint: ZeroDword 0x%08X old=0x%08X", (unsigned)addr, (unsigned)cur);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        RL::Log::Error("taint: ZeroDword unreadable addr 0x%08X", (unsigned)addr);
+        return;
+    }
     DWORD z = 0;
     WriteMem(addr, &z, 4);
 }

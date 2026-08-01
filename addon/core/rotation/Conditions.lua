@@ -673,13 +673,20 @@ Conditions.register("target_targeting_you", {
         if not bool(ctx.target_exists, false) then return false end
         local st = string.lower(tostring((args and args.state) or "is"))
         local on_you = ctx.target_targeting_you
-        if on_you == nil then
-            -- Live API fallback when World snapshot did not fill the field.
+        -- Always re-check live (ctx can lag one tick after retarget).
+        local W = RaijinLab and RaijinLab.World
+        if W and W.target_is_targeting_you then
+            on_you = W.target_is_targeting_you() and true or false
+        elseif on_you == nil then
             if UnitIsUnit then
                 local ok, r = pcall(UnitIsUnit, "targettarget", "player")
                 on_you = ok and r and true or false
             else
                 on_you = false
+            end
+            if not on_you and UnitName then
+                local tn, pn = UnitName("targettarget"), UnitName("player")
+                if tn and pn and tn == pn then on_you = true end
             end
         else
             on_you = bool(on_you, false)
@@ -687,7 +694,6 @@ Conditions.register("target_targeting_you", {
         if st == "is_not" or st == "not" or st == "no" or st == "false" then
             return not on_you
         end
-        -- is / yes / true / default
         return on_you
     end,
 })

@@ -385,11 +385,44 @@ function World.is_los_guid(guid)
     return clear
 end
 
+-- Authoritative: is the current client target targeting the local player?
+-- Used by target_targeting_you condition. Multiple witnesses — Ascension
+-- UnitIsUnit("targettarget","player") is often false-negative.
+function World.target_is_targeting_you()
+    if not (UnitExists and UnitExists("target")) then return false end
+    if UnitIsUnit then
+        local ok, r = pcall(UnitIsUnit, "targettarget", "player")
+        if ok and r then return true end
+    end
+    -- Name witness (3.3.5 stock, no nameplates required).
+    if UnitName then
+        local tn = UnitName("targettarget")
+        local pn = UnitName("player")
+        if tn and pn and tn == pn then return true end
+    end
+    -- GUID witness via runtime UnitTarget(target) == player GUID.
+    local pg = UnitGUID and UnitGUID("player")
+    local tg = UnitGUID and UnitGUID("target")
+    if pg and tg and RaijinLab and RaijinLab.UnitTarget then
+        local ok, dest = pcall(RaijinLab.UnitTarget, RaijinLab, tg)
+        if ok and dest and tostring(dest) == tostring(pg) then return true end
+    end
+    -- UNIT_FIELD_TARGET via ObjectTarget if exposed.
+    if pg and tg and RaijinLab and RaijinLab.ObjectTarget then
+        local ok, dest = pcall(RaijinLab.ObjectTarget, RaijinLab, tg)
+        if ok and dest and tostring(dest) == tostring(pg) then return true end
+    end
+    return false
+end
+
 -- True when unit (token or GUID) is actively attacking the local player
 -- (targets player, or is casting a harmful spell at player). Used for natural
 -- target acquisition only — never for multi-dot GUID casts.
 function World.unit_is_attacking_player(token_or_guid)
     if not token_or_guid then return false end
+    if token_or_guid == "target" then
+        return World.target_is_targeting_you()
+    end
     local token = nil
     local guid = nil
     if type(token_or_guid) == "string" and UnitExists and UnitExists(token_or_guid) then
@@ -398,11 +431,8 @@ function World.unit_is_attacking_player(token_or_guid)
     else
         guid = tostring(token_or_guid)
     end
-    -- Prefer UnitTarget runtime / stock: unit's target is player.
     if token and UnitIsUnit then
         if UnitIsUnit(token .. "target", "player") then return true end
-        -- Some clients expose target via UnitName on "targettarget" only for "target".
-        if token == "target" and UnitIsUnit("targettarget", "player") then return true end
     end
     if RaijinLab and RaijinLab.UnitTarget and guid then
         local ok, tg = pcall(RaijinLab.UnitTarget, RaijinLab, guid)
@@ -411,13 +441,10 @@ function World.unit_is_attacking_player(token_or_guid)
             if pg and tostring(tg) == tostring(pg) then return true end
         end
     end
-    -- Hostiles pack: unit_flags / in combat targeting us is reflected by being
-    -- in the pack AND UnitAffectingCombat on a live token.
-    if token and UnitAffectingCombat and UnitCanAttack then
-        if UnitCanAttack("player", token) and UnitAffectingCombat(token)
-            and UnitIsUnit and UnitIsUnit(token .. "target", "player") then
-            return true
-        end
+    if token and UnitName then
+        local tn = UnitName(token .. "target")
+        local pn = UnitName("player")
+        if tn and pn and tn == pn then return true end
     end
     return false
 end
@@ -2049,8 +2076,10 @@ function World.build_context(opts)
         ctx.target_is_enemy = UnitCanAttack and UnitCanAttack("player", "target") or false
         ctx.target_is_friend = UnitIsFriend and UnitIsFriend("player", "target") or false
         ctx.target_is_dead = UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") or false
-        -- Target's target is us (aggro / focused on player).
-        do
+        -- Target's target is us (aggro / focused on player). Multi-witness.
+        if World.target_is_targeting_you then
+            ctx.target_targeting_you = World.target_is_targeting_you() and true or false
+        else
             local on_you = false
             if UnitIsUnit then
                 local ok, r = pcall(UnitIsUnit, "targettarget", "player")
@@ -2692,6 +2721,14 @@ function World.find_aura_search_targets(opts)
 
     if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime()) then
+        return {}
+    end
+
+    -- OOC walk without a target: skip SoftRefresh/AuraSearch (FPS spikes).
+    -- Multi-dot packs resume the moment combat starts or a target exists.
+    local in_combat = UnitAffectingCombat and UnitAffectingCombat("player")
+    local has_tgt = UnitExists and UnitExists("target")
+    if not in_combat and not has_tgt then
         return {}
     end
 

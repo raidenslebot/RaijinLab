@@ -2082,8 +2082,9 @@ SlashCmdList["RAIJINLAB"] = function(msg)
 end
 
 -- Localized names for the key-binding UI (so it shows friendly text, not raw IDs).
-BINDING_HEADER_RAIJINLAB          = "RaijinLab"
-BINDING_NAME_RAIJINLAB_TOGGLE_MENU = "Toggle RaijinLab menu"
+BINDING_HEADER_RAIJINLAB             = "RaijinLab"
+BINDING_NAME_RAIJINLAB_TOGGLE_MENU   = "Toggle RaijinLab menu"
+BINDING_NAME_RAIJINLAB_TOGGLE_ROTATION = "Toggle rotation module"
 
 -- Global entry point for macros and key-bindings. Bindings.xml calls this.
 function RaijinLab_ToggleMenu()
@@ -2094,9 +2095,48 @@ function RaijinLab_ToggleMenu()
     end
 end
 
+-- Toggle ONLY the rotation module (Home tab selection + start/stop if suite on).
+-- Bind in Esc → Key Bindings → RaijinLab → "Toggle rotation module".
+function RaijinLab_ToggleRotation()
+    RaijinLabDB = RaijinLabDB or {}
+    RaijinLabDB.modules = RaijinLabDB.modules or {}
+    local on = not RaijinLabDB.modules.rotation
+    RaijinLabDB.modules.rotation = on
+    if RaijinLab and RaijinLab.Menu and RaijinLab.Menu.ApplyModuleState then
+        pcall(function() RaijinLab.Menu:ApplyModuleState("rotation") end)
+    elseif RaijinLab and RaijinLab.RotationExecutor then
+        -- Suite off: arm only (ApplyModuleState no-ops start when suppressed).
+        -- Suite on: start/stop rotation ticker.
+        local suppressed = RaijinLab.Master and RaijinLab.Master.suppressed
+            and RaijinLab.Master.suppressed()
+        if not suppressed then
+            if on then
+                pcall(RaijinLab.RotationExecutor.start)
+            else
+                pcall(RaijinLab.RotationExecutor.stop)
+            end
+        end
+    end
+    -- Keep rotation_enabled in sync when suite is running.
+    if RaijinLab.Master and not (RaijinLab.Master.suppressed and RaijinLab.Master.suppressed()) then
+        RaijinLabDB.rotation_enabled = on and true or false
+    end
+    if print then
+        print("|cff7ec8e3RaijinLab|r rotation module "
+            .. (on and "|cff10ff10ON|r" or "|cffff5555OFF|r")
+            .. "  (bind: Esc→Key Bindings→RaijinLab)")
+    end
+    if RaijinLab and RaijinLab.Menu and RaijinLab.Menu.RefreshHome then
+        pcall(function() RaijinLab.Menu:RefreshHome() end)
+    end
+end
+
 SLASH_RAIJINMENU1 = "/rjm"
 SLASH_RAIJINMENU2 = "/rmenu"
 SlashCmdList["RAIJINMENU"] = function() RaijinLab_ToggleMenu() end
+
+SLASH_RAIJINROT1 = "/rjrot"
+SlashCmdList["RAIJINROT"] = function() RaijinLab_ToggleRotation() end
 
 local function RL_ForceMenuHash()
     if hash_SlashCmdList then

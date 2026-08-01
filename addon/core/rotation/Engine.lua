@@ -507,10 +507,13 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
             -- User-busy opt-in via player_state condition only.
             ctx.slot_allows_busy = Engine.slot_allows_user_busy(slot, user_state)
             local tr = opts.trace
+            -- Auto Attack is off-GCD (StartAttack). Never skip on gcd_active.
+            local is_aa = (sid == 6603)
+                or (Basic and Basic.is_auto_attack and Basic.is_auto_attack(sid, slot.name))
             if user_state ~= "free" and not ctx.slot_allows_busy then
                 if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "user_busy", why = user_state } end
                 last_skip = "user_busy"
-            elseif ctx.gcd_active and not slot.off_gcd and not opts.ignore_ready then
+            elseif ctx.gcd_active and not slot.off_gcd and not is_aa and not opts.ignore_ready then
                 -- Fast GCD path: no aura_search / conditions (major FPS win at 40Hz).
                 if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "basic_deny", why = "gcd" } end
                 last_skip = "gcd"

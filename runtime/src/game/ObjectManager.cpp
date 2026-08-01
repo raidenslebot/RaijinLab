@@ -1349,12 +1349,24 @@ static bool BuildUnitSnapshotLocked() {
 }
 
 // Soft discovery for multi-dot (works with om.enable 0 or 1). Rate-limited.
+// OOC: slower cadence (walk/loot FPS). Combat: full ~10 Hz.
 static void SoftRefreshListOnlyForHostiles() {
     static ULONGLONG s_last = 0;
     ULONGLONG now = GetTickCount64();
     uint64_t local = SafeGetActive();
     if (!OmWalkAllowed(now, local)) return;
-    if ((now - s_last) < kWalkMinIntervalMs) return;
+    ULONGLONG minIv = kWalkMinIntervalMs;
+    // Player combat flag: throttle SoftRefresh while walking OOC.
+    uintptr_t pp = Ptr(local);
+    if (pp && AcceptObjPtr(pp)) {
+        uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
+        if (d && AcceptObjPtr(d)) {
+            uint32_t uf = Mem::Read<uint32_t>(d + Offsets::D().Flags);
+            if ((uf & kUF_IN_COMBAT) == 0)
+                minIv = 280ull; // ~3.5 Hz OOC — multi-dot resumes at combat
+        }
+    }
+    if ((now - s_last) < minIv) return;
     s_last = now;
     std::lock_guard<std::mutex> lock(g_mu);
     if (BuildUnitSnapshotLocked()) {

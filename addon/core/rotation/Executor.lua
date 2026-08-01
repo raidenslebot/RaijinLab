@@ -1698,7 +1698,7 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Auto Attack: engage once if needed; never CastSpell spam.
+    -- Auto Attack: engage once if needed; never CastSpell spam / never GCD.
     if is_auto_attack(sid, name) then
         if not (UnitExists and UnitExists("target")) then return false, "no_target" end
         if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then return false, "target_dead" end
@@ -1712,10 +1712,10 @@ function Executor.attempt_action(action, ctx)
         if Act.Attack then
             pcall(Act.Attack)
             Executor._last_cast = { sid = 6603, name = "Auto Attack", via = "Attack", t = now(), evidence = "attack" }
-            -- Floor so we do not re-select every frame while swing starts.
+            -- Short re-engage floor only (not 0.75 — felt like rotation delay).
             Executor._recent = Executor._recent or {}
-            Executor._recent[sid] = now() + 0.75
-            Executor._recent[6603] = now() + 0.75
+            Executor._recent[sid] = now() + 0.35
+            Executor._recent[6603] = now() + 0.35
             dlog("cast", "auto-attack")
             return true, "ok:attack", cast_snapshot(sid)
         end
@@ -2641,6 +2641,25 @@ function Executor._tick_body()
     -- GCD freeze first so fill_live can take the light path under GCD.
     local casting_now = (UnitCastingInfo and UnitCastingInfo("player"))
         or (UnitChannelInfo and UnitChannelInfo("player"))
+    -- Clear STUCK provisional GCD when live client shows ready (new-target lag).
+    -- Live: gcd_src=not_ready_gcd rem=1.47 while OOC no target for minutes.
+    if not casting_now and (Executor._gcd_until or 0) > t then
+        local live = spell_ready_remaining(61304, nil)
+        if live <= 0.02 then
+            -- Double-check any known book spell remaining.
+            local any = 0
+            if GetSpellCooldown then
+                local s, d = GetSpellCooldown(61304)
+                s, d = tonumber(s) or 0, tonumber(d) or 0
+                if d > 0 then any = (s + d) - t end
+            end
+            if any <= 0.02 then
+                Executor._gcd_until = 0
+                Executor._gcd_provisional = false
+                Executor._gcd_src = "live_clear"
+            end
+        end
+    end
     local gcd_active = false
     if casting_now then
         gcd_active = true
@@ -2656,6 +2675,21 @@ function Executor._tick_body()
         end
     end
     ctx.gcd_active = gcd_active
+
+    -- New target: clear idle throttle + AA recent so first engage is instant.
+    do
+        local tg = (UnitExists and UnitExists("target") and UnitGUID and UnitGUID("target")) or nil
+        if tg and tg ~= Executor._last_target_guid then
+            Executor._idle_until = nil
+            Executor._recent = Executor._recent or {}
+            Executor._recent[6603] = nil
+            if Executor._gcd_provisional then
+                Executor._gcd_until = 0
+                Executor._gcd_provisional = false
+            end
+        end
+        Executor._last_target_guid = tg
+    end
 
     -- AUTHORITATIVE live client readiness THIS frame (overwrites snapshot).
     fill_live_spell_state(ctx, spell_ids)
@@ -2874,8 +2908,8 @@ function Executor._tick_body()
         -- fails for multi-frames. Only pending tracks in-flight; land sets micro.
         if is_aa then
             Executor._recent = Executor._recent or {}
-            Executor._recent[sid] = t + 0.75
-            Executor._recent[6603] = t + 0.75
+            Executor._recent[sid] = t + 0.35
+            Executor._recent[6603] = t + 0.35
         elseif off_gcd then
             Executor._recent = Executor._recent or {}
             Executor._recent[sid] = t + 0.05

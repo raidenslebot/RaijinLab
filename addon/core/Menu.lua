@@ -451,6 +451,14 @@ function Menu:BuildHome(parent)
         self._home.mods[key] = { state = state, toggle = toggle }
         end
     end
+
+    -- Rotation keybind hint (Esc → Key Bindings → RaijinLab).
+    local kb = fs(mods, "Rotation keybind: Esc → Key Bindings → RaijinLab → Toggle rotation module  |  /rjrot",
+        "GameFontDisableSmall")
+    kb:SetPoint("BOTTOMLEFT", mods, "BOTTOMLEFT", 14, 10)
+    kb:SetPoint("BOTTOMRIGHT", mods, "BOTTOMRIGHT", -14, 10)
+    kb:SetJustifyH("LEFT")
+    self._home.rot_keybind_hint = kb
 end
 
 function Menu:RefreshHome()

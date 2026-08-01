@@ -1,4 +1,5 @@
-local private = { delay = 0.5 }
+-- Pulse only when looter enabled. Empty area: back off (no LoS thrash).
+local private = { delay = 0.65, empty_streak = 0 }
 RaijinLab.looter = {}
 
 if not RaijinLabDB.looter then
@@ -17,27 +18,12 @@ local function dist_player(object)
     return nil
 end
 
-local function los_player(object)
-    if not object or not RaijinLab.InLineOfSight then return true end -- undetermined allow
-    local ok, clear = pcall(RaijinLab.InLineOfSight, RaijinLab, "player", object)
-    if not ok then return true end
-    return clear ~= false
-end
-
-local function pick_nearest_with_los(cands, max_check)
+-- No TraceLine on loot scan. Interact at feet (≤5yd) is always attempted;
+-- longer-range LoS was the walk/loot FPS spike.
+local function pick_nearest(cands)
     if not cands or #cands == 0 then return nil end
     table.sort(cands, function(a, b) return (a.distance or 999) < (b.distance or 999) end)
-    max_check = max_check or 4
-    for i = 1, math.min(#cands, max_check) do
-        local c = cands[i]
-        if c and c.object and (c.distance or 999) <= 12 and los_player(c.object) then
-            return c
-        end
-    end
-    -- No LoS hit among nearest: still return closest within 5yd (feet interact).
-    local c0 = cands[1]
-    if c0 and (c0.distance or 999) <= 5 then return c0 end
-    return nil
+    return cands[1]
 end
 
 local function GetLootableUnit()
@@ -64,29 +50,38 @@ local function GetLootableUnit()
         end
     end
 
-    local best = pick_nearest_with_los(cands, 4)
+    local best = pick_nearest(cands)
     if best and best.distance and best.distance <= 10 then
         private.lootable_unit = best
+        private.empty_streak = 0
         return
     end
 
-    -- 2) Dead lootable NPCs from OM list — distance first, LoS only top-N.
+    -- 2) Dead lootable NPCs from OM list — distance only (no TraceLine).
     cands = {}
     local npcs = RaijinLab.om and RaijinLab.om.object_list and RaijinLab.om.object_list.npcs
     if npcs then
-        for i = 1, #npcs do
+        local n = #npcs
+        -- Cap scan work when OM is huge (walk/loot FPS).
+        local lim = math.min(n, 48)
+        for i = 1, lim do
             local struct = npcs[i]
             if struct and struct.Object
                 and struct.Info and struct.Info.Unit
                 and struct.Info.Unit.Dead and struct.Info.Unit.Lootable then
                 local d = dist_player(struct.Object)
-                if d and d <= 15 then
+                if d and d <= 12 then
                     cands[#cands + 1] = { object = struct.Object, distance = d }
                 end
             end
         end
     end
-    private.lootable_unit = pick_nearest_with_los(cands, 4)
+    private.lootable_unit = pick_nearest(cands)
+    if private.lootable_unit then
+        private.empty_streak = 0
+    else
+        private.empty_streak = (private.empty_streak or 0) + 1
+    end
 end
 
 local function Gather()
@@ -121,6 +116,8 @@ local function Gather()
         else
             RaijinLab.HAS_LOOTABLE_UNIT = false
         end
+    else
+        RaijinLab.HAS_LOOTABLE_UNIT = false
     end
 end
 
@@ -247,7 +244,10 @@ LooterFrame:SetScript(
         end
         if GetTime() > private.pulse then
             Gather()
-            private.pulse = GetTime() + private.delay
+            -- Empty area: back off pulse (awareness of nothing to loot).
+            local gap = private.delay
+            if (private.empty_streak or 0) >= 3 then gap = 1.5 end
+            private.pulse = GetTime() + gap
         end
     end
 )

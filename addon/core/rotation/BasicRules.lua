@@ -122,7 +122,21 @@ local function check_caster_busy(ctx, sid, slot)
     return true
 end
 
+-- Auto Attack is off-GCD swing engagement (StartAttack), never a GCD cast.
+local function is_auto_attack(sid, name)
+    if tonumber(sid) == 6603 then return true end
+    local n = string.lower(tostring(name or ""))
+    return n == "auto attack" or n == "attack" or n == "auto-attack"
+end
+BasicRules.is_auto_attack = is_auto_attack
+
 local function check_gcd_cd(ctx, sid, slot)
+    local name = (slot and slot.name) or (ctx and ctx.slot_name)
+    -- Auto Attack: always evaluate on GCD (StartAttack is off-GCD). Live bug:
+    -- after Consecration, gcd_active skipped AA forever while GCD ticked.
+    if is_auto_attack(sid, name) then
+        return true
+    end
     local off = (slot and slot.off_gcd) or (ctx and ctx.slot_off_gcd)
     -- Pending same spell: wait.
     if ctx and ctx.pending_sid and tonumber(ctx.pending_sid) == sid then
@@ -142,7 +156,6 @@ local function check_gcd_cd(ctx, sid, slot)
         end
     end
     -- Per-spell CD from live snapshot. Awareness only — no lag pads.
-    -- Pads (0.04+latency) invented multi-hundred-ms freezes when rem was ~0.
     local cds = ctx and ctx.cooldowns or {}
     local rem = cds[sid]
     if rem == nil then rem = cds[tostring(sid)] end
@@ -259,6 +272,7 @@ local function check_facing(ctx, sid, slot, name)
     if policy == "optional" or policy == "forbid" or policy == "corpse" then
         return true
     end
+    if is_auto_attack(sid, name) then return true end -- StartAttack has own cone
     if is_self_aoe_spell(sid, name) or is_ground_self_aoe(sid, name) then
         return true
     end
@@ -279,6 +293,7 @@ local function check_los(ctx, sid, slot, name)
     if policy == "optional" or policy == "forbid" or policy == "corpse" then
         return true
     end
+    if is_auto_attack(sid, name) then return true end
     if is_ground_self_aoe(sid, name) then
         return true
     end

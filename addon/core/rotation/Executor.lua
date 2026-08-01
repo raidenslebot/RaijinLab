@@ -1006,27 +1006,19 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Usable: runtime C++ IsSpellUsableRt FIRST (reads client memory
-            -- directly — spell CD, power, HW flag set). Falls back to Blizzard
-            -- API only if runtime unavailable.
+            -- Usable: runtime C++ IsSpellUsableRt only. No Blizzard API fallback —
+            -- the runtime reads client memory directly (CD, power, HW flag).
             if not gcd_lock then
-                local u, nomana = nil, nil
-                -- Primary: runtime pure C++ check (validated, no Lua stack risk)
+                local can = true
                 if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
                     local okr, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellUsableRt", id)
                     if okr and type(packed) == "string" then
                         local ru, rn = string.match(packed, "^(-?%d+)|(-?%d+)$")
                         ru, rn = tonumber(ru), tonumber(rn)
-                        if ru and ru >= 0 then u, nomana = (ru == 1), (rn == 1) end
+                        if ru == 0 then can = false end
+                        if rn == 1 then can = false end
                     end
                 end
-                -- Fallback: Blizzard IsUsableSpell
-                if u == nil and IsUsableSpell then
-                    u, nomana = IsUsableSpell(id)
-                    if u == nil and name then u, nomana = IsUsableSpell(name) end
-                end
-                local can = (u == nil) or (not not u)
-                if nomana then can = false end
                 ctx.spell_usable[id] = can
                 ctx.spell_usable[tostring(id)] = can
             elseif ctx.spell_usable[id] == nil then
@@ -1048,65 +1040,19 @@ local function fill_live_spell_state(ctx, spell_ids)
                 targeted = false
                 ctx.spell_range_diag[id] = { sid = id, name = name, kind = "ground_aoe", verdict = "in_ground_aoe" }
             elseif has_target then
-                -- Cheap band check from shared model; client IsSpellInRange once.
-                local minR, maxR = meta.minR, meta.maxR
-                local band = (maxR and maxR > 0) and maxR or 5.0
-                local client_r = nil
-                if IsSpellInRange and name and name ~= "" then
-                    local rok, r = pcall(IsSpellInRange, name, "target")
-                    if rok then client_r = r end
+                -- Runtime C++ IsSpellInRangeRt only: reads positions from
+                -- descriptors, computes edge distance vs spell maxRange.
+                local inr = true
+                if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                    local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
+                    if rok and type(rval) == "number" and rval >= 0 then
+                        inr = (rval == 1)
+                    end
                 end
-                if client_r == 0 then
-                    -- Primary: runtime C++ IsSpellInRangeRt (reads positions
-                    -- from descriptors, computes edge distance — no Lua API).
-                    local rtInRange = nil
-                    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                        local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
-                        if rok and type(rval) == "number" and rval >= 0 then
-                            rtInRange = (rval == 1)
-                        end
-                    end
-                    if rtInRange ~= nil then
-                        inr = rtInRange
-                    elseif precise and edge ~= nil then
-                        -- Fallback: precise measurement override
-                        if edge <= band + RANGE_EPS then
-                            inr = true
-                        else
-                            inr = false
-                        end
-                    else
-                        inr = false
-                    end
-                    targeted = true
-                elseif client_r == 1 then
-                    inr = true
-                    targeted = true
-                    if precise and edge and maxR and maxR > 0 and edge > (maxR + 0.75) then
-                        inr = false
-                    end
-                elseif precise and edge ~= nil then
-                    targeted = (maxR and maxR > 0) and true or false
-                    if minR and minR > 0 and edge + RANGE_EPS < minR then inr = false
-                    elseif edge > band + RANGE_EPS then inr = false
-                    end
-                else
-                    -- No measure: fail closed for targeted.
-                    if maxR and maxR > 0 then targeted = true; inr = false end
-                end
-                ctx.spell_range_diag[id] = {
-                    sid = id, name = name, minR = minR, maxR = maxR, band = band,
-                    edge = edge, center = center, precise = precise and true or false,
-                    client = client_r == nil and "nil" or tostring(client_r),
-                    verdict = inr and "in" or "oor",
-                }
+                targeted = true
+                ctx.spell_range_diag[id] = { sid = id, name = name, kind = "targeted", verdict = inr and "in_rt" or "oor_rt" }
             else
-                local maxR = meta.maxR
-                if maxR and maxR > 0 and not self_aoe then
-                    targeted = true
-                    inr = false
-                end
-                ctx.spell_range_diag[id] = { sid = id, name = name, minR = meta.minR, maxR = maxR, verdict = "no_target" }
+                ctx.spell_range_diag[id] = { sid = id, name = name, kind = "no_target", verdict = "no_target" }
             end
             ctx.spell_in_range[id] = inr
             ctx.spell_in_range[tostring(id)] = inr

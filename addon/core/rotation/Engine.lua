@@ -172,6 +172,15 @@ end
 function Engine.slot_target_policy(slot)
     local policy = "require"
     if not slot then return policy end
+    -- Auto Attack is always optional — StartAttack has its own engagement cone
+    -- and the client auto-acquires the nearest enemy when none is selected.
+    do
+        local sid = tonumber(slot.spell_id) or 0
+        local nm = string.lower(tostring(slot.name or ""))
+        if sid == 6603 or nm == "auto attack" or nm == "attack" then
+            return "optional"
+        end
+    end
     for _, c in ipairs(slot.conditions or {}) do
         if c then
             if c.id == "corpse" then

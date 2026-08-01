@@ -186,7 +186,8 @@ int IsSpellInRangeRuntime(lua_State* L, int spellId, float maxRange) {
     (void)L;
     if (spellId <= 0) return -1;
 
-    RL::Game::Actions::SoftHardwareUnlock();
+    // DIAG: disable SoftHardwareUnlock to isolate crash source
+    // RL::Game::Actions::SoftHardwareUnlock();
 
     if (maxRange <= 0.f) maxRange = 5.0f;
 
@@ -218,7 +219,8 @@ int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana) {
     if (outNomana) *outNomana = 0;
     if (spellId <= 0) return -1;
 
-    RL::Game::Actions::SoftHardwareUnlock();
+    // DIAG: disable SoftHardwareUnlock
+    // RL::Game::Actions::SoftHardwareUnlock();
 
     uint64_t localGuid = RL::Game::OM::LocalGuid();
     if (!localGuid) return -1;

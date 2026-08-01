@@ -345,17 +345,11 @@ static int SafeScript(const char* code) {
 } // namespace
 
 void ArmUnlock() {
-    SoftHardwareUnlock();
-    // HW event gate binary patches are DISABLED — SoftHardwareUnlock() sets
-    // the flag directly (*HardwareEventFlag=1) which achieves the same result
-    // without modifying client code. The binary scan was patching 10 sites,
-    // one of which corrupted a code path leading to AV_WRITE at 0x43B0DB51
-    // (NULL+2 pointer dereference in an Ascension custom module).
-    // Binary patches remain available for diagnostics via SetSystemVar but
-    // are never applied automatically.
+    // DIAG: disable all SoftHardwareUnlock to isolate crash source
+    // SoftHardwareUnlock();
     if (!g_armed) {
         g_armed = true;
-        RL::Log::Warn("Actions: armed (soft unlock only, no binary hw-gates)");
+        RL::Log::Warn("Actions: armed (DIAG: no HW unlock)");
     }
 }
 

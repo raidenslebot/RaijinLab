@@ -328,16 +328,16 @@ static int SafeScript(const char* code) {
 
 void ArmUnlock() {
     SoftHardwareUnlock();
-    // HW-only binary patches - required for cast without real mouse/key event
-    if (!Taint::HardwareGatesApplied()) {
-        RL::Log::Info("ArmUnlock: applying HW event gates...");
-        Taint::ApplyHardwareGatesOnly();
-    }
+    // HW event gate binary patches are DISABLED — SoftHardwareUnlock() sets
+    // the flag directly (*HardwareEventFlag=1) which achieves the same result
+    // without modifying client code. The binary scan was patching 10 sites,
+    // one of which corrupted a code path leading to AV_WRITE at 0x43B0DB51
+    // (NULL+2 pointer dereference in an Ascension custom module).
+    // Binary patches remain available for diagnostics via SetSystemVar but
+    // are never applied automatically.
     if (!g_armed) {
         g_armed = true;
-        RL::Log::Warn("Actions: armed hw_gates=%d", Taint::HardwareGateCount());
-    } else {
-        RL::Log::Trace("ArmUnlock: already armed hw_gates=%d", Taint::HardwareGateCount());
+        RL::Log::Warn("Actions: armed (soft unlock only, no binary hw-gates)");
     }
 }
 

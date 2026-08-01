@@ -1386,26 +1386,12 @@ static int Handle(lua_State* L, const char* name) {
     if (!std::strcmp(name, "SpellStopCasting") || !std::strcmp(name, "StopCasting"))
         return PushBool(L, Actions::SpellStopCasting());
     if (!std::strcmp(name, "ArmUnlock") || !std::strcmp(name, "UnlockActions")) {
-        // FULL taint bypass, applied HERE and kept applied for the session.
-        //
-        // This was hardware-gates only, with the note "never full Taint::Apply
-        // (that froze clients)". The freeze was about WHERE, not WHAT: the
-        // earlier attempts ran from the WORKER thread, binary-patching code the
-        // main thread was executing at that moment - a race, and it hung.
-        // Dispatch::Handle is invoked from Lua, so it IS the main thread;
-        // patching from here cannot race the interpreter that is calling us.
-        //
-        // Half a bypass is its own bug: with only the hardware gates the addon
-        // still taints the execution context, the client reports "RaijinLab
-        // tainted the call of the secure function", and protected calls the bot
-        // legitimately needs are refused. Apply() is idempotent; Restore() runs
-        // on unload.
+        // Soft unlock only: *HardwareEventFlag=1, *TaintContext=0.
+        // Binary HW gate patches and full taint bypass are DISABLED —
+        // the HW gate JE→JMP scan was corrupting a code path that led
+        // to AV_WRITE at 0x43B0DB51 (NULL+2 deref in an Ascension module).
+        // SoftHardwareUnlock achieves the same result without modifying code.
         Actions::ArmUnlock();
-        if (!RL::Game::Taint::IsApplied()) {
-            bool ok = RL::Game::Taint::Apply();
-            RL::Log::Info("taint: full bypass %s (%d patches)",
-                          ok ? "APPLIED" : "FAILED", RL::Game::Taint::PatchCount());
-        }
         return PushBool(L, true);
     }
     if (!std::strcmp(name, "ExecSecure") || !std::strcmp(name, "RunSecure")) {

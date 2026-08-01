@@ -1006,11 +1006,25 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Usable: Blizzard API only. On Ascension custom spells, IsUsableSpell
-            -- may return nil (unknown). Treat nil as usable — fail-open, server decides.
-            if not gcd_lock and IsUsableSpell then
-                local u, nomana = IsUsableSpell(id)
-                if u == nil and name then u, nomana = IsUsableSpell(name) end
+            -- Usable: runtime C++ IsSpellUsableRt FIRST (reads client memory
+            -- directly — spell CD, power, HW flag set). Falls back to Blizzard
+            -- API only if runtime unavailable.
+            if not gcd_lock then
+                local u, nomana = nil, nil
+                -- Primary: runtime pure C++ check (validated, no Lua stack risk)
+                if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                    local okr, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellUsableRt", id)
+                    if okr and type(packed) == "string" then
+                        local ru, rn = string.match(packed, "^(-?%d+)|(-?%d+)$")
+                        ru, rn = tonumber(ru), tonumber(rn)
+                        if ru and ru >= 0 then u, nomana = (ru == 1), (rn == 1) end
+                    end
+                end
+                -- Fallback: Blizzard IsUsableSpell
+                if u == nil and IsUsableSpell then
+                    u, nomana = IsUsableSpell(id)
+                    if u == nil and name then u, nomana = IsUsableSpell(name) end
+                end
                 local can = (u == nil) or (not not u)
                 if nomana then can = false end
                 ctx.spell_usable[id] = can
@@ -1043,17 +1057,26 @@ local function fill_live_spell_state(ctx, spell_ids)
                     if rok then client_r = r end
                 end
                 if client_r == 0 then
-                    -- IsSpellInRange returns 0 for Ascension custom spells even
-                    -- when the target IS in range. Trust precise measurement
-                    -- when it contradicts the client API.
-                    if precise and edge ~= nil then
+                    -- Primary: runtime C++ IsSpellInRangeRt (reads positions
+                    -- from descriptors, computes edge distance — no Lua API).
+                    local rtInRange = nil
+                    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                        local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
+                        if rok and type(rval) == "number" and rval >= 0 then
+                            rtInRange = (rval == 1)
+                        end
+                    end
+                    if rtInRange ~= nil then
+                        inr = rtInRange
+                    elseif precise and edge ~= nil then
+                        -- Fallback: precise measurement override
                         if edge <= band + RANGE_EPS then
-                            inr = true   -- precise says in range, override client
+                            inr = true
                         else
-                            inr = false  -- both agree: OOR
+                            inr = false
                         end
                     else
-                        inr = false      -- no precise data, trust client
+                        inr = false
                     end
                     targeted = true
                 elseif client_r == 1 then

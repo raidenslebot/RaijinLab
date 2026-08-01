@@ -991,6 +991,39 @@ static int Handle(lua_State* L, const char* name) {
         if (!g) return PushNumber(L, 0.0);
         return PushNumber(L, (double)OM::MaxHealth(g));
     }
+    // ---- Unit power / combat from descriptor (no Lua/Blizzard API) ---------
+    if (!std::strcmp(name, "UnitPower")) {
+        uint64_t g = GuidArg(L, 2);
+        int pt = (int)optnumber(L, 3, 0.0);
+        if (!g) g = OM::LocalGuid();
+        return PushNumber(L, (double)OM::UnitPower(g, pt));
+    }
+    if (!std::strcmp(name, "UnitMaxPower")) {
+        uint64_t g = GuidArg(L, 2);
+        int pt = (int)optnumber(L, 3, 0.0);
+        if (!g) g = OM::LocalGuid();
+        return PushNumber(L, (double)OM::UnitMaxPower(g, pt));
+    }
+    if (!std::strcmp(name, "UnitPowerType")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        return PushNumber(L, (double)OM::UnitPowerType(g));
+    }
+    if (!std::strcmp(name, "UnitInCombat")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        int v = OM::UnitCombatState(g);
+        if (v < 0) return PushNil(L);
+        return PushBool(L, v == 1);
+    }
+    if (!std::strcmp(name, "PlayerCastState")) {
+        int sid = -1, total = 0, elapsed = 0;
+        OM::PlayerCastState(&sid, &total, &elapsed);
+        if (sid < 0) return PushString(L, "0|0|0");
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%d|%d|%d", sid, total, elapsed);
+        return PushString(L, buf);
+    }
     if (!std::strcmp(name, "UnitIsLootable") || !std::strcmp(name, "UnitIsSkinnable") ||
         !std::strcmp(name, "UnitIsMounted") ||
         !std::strcmp(name, "StopFalling") || !std::strcmp(name, "CancelPendingSpell") ||

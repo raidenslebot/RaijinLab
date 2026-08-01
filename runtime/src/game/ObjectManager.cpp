@@ -4,6 +4,7 @@
 #include "Mem.h"
 #include "core/Config.h"
 #include "core/Log.h"
+#include "lua/Lua.h"
 #include <mutex>
 #include <cmath>
 #include <algorithm>
@@ -2100,6 +2101,89 @@ uint32_t UnitFlags(uint64_t guid) {
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     return d ? Mem::Read<uint32_t>(d + Offsets::D().Flags) : 0;
+}
+
+// ---- Unit power / combat / creature-type (verified descriptor offsets) ------
+// Descriptor byte offsets derived from verified Health(0x60) + MaxHealth(0x80):
+// POWER1-7 are contiguous between Health and MaxHealth: 0x64,0x68,0x6C,0x70,0x74,0x78,0x7C
+// MAXPOWER1-7 follow MaxHealth: 0x84,0x88,0x8C,0x90,0x94,0x98,0x9C
+
+int UnitPower(uint64_t guid, int powerType) {
+    if (powerType < 0 || powerType > 6) return -1;
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    // Power fields start at Health+4 (0x64), 4 bytes each
+    static const uintptr_t kPowerBase = 0x64;
+    uintptr_t off = kPowerBase + (uintptr_t)powerType * 4u;
+    __try {
+        int val = Mem::Read<int>(d + off);
+        return (val >= 0 && val < 1000000) ? val : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int UnitMaxPower(uint64_t guid, int powerType) {
+    if (powerType < 0 || powerType > 6) return -1;
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    // MaxPower fields start at MaxHealth+4 (0x84), 4 bytes each
+    static const uintptr_t kMaxPowerBase = 0x84;
+    uintptr_t off = kMaxPowerBase + (uintptr_t)powerType * 4u;
+    __try {
+        int val = Mem::Read<int>(d + off);
+        return (val >= 0 && val < 1000000) ? val : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int UnitPowerType(uint64_t guid) {
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    // Bytes0 at 0xC0: byte3 = power type
+    __try {
+        uint32_t bytes0 = Mem::Read<uint32_t>(d + Offsets::D().Bytes0);
+        return (int)((bytes0 >> 24) & 0xFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int UnitCombatState(uint64_t guid) {
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    static constexpr uint32_t kUF_IN_COMBAT = 0x00080000u;
+    __try {
+        uint32_t flags = Mem::Read<uint32_t>(d + Offsets::D().Flags);
+        return (flags & kUF_IN_COMBAT) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Player casting state via Lua UnitCastingInfo pcall (cached ~50ms).
+void PlayerCastState(int* outSpellId, int* outTotalMs, int* outElapsedMs) {
+    *outSpellId = -1; *outTotalMs = 0; *outElapsedMs = 0;
+    static int s_cachedSid = -1, s_cachedTotal = 0;
+    static ULONGLONG s_cachedAt = 0;
+    ULONGLONG now = GetTickCount64();
+    if (s_cachedAt && (now - s_cachedAt) < 50ull) {
+        *outSpellId = s_cachedSid; *outTotalMs = s_cachedTotal;
+        return;
+    }
+    s_cachedAt = now;
+    // Delegate to Lua helper — one pcall, cached result
+    RL::Lua::PlayerCastInfo(&s_cachedSid, &s_cachedTotal);
+    *outSpellId = s_cachedSid; *outTotalMs = s_cachedTotal;
 }
 
 // Dynamic flags, read from the field that ACTUALLY holds them for this type.

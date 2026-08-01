@@ -39,4 +39,7 @@ double GameTimeFromLua(lua_State* L);
 // time (ms), and power type. Returns -1 values on failure.
 void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCastMs, int* outPowerType);
 
+// Call Lua's UnitCastingInfo("player"). Returns spellId (-1 if not casting) and total cast ms.
+void PlayerCastInfo(int* outSpellId, int* outCastTotalMs);
+
 } // namespace RL::Lua

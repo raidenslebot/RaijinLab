@@ -225,4 +225,37 @@ void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCas
     }
 }
 
+void PlayerCastInfo(int* outSpellId, int* outCastTotalMs) {
+    *outSpellId = -1; *outCastTotalMs = 0;
+    void* rawL = RL::Game::Addr::LuaState();
+    if (!rawL || !p_getfield || !p_pcall || !p_pushstring || !p_tonumber || !p_settop) return;
+    auto L = (lua_State*)rawL;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "UnitCastingInfo");
+        p_pushstring(L, "player");
+        rc = p_pcall(L, 1, 9, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
+
+    __try {
+        // Stack: 1=name 2=text 3=icon 4=startMs 5=endMs 6=delay 7=castId 8=interrupt 9=spellId
+        double endMs   = p_tonumber(L, -5);
+        double startMs = p_tonumber(L, -6);
+        if (endMs <= 0.0) { p_settop(L, top); return; }
+        *outSpellId     = (int)p_tonumber(L, -1);
+        *outCastTotalMs = (int)(endMs - startMs);
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 } // namespace RL::Lua

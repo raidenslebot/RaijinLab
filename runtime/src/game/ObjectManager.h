@@ -88,6 +88,19 @@ int Entry(uint64_t guid);
 int Health(uint64_t guid);
 int MaxHealth(uint64_t guid);
 int Level(uint64_t guid);
+// Unit power: current and max for a given power type (0=mana,1=rage,3=energy,6=runic).
+// Returns -1 if the unit or descriptor is unreadable.
+int UnitPower(uint64_t guid, int powerType);
+int UnitMaxPower(uint64_t guid, int powerType);
+// Power type from descriptor Bytes0 field (byte 3). Returns -1 if unreadable.
+int UnitPowerType(uint64_t guid);
+// Returns 1 if UNIT_FIELD_FLAGS has IN_COMBAT (0x80000), 0 if not, -1 unreadable.
+int UnitCombatState(uint64_t guid);
+// Creature type from descriptor. Returns -1 if unreadable.
+int UnitCreatureType(uint64_t guid);
+// Player casting state: returns spellId (0 if not casting), cast total ms, elapsed ms.
+// Returns {-1,0,0} if unreadable. CastTotalMs = 0 means no cast in progress.
+void PlayerCastState(int* outSpellId, int* outTotalMs, int* outElapsedMs);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

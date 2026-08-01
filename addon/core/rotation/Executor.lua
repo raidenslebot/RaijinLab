@@ -705,6 +705,13 @@ local function spell_in_range_vs_target(sid, name, ctx)
     ----------------------------------------------------------------------
     if not is_aoe then
         if client_r == 0 then
+            -- IsSpellInRange returns 0 for Ascension custom spells even when
+            -- the target IS in range. Trust precise measurement over client API.
+            -- Use `band` (defaults to 5yd when maxR is unknown from GetSpellInfo).
+            if precise and edge ~= nil and edge <= band + RANGE_EPS then
+                diag.verdict = "in_edge_ovr"  -- precise overrides lying client
+                return true, nil, diag
+            end
             diag.verdict = "oor_client"
             return false, "oor", diag
         end
@@ -1038,10 +1045,10 @@ local function fill_live_spell_state(ctx, spell_ids)
                 if client_r == 0 then
                     -- IsSpellInRange returns 0 for Ascension custom spells even
                     -- when the target IS in range. Trust precise measurement
-                    -- when it contradicts the client API. Only mark OOR when
-                    -- BOTH sources agree the target is out of range.
-                    if precise and edge ~= nil and maxR and maxR > 0 then
-                        if edge <= maxR + RANGE_EPS then
+                    -- when it contradicts the client API. Use `band` (which
+                    -- already defaults to 5yd when maxR is unknown).
+                    if precise and edge ~= nil then
+                        if edge <= band + RANGE_EPS then
                             inr = true   -- precise says in range, override client
                         else
                             inr = false  -- both agree: OOR

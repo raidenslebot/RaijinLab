@@ -963,12 +963,11 @@ static bool g_everWalkedOk = false;
 static ULONGLONG g_rebindQuietUntil = 0;
 static ULONGLONG g_omHardFreezeUntil = 0;
 static bool g_omWasOn = false;
-static int g_freezeStableTicks = 0; // consecutive ticks world stayed stable after time expiry
+static int g_freezeOkTicks = 0; // consecutive ticks with player+pos after time expires
 static constexpr ULONGLONG kColdSettleMs = 2000ull;   // cold inject only
 static constexpr ULONGLONG kRebindQuietMs = 2000ull;  // FrameXML /reload settle
 static constexpr ULONGLONG kRebindHardFreezeMs = 10000ull; // outlast medium Register (~8s) + SEAL settle
-static constexpr ULONGLONG kFreezeExtendMs = 3000ull;     // re-extend when world not ready yet
-static constexpr int kFreezeStableNeeded = 3;              // consecutive stable ticks to clear
+static constexpr int kFreezeOkNeeded = 3;                   // consecutive ticks with player+pos
 static constexpr ULONGLONG kWalkMinIntervalMs = 100ull; // ~10 Hz max (lag: 80→50Hz thrash)
 // EnumVisibleObjects mid-load (medium Register + PEW) hard-crashes the client.
 // List-only until this many successful list walks OR this ms after first player
@@ -993,51 +992,35 @@ void OnLuaReload() {
     const ULONGLONG now = GetTickCount64();
     g_rebindQuietUntil = now + kRebindQuietMs;
     g_omHardFreezeUntil = now + kRebindHardFreezeMs;
-    g_freezeStableTicks = 0;
+    g_freezeOkTicks = 0;
     RL::Log::Warn("OM hard rebind freeze %llums (no walks, no om.enable=1)",
                   (unsigned long long)kRebindHardFreezeMs);
 }
 
-// World-is-stable check: player GUID exists + position resolves + medium world bits.
-// Called only after the hard-time window has elapsed. Returns true only when
-// the world has stayed stable for kFreezeStableNeeded consecutive calls.
-static bool WorldLooksStable() {
-    uint64_t local = SafeGetActive();
-    if (!local) return false;
-    Vec3 pp = Position(local);
-    if (std::fabs(pp.x) < 0.01f && std::fabs(pp.y) < 0.01f) return false;
-    uint32_t bits = ::RL::Game::Addr::WorldReadyBits();
-    if (!::RL::Game::Addr::WorldReadyMedium(bits)) return false;
-    return true;
-}
-
+// After the minimum freeze time, require player GUID + real position for
+// kFreezeOkNeeded consecutive calls. No world-bit check (Ascension bits
+// flicker) and no self-extending (would never clear on flickering pointers).
 static bool RebindFrozen(ULONGLONG now) {
     if (!g_omHardFreezeUntil) return false;
-    // Hard minimum: wall-clock freeze must elapse.
+    // Hard minimum: wall-clock freeze must fully elapse.
     if (now < g_omHardFreezeUntil) return true;
-    // After minimum time: require sustained world stability.
-    if (WorldLooksStable()) {
-        ++g_freezeStableTicks;
-        if (g_freezeStableTicks >= kFreezeStableNeeded) {
-            g_omHardFreezeUntil = 0;
-            g_freezeStableTicks = 0;
-            RL::Log::Info("OM rebind hard-freeze cleared (world stable %d ticks)",
-                          kFreezeStableNeeded);
-            return false;
-        }
-        // Still building stable streak — stay frozen one more tick.
+    // Simple stability: player exists and has a real position.
+    uint64_t local = SafeGetActive();
+    if (!local) { g_freezeOkTicks = 0; return true; }
+    Vec3 pp = Position(local);
+    if (std::fabs(pp.x) < 0.01f && std::fabs(pp.y) < 0.01f) {
+        g_freezeOkTicks = 0;
         return true;
     }
-    // World not ready: reset streak and extend the freeze window.
-    g_freezeStableTicks = 0;
-    g_omHardFreezeUntil = now + kFreezeExtendMs;
-    static int s_extendLog = 0;
-    if (s_extendLog < 8) {
-        RL::Log::Info("OM freeze extended +%llums (world not yet stable)",
-                      (unsigned long long)kFreezeExtendMs);
-        s_extendLog++;
+    ++g_freezeOkTicks;
+    if (g_freezeOkTicks >= kFreezeOkNeeded) {
+        g_omHardFreezeUntil = 0;
+        g_freezeOkTicks = 0;
+        RL::Log::Info("OM rebind hard-freeze cleared (player stable %d ticks)",
+                      kFreezeOkNeeded);
+        return false;
     }
-    return true;
+    return true; // building stable streak
 }
 
 bool IsEnabled() {

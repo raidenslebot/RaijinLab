@@ -28,4 +28,9 @@ int PushBool(lua_State* L, bool v);
 int PushNil(lua_State* L);
 int PushXYZ(lua_State* L, float x, float y, float z); // 3 returns if possible, else "x,y,z" string
 
+// Call Lua's GetSpellCooldown(spellId) from C++. Returns remaining cooldown in
+// milliseconds (0 if ready or unreadable). Thread-safe only on main thread.
+// L must be the current lua_State (readable from Dispatch context).
+double SpellCooldownMs(lua_State* L, int spellId);
+
 } // namespace RL::Lua

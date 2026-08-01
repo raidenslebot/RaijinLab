@@ -1130,6 +1130,17 @@ static int Handle(lua_State* L, const char* name) {
         }
         return PushString(L, buf);
     }
+    // Precise spell cooldown remaining (ms) from C++ → Lua GetSpellCooldown pcall.
+    // Returns "remaining_ms|duration_ms" or "0|0" when ready. Never triggers
+    // client error frames. Read-only — no cast attempt.
+    if (!std::strcmp(name, "SpellCooldownMs")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        if (spellId <= 0) return PushString(L, "0|0");
+        double rem = RL::Lua::SpellCooldownMs(L, spellId);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%.0f", rem);
+        return PushString(L, buf);
+    }
     if (!std::strcmp(name, "CanCast")) {
         int spellId = (int)optnumber(L, 2, 0);
         uint64_t g = parseGuidArg(3);

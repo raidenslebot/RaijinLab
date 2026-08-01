@@ -605,11 +605,18 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
-    // Wire path restored to 1.10.35 behaviour (working baseline):
-    //   * NO nested GetSpellCooldown (Lua owns readiness; nested pcall crash surface)
-    //   * Face turn only if FACE_IF_NEEDED; refuse only if SKIP + measured
-    //   * LoS refuse only if CHECK_LOS + DEFINITELY blocked (fail open otherwise)
-    //   * Default Lua flags are NOTGT only — unit casts fire again
+    // Pre-cast cooldown check via Lua GetSpellCooldown (C++ → Lua pcall, no
+    // client error frame triggered). Reject before Spell_C_CastSpell so we
+    // never get "spell not ready yet" / "ability not ready yet" notifications.
+    if (g_currentL) {
+        double cdMs = RL::Lua::SpellCooldownMs(g_currentL, spellId);
+        if (cdMs > 50.0) { // >50ms → genuinely on cooldown
+            r.reason = "cooldown";
+            return r;
+        }
+    }
+
+    // Wire path to Spell_C_CastSpell — face/LOS gate + GUID cast.
     if (targetGuid != 0) {
         int face = IsFacingGuidEx(targetGuid, 1.5707963f);
         if (face == 0 && (flags & kCastFaceIfNeeded)) {

@@ -193,10 +193,15 @@ local function check_resources(ctx, sid, name, slot)
         return true
     end
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
-    local u = ctx and ctx.spell_usable
-    if type(u) == "table" and (u[sid] == false or u[tostring(sid)] == false) then
-        if not search then
-            return false, "unusable"
+    -- Runtime C++ IsSpellUsableRt is authoritative — if available, skip the
+    -- Lua spell_usable table entirely. The runtime reads client memory directly.
+    local hasRt = RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()
+    if not hasRt then
+        local u = ctx and ctx.spell_usable
+        if type(u) == "table" and (u[sid] == false or u[tostring(sid)] == false) then
+            if not search then
+                return false, "unusable"
+            end
         end
     end
     if not search and IsUsableSpell then

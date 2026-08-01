@@ -362,40 +362,41 @@ function BasicRules.check(ctx, spell_id, slot, opts)
     local ok, why
 
     ok, why = check_identity(ctx, sid)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="identity", why=why}; return false, why end
 
     ok, why = check_caster_busy(ctx, sid, slot)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="busy", why=why}; return false, why end
 
     ok, why = check_gcd_cd(ctx, sid, slot)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="gcd_cd", why=why}; return false, why end
 
     ok, why = check_resources(ctx, sid, name, slot)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="resource", why=why}; return false, why end
 
     ok, why = check_target_relationship(ctx, sid, slot, name)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="target_rel", why=why}; return false, why end
 
     ok, why = check_range(ctx, sid, slot, name)
-    if not ok then return false, why end
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="range", why=why}; return false, why end
 
     -- Facing / LoS after relationship so we do not TraceLine/face-check no-target.
     -- aura_search slots: face/LoS are re-checked against the discovered GUID later.
     if not opts.skip_facing and not slot_has_aura_search(slot) then
         ok, why = check_facing(ctx, sid, slot, name)
-        if not ok then return false, why end
+        if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="facing", why=why}; return false, why end
     end
     if not opts.skip_los and not slot_has_aura_search(slot) then
         ok, why = check_los(ctx, sid, slot, name)
-        if not ok then return false, why end
+        if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="los", why=why}; return false, why end
     end
 
     -- Immunity map is for current client target — skip until search resolves.
     if not slot_has_aura_search(slot) then
         ok, why = check_immunity(ctx, sid)
-        if not ok then return false, why end
+        if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="immune", why=why}; return false, why end
     end
 
+    BasicRules._last_gate = nil
     return true, nil
 end
 

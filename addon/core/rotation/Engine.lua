@@ -543,7 +543,9 @@ function Engine.evaluate(rotation, ctx, conditions_mod, opts)
                     end
                 end
                 if not basic_ok then
-                    if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "basic_deny", why = basic_why } end
+                    local ginfo = Basic and Basic._last_gate
+                    local gate_tag = (ginfo and ginfo.gate) and (ginfo.gate .. ":" .. tostring(basic_why)) or ("basic_deny:" .. tostring(basic_why))
+                    if tr then tr.n = tr.n + 1; tr[tr.n] = { i = i, name = slot.name, sid = sid, verdict = "basic_deny", why = gate_tag } end
                     last_skip = basic_why or "basic_deny"
                     -- Slot fully cycled (denied). Next priority slot only.
                 else

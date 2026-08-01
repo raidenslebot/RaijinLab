@@ -69,12 +69,12 @@ static uintptr_t ScanHardwareEventFlag() {
     }
 
     if (best && bestN >= 3) {
-        LOG_I("sys.scan", "HardwareEventFlag resolved: 0x%08X (refs=%d, was 0x%08X)",
-              (unsigned)best, bestN, (unsigned)RL::Game::Addr::HardwareEventFlag);
+        LOG_W("sys.scan", "HardwareEventFlag resolved: 0x%08X (refs=%d, was static 0x%08X)",
+              (unsigned)best, bestN, (unsigned)0x00BEAF4C);
         return best;
     }
-    LOG_W("sys.scan", "HardwareEventFlag scan FAILED (best=0x%08X refs=%d), using fallback 0x%08X",
-          (unsigned)best, bestN, (unsigned)RL::Game::Addr::HardwareEventFlag);
+    LOG_W("sys.scan", "HardwareEventFlag scan FAILED (best=0x%08X refs=%d), using fallback",
+          (unsigned)best, bestN);
     return RL::Game::Addr::HardwareEventFlag;
 }
 
@@ -165,14 +165,14 @@ static DWORD WINAPI MainThread(LPVOID param) {
     // This captures EIP, registers, and stack trace on any AV/illegal instruction
     // and logs them to runtime.log before the process terminates.
     AddVectoredExceptionHandler(1, CrashHandler);
-    LOG_I("sys.crash", "handler installed");
+    LOG_W("sys.crash", "handler installed");
 
     // Resolve HardwareEventFlag dynamically — the hardcoded address in
     // AddressDB is wrong for this Ascension build. Scanner finds the real
     // flag by looking for 'cmp [addr], 0' references in .text and picking
     // the most-referenced writable data address.
     RL::Game::Addr::HardwareEventFlag = ScanHardwareEventFlag();
-    LOG_I("sys.boot", "self=%p ver=%s om=0 taint=0 hwflag=0x%08X",
+    LOG_W("sys.boot", "self=%p ver=%s om=0 taint=0 hwflag=0x%08X",
           self, RL::Bridge::Version(), (unsigned)RL::Game::Addr::HardwareEventFlag);
 
     RL::Config::Set("om.enable", "0");

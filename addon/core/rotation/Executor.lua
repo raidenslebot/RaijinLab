@@ -1709,7 +1709,12 @@ function Executor.attempt_action(action, ctx)
 
     -- Auto Attack: engage once if needed; never CastSpell spam / never GCD.
     if is_auto_attack(sid, name) then
-        if not (UnitExists and UnitExists("target")) then return false, "no_target" end
+        -- If no target selected, try to auto-acquire nearest enemy
+        if not (UnitExists and UnitExists("target")) then
+            if Act.Attack then pcall(Act.Attack) end
+            -- Re-check after auto-acquire attempt
+            if not (UnitExists and UnitExists("target")) then return false, "no_target" end
+        end
         if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then return false, "target_dead" end
         if UnitCanAttack and not UnitCanAttack("player", "target") then return false, "not_enemy" end
         local already = false

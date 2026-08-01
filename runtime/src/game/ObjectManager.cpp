@@ -2379,6 +2379,41 @@ std::string UnitAurasPacked(uint64_t guid) {
     s_lastResult = std::string(buf, off);
     return s_lastResult;
 }
+
+// ---- Proc / reactive event tracking (CLEU-fed) ----------------------------
+struct ProcNote { char name[32]; ULONGLONG ts; };
+static ProcNote g_procs[32] = {};
+static size_t g_procN = 0;
+
+void NoteProcEvent(const char* eventName) {
+    if (!eventName || !eventName[0]) return;
+    std::lock_guard<std::mutex> lock(g_auraMu); // reuse aura mutex
+    ULONGLONG now = GetTickCount64();
+    // Overwrite oldest if full
+    if (g_procN >= 32) {
+        for (size_t i = 1; i < 32; ++i) g_procs[i - 1] = g_procs[i];
+        g_procN = 31;
+    }
+    ProcNote& n = g_procs[g_procN++];
+    strncpy_s(n.name, eventName, 31);
+    n.name[31] = '\0';
+    n.ts = now;
+}
+
+int HasRecentProc(const char* eventName, int windowMs) {
+    if (!eventName || !eventName[0] || windowMs <= 0) return 0;
+    std::lock_guard<std::mutex> lock(g_auraMu);
+    ULONGLONG now = GetTickCount64();
+    for (size_t i = 0; i < g_procN; ++i) {
+        if (!_stricmp(g_procs[i].name, eventName)) {
+            long long elapsed = (long long)(now - g_procs[i].ts);
+            if (elapsed < (long long)windowMs) {
+                return (int)((long long)windowMs - elapsed);
+            }
+        }
+    }
+    return 0;
+}
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at
 // UNIT_DYNAMIC_FLAGS (0x13C) - see the derivation in Offsets.h. Using the unit

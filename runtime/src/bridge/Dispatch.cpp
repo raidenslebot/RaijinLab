@@ -1075,6 +1075,18 @@ static int Handle(lua_State* L, const char* name) {
         auto s = OM::UnitAurasPacked(g);
         return PushString(L, s.c_str());
     }
+    // Proc / reactive event tracking (CLEU-fed)
+    if (!std::strcmp(name, "NoteProc")) {
+        const char* ev = checkstring(L, 2);
+        if (ev && ev[0]) OM::NoteProcEvent(ev);
+        return PushBool(L, true);
+    }
+    if (!std::strcmp(name, "HasRecentProc")) {
+        const char* ev = checkstring(L, 2);
+        int win = (int)optnumber(L, 3, 5000.0);
+        int rem = ev && ev[0] ? OM::HasRecentProc(ev, win) : 0;
+        return PushNumber(L, (double)rem);
+    }
     // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
         static char s_mapBuf[128] = {};

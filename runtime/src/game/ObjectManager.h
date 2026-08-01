@@ -124,6 +124,10 @@ std::string SpellInfoPacked(int spellId);
 // Reads all auras (buff+debuff) from client via batched Lua UnitBuff/UnitDebuff pcall.
 // Cached per guid for 80ms. Returns empty "0" if no auras or unreadable.
 std::string UnitAurasPacked(uint64_t guid);
+// Proc / reactive event tracking (CLEU-fed). Record combat events for reactive conditions.
+void NoteProcEvent(const char* eventName);
+// Check if proc event occurred within windowMs. Returns remaining ms or 0.
+int HasRecentProc(const char* eventName, int windowMs);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

@@ -266,25 +266,15 @@ local function check_range(ctx, sid, slot, name)
     return true
 end
 
--- Facing: unit-targeted casts only. Fail when we can prove not facing.
+-- Facing: unit-targeted casts only. NEVER hard-block at BasicRules level.
+-- Facing is handled at the wire path (attempt_action try_list) where auto-face
+-- can turn the player before measuring. BasicRules runs before conditions and
+-- has no access to auto-face — blocking here makes auto-face dead code.
+-- Instead, always pass; the wire path gates with full auto-face support.
+-- Also fix: is_facing_guid returns nil when position data is unavailable.
+-- 'not nil' = true was blocking spells when we couldn't even measure facing.
 local function check_facing(ctx, sid, slot, name)
-    local policy = policy_of(slot, ctx)
-    if policy == "optional" or policy == "forbid" or policy == "corpse" then
-        return true
-    end
-    if is_auto_attack(sid, name) then return true end -- StartAttack has own cone
-    if is_self_aoe_spell(sid, name) or is_ground_self_aoe(sid, name) then
-        return true
-    end
-    local guid = cast_guid(ctx)
-    if not guid then return true end -- no unit => other gates handle
-    local W = RaijinLab and RaijinLab.World
-    if W and W.is_facing_guid then
-        if not W.is_facing_guid(guid, W.CAST_FACE_HALF_ARC) then
-            return false, "facing"
-        end
-    end
-    return true
+    return true  -- deferred to wire path (attempt_action try_list)
 end
 
 -- LoS: unit-targeted casts. Fail only on explicit blocked.

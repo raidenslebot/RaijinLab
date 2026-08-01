@@ -1036,7 +1036,19 @@ local function fill_live_spell_state(ctx, spell_ids)
                     if rok then client_r = r end
                 end
                 if client_r == 0 then
-                    inr = false
+                    -- IsSpellInRange returns 0 for Ascension custom spells even
+                    -- when the target IS in range. Trust precise measurement
+                    -- when it contradicts the client API. Only mark OOR when
+                    -- BOTH sources agree the target is out of range.
+                    if precise and edge ~= nil and maxR and maxR > 0 then
+                        if edge <= maxR + RANGE_EPS then
+                            inr = true   -- precise says in range, override client
+                        else
+                            inr = false  -- both agree: OOR
+                        end
+                    else
+                        inr = false      -- no precise data, trust client
+                    end
                     targeted = true
                 elseif client_r == 1 then
                     inr = true

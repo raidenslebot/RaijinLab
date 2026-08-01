@@ -283,7 +283,7 @@ local function apply_pending_refuse(reason, fail_name)
 
     if refuse_is_not_ready(rl) then
         -- Awareness only: floor THIS spell to live remaining. No min invent.
-        -- Free global GCD unless client shows a real short GCD.
+        -- Free global GCD unless we can measure a real GCD from any source.
         local hold = spell_ready_remaining(sid, name)
         if hold > 10.0 then hold = 10.0 end
         Executor._recent = Executor._recent or {}
@@ -292,15 +292,20 @@ local function apply_pending_refuse(reason, fail_name)
         elseif sid then
             Executor._recent[sid] = nil
         end
+        -- Probe GCD from multiple sources (spell 61304 may be nil on Ascension)
         local gcd_rem = 0
         if GetSpellCooldown then
-            local s, d = GetSpellCooldown(61304)
-            s, d = tonumber(s) or 0, tonumber(d) or 0
-            if d > 0 and d <= 1.6 then gcd_rem = (s + d) - now() end
-            if gcd_rem <= 0 and sid then
-                local s2, d2 = GetSpellCooldown(sid)
-                s2, d2 = tonumber(s2) or 0, tonumber(d2) or 0
-                if d2 > 0 and d2 <= 1.6 then gcd_rem = (s2 + d2) - now() end
+            -- Try the GCD token first, then auto-attack, then the refused spell
+            local probes = { 61304, 6603, 75, sid }
+            for _, pid in ipairs(probes) do
+                if pid and pid > 0 and gcd_rem <= 0 then
+                    local s2, d2 = GetSpellCooldown(pid)
+                    s2, d2 = tonumber(s2) or 0, tonumber(d2) or 0
+                    if d2 > 0.75 and d2 <= 1.6 then
+                        gcd_rem = (s2 + d2) - now()
+                        if gcd_rem > 0 then break end
+                    end
+                end
             end
         end
         if gcd_rem > 0.02 then
@@ -1174,14 +1179,21 @@ local function cast_snapshot(sid)
         if (not s or s == 0) and name then s, d = GetSpellCooldown(name) end
         snap.cd_start = tonumber(s) or 0
         snap.cd_dur = tonumber(d) or 0
-        -- Global cooldown often exposed via any known auto-attack / book spell remaining
-        local gs, gd = GetSpellCooldown(61304) -- retail GCD token; may be nil on 3.3.5
-        if not gs then
-            -- fallback: if any short CD appeared after cast we still detect via spell CD
-            gs, gd = 0, 0
+        -- GCD probe: try gcd token, auto-attack, auto-shot, then the spell itself
+        local gs, gd = 0, 0
+        local probes = { 61304, 6603, 75, sid }
+        for _, pid in ipairs(probes) do
+            if pid and pid > 0 and gd <= 0 then
+                local ps, pd = GetSpellCooldown(pid)
+                ps, pd = tonumber(ps) or 0, tonumber(pd) or 0
+                if pd > 0.75 and pd <= 1.6 then
+                    gs, gd = ps, pd
+                    break
+                end
+            end
         end
-        snap.gcd_start = tonumber(gs) or 0
-        snap.gcd_dur = tonumber(gd) or 0
+        snap.gcd_start = gs
+        snap.gcd_dur = gd
     end
     return snap
 end
@@ -1900,10 +1912,11 @@ function Executor.attempt_action(action, ctx)
     if RR and RR.highest then cast_sid = RR.highest(sid) or sid end
     action._cast_name = spell_name(cast_sid, name)
 
-    -- Final ready gate (lag-padded). Never spam Spell_C when not ready.
+    -- Final ready gate (latency-aware). Never spam Spell_C when not ready.
     do
         local rem = spell_ready_remaining(cast_sid, action._cast_name or name)
-        if rem > 0.05 then
+        local pad = math.max(0.03, latency_sec() * 0.6)
+        if rem > pad then
             return false, "cooldown:" .. tostring(name)
         end
     end
@@ -1989,21 +2002,38 @@ function Executor.attempt_action(action, ctx)
         elseif Executor.guid_blacklisted(cg) then
             last_why = "blacklisted"
         else
+            -- FACING GATE (always enforced — never wire a cast destined to fail).
+            -- Auto Face only controls whether we attempt to turn first.
             if not skip_face_cast and needs_enemy then
                 local not_facing = W and W.is_not_facing_guid
                     and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                if not_facing and want_auto_face then
-                    if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
-                    elseif W and W.face_guid then pcall(W.face_guid, cg) end
-                    not_facing = W and W.is_not_facing_guid
-                        and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                if not_facing then
+                    if want_auto_face then
+                        -- Attempt auto-face; re-measure
+                        if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
+                        elseif W and W.face_guid then pcall(W.face_guid, cg) end
+                        not_facing = W and W.is_not_facing_guid
+                            and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                    end
+                    if not_facing then
+                        -- Still not facing after auto-face attempt (or auto-face off).
+                        -- Skip this GUID; do NOT wire a guaranteed failure.
+                        last_why = "facing"
+                    end
                 end
-                -- Only hard-skip when Auto Face is on and still measured not facing.
-                -- Without Auto Face, wire and let runtime/client decide (was dead
-                -- rotation when SKIP was forced on every unit cast).
-                if not_facing and want_auto_face then
-                    last_why = "facing"
-                else
+            end
+            if not last_why then
+                -- RANGE RE-CHECK at wire time: positions may have changed since
+                -- live_castable() evaluated. Use fresh spell_in_range.
+                if have_target and not is_self_aoe_spell(sid, name)
+                    and not is_ground_self_aoe(sid, name) then
+                    local inR, rWhy = spell_in_range_vs_target(cast_sid, action._cast_name or name, ctx)
+                    if not inR then
+                        last_why = rWhy or "oor_wire"
+                    end
+                end
+            end
+            if not last_why then
                     local reason, cdMs = nil, 0
                     if Act.CastSpellEx then
                         ok, reason, cdMs = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
@@ -2082,17 +2112,27 @@ function Executor.attempt_action(action, ctx)
         end
     end
 
-    -- Selection restore is runtime descriptor-only for GUID casts. No Lua
-    -- TargetLastTarget cascade after wire (mid-combat crash surface).
-
     if not ok then
         if Ou and oid then Ou.settle(oid, -1.0, last_why or "cast_failed") end
-        -- INSTANT free: no invent floors on fail.
+        -- INSTANT free on ALL failures. OOR/facing are condition-dependent —
+        -- the spell may be castable next frame. Never invent a lock.
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         Executor._next_gap = 0
         Executor._pending = nil
+        Executor._idle_until = nil
         clear_sid_soft_locks(sid)
+        -- Same-frame retry for condition-failures (oor/facing/no_target).
+        -- Only cooldown/not_ready failures should wait for the actual CD.
+        local lw = tostring(last_why or "")
+        if lw:find("^oor") or lw:find("facing") or lw:find("no_target")
+            or lw:find("bad_target") or lw:find("blacklisted") then
+            if Executor._in_tick then
+                Executor._retick_pending = true
+            else
+                request_retick("cond_fail")
+            end
+        end
         return false, tostring(last_why or "cast_failed") .. ":" .. tostring(name)
     end
 
@@ -2666,12 +2706,16 @@ function Executor._tick_body()
     if not casting_now and (Executor._gcd_until or 0) > t then
         local live = spell_ready_remaining(61304, nil)
         if live <= 0.02 then
-            -- Double-check any known book spell remaining.
+            -- Double-check any known gcd-triggering spell remaining
             local any = 0
             if GetSpellCooldown then
-                local s, d = GetSpellCooldown(61304)
-                s, d = tonumber(s) or 0, tonumber(d) or 0
-                if d > 0 then any = (s + d) - t end
+                for _, pid in ipairs({ 61304, 6603, 75 }) do
+                    if pid > 0 and any <= 0 then
+                        local s, d = GetSpellCooldown(pid)
+                        s, d = tonumber(s) or 0, tonumber(d) or 0
+                        if d > 0.75 and d <= 1.6 then any = (s + d) - t end
+                    end
+                end
             end
             if any <= 0.02 then
                 Executor._gcd_until = 0
@@ -2850,9 +2894,16 @@ function Executor._tick_body()
             end
             local gcd_rem = 0
             if GetSpellCooldown then
-                local s, d = GetSpellCooldown(61304)
-                s, d = tonumber(s) or 0, tonumber(d) or 0
-                if d > 0 and d <= 1.6 then gcd_rem = (s + d) - t end
+                for _, pid in ipairs({ 61304, 6603, 75, asid }) do
+                    if pid and pid > 0 and gcd_rem <= 0 then
+                        local s2, d2 = GetSpellCooldown(pid)
+                        s2, d2 = tonumber(s2) or 0, tonumber(d2) or 0
+                        if d2 > 0.75 and d2 <= 1.6 then
+                            gcd_rem = (s2 + d2) - t
+                            if gcd_rem > 0 then break end
+                        end
+                    end
+                end
             end
             if gcd_rem > 0.02 then
                 Executor._gcd_until = t + math.min(gcd_rem, 1.55)

@@ -2259,6 +2259,29 @@ std::string PlayerStatePacked() {
 }
 
 // Dynamic flags, read from the field that ACTUALLY holds them for this type.
+
+// ---- Unit target / shapeshift (verified descriptor + Lua pcall) -----------
+uint64_t UnitTargetGuid(uint64_t guid) {
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return 0;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return 0;
+    __try {
+        return Mem::Read<uint64_t>(d + 0x48); // UNIT_FIELD_TARGET verified
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+int ShapeshiftForm() {
+    static int s_cached = -1;
+    static ULONGLONG s_cachedAt = 0;
+    ULONGLONG now = GetTickCount64();
+    if (s_cachedAt && (now - s_cachedAt) < 200ull) return s_cached;
+    s_cachedAt = now;
+    RL::Lua::ShapeshiftFormFromLua(&s_cached);
+    return s_cached;
+}
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at
 // UNIT_DYNAMIC_FLAGS (0x13C) - see the derivation in Offsets.h. Using the unit

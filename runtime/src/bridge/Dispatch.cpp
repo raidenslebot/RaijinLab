@@ -1041,6 +1041,21 @@ static int Handle(lua_State* L, const char* name) {
         auto s = OM::PlayerStatePacked();
         return PushString(L, s.c_str());
     }
+    // Unit target GUID from descriptor UNIT_FIELD_TARGET (verified 0x48)
+    if (!std::strcmp(name, "UnitTargetGuid")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        uint64_t tgt = OM::UnitTargetGuid(g);
+        if (!tgt) return PushNil(L);
+        char buf[24];
+        snprintf(buf, sizeof(buf), "0x%llX", (unsigned long long)tgt);
+        return PushString(L, buf);
+    }
+    // Shapeshift form (0=normal, 1=bear, 2=aquatic, 3=cat, 4=travel, 5=moonkin, 6=flight)
+    if (!std::strcmp(name, "ShapeshiftForm") || !std::strcmp(name, "GetShapeshiftForm")) {
+        int form = OM::ShapeshiftForm();
+        return PushNumber(L, (double)form);
+    }
     // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
         static char s_mapBuf[128] = {};

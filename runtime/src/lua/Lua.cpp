@@ -292,4 +292,31 @@ void MapInfoFromLua(char* buf, size_t bufSize) {
     }
 }
 
+void ShapeshiftFormFromLua(int* outForm) {
+    *outForm = -1;
+    void* rawL = RL::Game::Addr::LuaState();
+    if (!rawL || !p_getfield || !p_pcall || !p_gettop || !p_settop || !p_tonumber) return;
+    auto L = (lua_State*)rawL;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "GetShapeshiftForm");
+        rc = p_pcall(L, 0, 1, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
+
+    __try {
+        *outForm = (int)p_tonumber(L, -1);
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 } // namespace RL::Lua

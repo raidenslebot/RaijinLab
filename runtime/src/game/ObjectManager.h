@@ -109,6 +109,12 @@ int UnitMovementImpairing(uint64_t guid);
 // Packed player state string: "combat=X|mounted=X|dead=X|ghost=X|stealth=X|caster=X"
 // Uses descriptor reads + Lua UnitAura pcall for stealth. X is 0/1/-1 (unknown).
 std::string PlayerStatePacked();
+// Unit's current target GUID from UNIT_FIELD_TARGET descriptor (verified 0x48).
+// Returns 0 if unreadable or no target.
+uint64_t UnitTargetGuid(uint64_t guid);
+// Current shapeshift form (0=normal, 1=bear, 2=aquatic, 3=cat, 4=travel, 5=moonkin, 6=flight).
+// Returns -1 if unreadable. Cached ~200ms via Lua GetShapeshiftForm() pcall.
+int ShapeshiftForm();
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

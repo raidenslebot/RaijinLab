@@ -45,4 +45,7 @@ void PlayerCastInfo(int* outSpellId, int* outCastTotalMs);
 // Call Lua's GetMapInfo(). Writes packed "mapId=N|mapName=X|zoneId=N|zoneName=X" into buf.
 void MapInfoFromLua(char* buf, size_t bufSize);
 
+// Call Lua's GetShapeshiftForm(). Returns form index (0=normal, 1=bear, etc.) or -1.
+void ShapeshiftFormFromLua(int* outForm);
+
 } // namespace RL::Lua

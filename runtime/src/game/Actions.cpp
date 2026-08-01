@@ -605,6 +605,41 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         Taint::ApplyHardwareGatesOnly();
     MainThread::PulseFromMainThread();
 
+    // ---- Spell range cache (lazy, one pcall per unique spellId) -------------
+    struct SpellRange { int spellId; float maxRange; int castMs; int powerType; };
+    static SpellRange s_rangeCache[64] = {};
+    static int s_rangeCacheN = 0;
+
+    float spellMaxRange = -1.f;
+    for (int i = 0; i < s_rangeCacheN; ++i) {
+        if (s_rangeCache[i].spellId == spellId) {
+            spellMaxRange = s_rangeCache[i].maxRange;
+            break;
+        }
+    }
+    if (spellMaxRange < 0.f && g_currentL && s_rangeCacheN < 64) {
+        float mr = -1.f; int castMs = -1, pt = -1;
+        RL::Lua::SpellInfoFromLua(g_currentL, spellId, &mr, &castMs, &pt);
+        s_rangeCache[s_rangeCacheN++] = { spellId, mr, castMs, pt };
+        spellMaxRange = mr;
+    }
+
+    // ---- Precise range check using actual spell range from client DB --------
+    if (targetGuid != 0 && spellMaxRange > 0.f) {
+        Vec3 myPos = OM::Position(ActiveGuid());
+        Vec3 tgtPos = OM::Position(targetGuid);
+        if ((myPos.x != 0.f || myPos.y != 0.f) && (tgtPos.x != 0.f || tgtPos.y != 0.f)) {
+            float dx = tgtPos.x - myPos.x;
+            float dy = tgtPos.y - myPos.y;
+            float dist = std::sqrt(dx * dx + dy * dy);
+            // 0.5yd tolerance for position jitter / movement between reads
+            if (dist > spellMaxRange + 0.5f) {
+                r.reason = "oor";
+                return r;
+            }
+        }
+    }
+
     // Pre-cast cooldown check via Lua GetSpellCooldown (C++ → Lua pcall).
     // Returns -1 when the Lua pcall path is unavailable (wrong function pointers
     // for this client build); gracefully allow the cast in that case.

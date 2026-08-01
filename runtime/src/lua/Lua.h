@@ -29,8 +29,14 @@ int PushNil(lua_State* L);
 int PushXYZ(lua_State* L, float x, float y, float z); // 3 returns if possible, else "x,y,z" string
 
 // Call Lua's GetSpellCooldown(spellId) from C++. Returns remaining cooldown in
-// milliseconds (0 if ready or unreadable). Thread-safe only on main thread.
-// L must be the current lua_State (readable from Dispatch context).
+// milliseconds (0 if ready, -1 if unreadable). Thread-safe only on main thread.
 double SpellCooldownMs(lua_State* L, int spellId);
+
+// Call Lua's GetTime() from C++. Returns game-time seconds or -1 on failure.
+double GameTimeFromLua(lua_State* L);
+
+// Call Lua's GetSpellInfo(spellId) from C++. Returns max range (yards), cast
+// time (ms), and power type. Returns -1 values on failure.
+void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCastMs, int* outPowerType);
 
 } // namespace RL::Lua

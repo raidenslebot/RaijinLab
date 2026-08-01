@@ -175,4 +175,54 @@ double SpellCooldownMs(lua_State* L, int spellId) {
     return rem; // remaining milliseconds
 }
 
+double GameTimeFromLua(lua_State* L) {
+    if (!L || !p_getfield || !p_pcall || !p_tonumber || !p_settop) return -1.0;
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1.0; }
+
+    __try {
+        p_getfield(L, kGlobals, "GetTime");
+        int rc = p_pcall(L, 0, 1, 0);
+        if (rc != 0) { p_settop(L, top); return -1.0; }
+        double t = p_tonumber(L, -1);
+        p_settop(L, top);
+        return t;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1.0;
+    }
+}
+
+void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCastMs, int* outPowerType) {
+    *outMaxRange = -1.f; *outCastMs = -1; *outPowerType = -1;
+    if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
+        return;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "GetSpellInfo");
+        p_pushnumber(L, (double)spellId);
+        rc = p_pcall(L, 1, 9, 0); // name,rank,icon,cost,isFunnel,powerType,castTime,minRange,maxRange
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
+
+    __try {
+        // Returns: 1=name 2=rank 3=icon 4=cost 5=isFunnel 6=powerType 7=castTime 8=minRange 9=maxRange
+        // We want: castTime(7), minRange(8, in yards, -1 if no data), maxRange(9)
+        // GetSpellInfo stack order after call: all 9 results on stack
+        *outCastMs    = (int)(p_tonumber(L, -3) * 1000.0); // castTime (sec) → ms, at position -3
+        *outMaxRange  = (float)p_tonumber(L, -1);            // maxRange at top of stack
+        *outPowerType = (int)p_tonumber(L, -4);              // powerType
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 } // namespace RL::Lua

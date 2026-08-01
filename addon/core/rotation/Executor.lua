@@ -2022,17 +2022,7 @@ function Executor.attempt_action(action, ctx)
                     end
                 end
             end
-            if not last_why then
-                -- RANGE RE-CHECK at wire time: positions may have changed since
-                -- live_castable() evaluated. Use fresh spell_in_range.
-                if have_target and not is_self_aoe_spell(sid, name)
-                    and not is_ground_self_aoe(sid, name) then
-                    local inR, rWhy = spell_in_range_vs_target(cast_sid, action._cast_name or name, ctx)
-                    if not inR then
-                        last_why = rWhy or "oor_wire"
-                    end
-                end
-            end
+            -- WIRE (range was already validated in live_castable; facing gate above)
             if not last_why then
                 local reason, cdMs = nil, 0
                 if Act.CastSpellEx then
@@ -2088,23 +2078,27 @@ function Executor.attempt_action(action, ctx)
 
     if not ok then
         if Ou and oid then Ou.settle(oid, -1.0, last_why or "cast_failed") end
-        -- INSTANT free on ALL failures. OOR/facing are condition-dependent —
-        -- the spell may be castable next frame. Never invent a lock.
+        -- Free list on failure so next tick re-evaluates clean.
+        -- Never invent _recent floors for pre-wire gate skips (facing/range/ready
+        -- gates that skipped the cast entirely — condition may clear next frame).
+        -- Only wired-and-refused failures get _recent from the event handler.
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         Executor._next_gap = 0
         Executor._pending = nil
         Executor._idle_until = nil
         clear_sid_soft_locks(sid)
-        -- Same-frame retry for condition-failures (oor/facing/no_target).
-        -- Only cooldown/not_ready failures should wait for the actual CD.
+        -- Retick only when a wire was actually attempted and the server refused
+        -- (cast_fail / cooldown from CastSpellEx). Pre-wire gate skips (facing/
+        -- oor from live_castable or our facing gate) don't need retick — the
+        -- next OnUpdate will re-evaluate naturally.
         local lw = tostring(last_why or "")
-        if lw:find("^oor") or lw:find("facing") or lw:find("no_target")
-            or lw:find("bad_target") or lw:find("blacklisted") then
+        if lw:find("^cast_fail") or lw:find("^cooldown:") then
             if Executor._in_tick then
                 Executor._retick_pending = true
+                Executor._retick_why = "wire_refused"
             else
-                request_retick("cond_fail")
+                request_retick("wire_refused")
             end
         end
         return false, tostring(last_why or "cast_failed") .. ":" .. tostring(name)

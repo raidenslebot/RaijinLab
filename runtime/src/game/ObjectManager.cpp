@@ -1,6 +1,7 @@
 #include "ObjectManager.h"
 #include "Offsets.h"
 #include "AddressDB.h"
+#include "GameTime.h"
 #include "Mem.h"
 #include "core/Config.h"
 #include "core/Log.h"
@@ -2413,6 +2414,71 @@ int HasRecentProc(const char* eventName, int windowMs) {
         }
     }
     return 0;
+}
+
+// ---- Combo points / DK runes (Lua pcall, cached 100ms) --------------------
+int ComboPoints() {
+    static int s_cached = -1;
+    static ULONGLONG s_cachedAt = 0;
+    ULONGLONG now = GetTickCount64();
+    if (s_cachedAt && (now - s_cachedAt) < 100ull) return s_cached;
+    s_cachedAt = now;
+    void* L = RL::Game::Addr::LuaState();
+    if (!L || !RL::Lua::Ready()) return -1;
+    // Call GetComboPoints("player", "target")
+    // Use the Lua wrapper pattern — one pcall
+    auto rawL = (lua_State*)L;
+    // Quick inline: getfield + pushstring + pcall
+    typedef void(__cdecl* GF)(lua_State*,int,const char*);
+    typedef void(__cdecl* PS)(lua_State*,const char*);
+    typedef int(__cdecl* PC)(lua_State*,int,int,int);
+    typedef int(__cdecl* GT)(lua_State*);
+    typedef void(__cdecl* ST)(lua_State*,int);
+    typedef double(__cdecl* TN)(lua_State*,int);
+    auto gf = (GF)0x0084E670; auto ps = (PS)0x0084E350; auto pc = (PC)0x0084EC50;
+    auto gt = (GT)0x0084DBD0; auto st = (ST)0x0084DBF0; auto tn = (TN)0x0084E030;
+    int top = gt(rawL);
+    gf(rawL, -10002, "GetComboPoints");
+    ps(rawL, "player");
+    ps(rawL, "target");
+    int rc = pc(rawL, 2, 1, 0);
+    if (rc == 0) { s_cached = (int)tn(rawL, -1); st(rawL, top); }
+    else { st(rawL, top); s_cached = -1; }
+    return s_cached;
+}
+
+int RuneCooldownMs(int runeIndex) {
+    if (runeIndex < 1 || runeIndex > 6) return -1;
+    static int s_cached[6] = {-1,-1,-1,-1,-1,-1};
+    static ULONGLONG s_cachedAt = 0;
+    ULONGLONG now = GetTickCount64();
+    if (s_cachedAt && (now - s_cachedAt) < 100ull) return s_cached[runeIndex-1];
+    s_cachedAt = now;
+    void* L = RL::Game::Addr::LuaState();
+    if (!L || !RL::Lua::Ready()) return -1;
+    auto rawL = (lua_State*)L;
+    typedef void(__cdecl* GF)(lua_State*,int,const char*);
+    typedef void(__cdecl* PN)(lua_State*,double);
+    typedef int(__cdecl* PC)(lua_State*,int,int,int);
+    typedef int(__cdecl* GT)(lua_State*);
+    typedef void(__cdecl* ST)(lua_State*,int);
+    typedef double(__cdecl* TN)(lua_State*,int);
+    auto gf = (GF)0x0084E670; auto pn = (PN)0x0084E2A0; auto pc = (PC)0x0084EC50;
+    auto gt = (GT)0x0084DBD0; auto st = (ST)0x0084DBF0; auto tn = (TN)0x0084E030;
+    int top = gt(rawL);
+    // GetRuneCooldown(slot) → start, duration, isReady
+    for (int i = 1; i <= 6; ++i) {
+        gf(rawL, -10002, "GetRuneCooldown");
+        pn(rawL, (double)i);
+        int rc = pc(rawL, 1, 3, 0);
+        if (rc == 0) {
+            double start = tn(rawL, -3), dur = tn(rawL, -2), ready = tn(rawL, -1);
+            if (ready != 0.0) s_cached[i-1] = 0;
+            else { double rem = (start + dur) - RL::Game::GameTime::Now(); s_cached[i-1] = (int)(rem > 0 ? rem * 1000.0 : 0); }
+            st(rawL, top);
+        } else { st(rawL, top); s_cached[i-1] = -1; }
+    }
+    return s_cached[runeIndex-1];
 }
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at

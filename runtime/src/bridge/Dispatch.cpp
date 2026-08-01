@@ -1087,6 +1087,16 @@ static int Handle(lua_State* L, const char* name) {
         int rem = ev && ev[0] ? OM::HasRecentProc(ev, win) : 0;
         return PushNumber(L, (double)rem);
     }
+    // Combo points / DK runes
+    if (!std::strcmp(name, "ComboPoints") || !std::strcmp(name, "GetComboPoints")) {
+        int cp = OM::ComboPoints();
+        return PushNumber(L, (double)cp);
+    }
+    if (!std::strcmp(name, "RuneCooldownMs") || !std::strcmp(name, "GetRuneCooldown")) {
+        int idx = (int)optnumber(L, 2, 1.0);
+        int ms = OM::RuneCooldownMs(idx);
+        return PushNumber(L, (double)ms);
+    }
     // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
         static char s_mapBuf[128] = {};

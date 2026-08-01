@@ -16,6 +16,7 @@ add_library(RaijinLabRuntime SHARED
   core/PebUnlink.cpp
   game/Offsets.cpp
   game/AddressDB.cpp
+  game/GameTime.cpp
   game/ObjectManager.cpp
   game/Actions.cpp
   game/MainThread.cpp

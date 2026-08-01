@@ -128,6 +128,10 @@ std::string UnitAurasPacked(uint64_t guid);
 void NoteProcEvent(const char* eventName);
 // Check if proc event occurred within windowMs. Returns remaining ms or 0.
 int HasRecentProc(const char* eventName, int windowMs);
+// Combo points on current target (player descriptor). Returns 0-5 or -1.
+int ComboPoints();
+// DK rune cooldown remaining (0-5, returns ms or -1 if unreadable/not DK).
+int RuneCooldownMs(int runeIndex);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

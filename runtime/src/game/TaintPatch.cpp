@@ -163,27 +163,42 @@ bool Apply() {
         RL::Log::Info("taint: TaintErrorReporter stubbed");
     }
 
-    // 5) Hardware event gates scan
+    // 5) Hardware event gates scan — find every cmp [HardwareEventFlag],0
+    // and patch JE→JMP / JNE→NOP2 so Spell_C_CastSpell works without HW event.
+    // Log every patch site so crash diagnostics can identify if a specific
+    // patched address caused a downstream failure.
     uintptr_t textS = 0, textE = 0;
     int hw = 0;
     if (GetTextSection(textS, textE) && HardwareEventFlag) {
         uint8_t pattern[7] = {0x83, 0x3D, 0, 0, 0, 0, 0x00};
         uint32_t flag = static_cast<uint32_t>(HardwareEventFlag);
         memcpy(pattern + 2, &flag, 4);
+        RL::Log::Info("taint: hwgate scan .text=0x%08X-0x%08X flag=0x%08X",
+                      (unsigned)textS, (unsigned)textE, (unsigned)flag);
         for (uintptr_t p = textS; p + 9 < textE; ++p) {
             if (memcmp(reinterpret_cast<void*>(p), pattern, 7) == 0) {
                 uint8_t op = ReadByte(p + 7);
                 if (op == 0x74) {
                     SaveAndPatch(p + 7, &jmp, 1);
+                    RL::Log::Info("taint: hwgate[%d] JE->JMP at 0x%08X", hw, (unsigned)(p + 7));
                     ++hw;
                 } else if (op == 0x75) {
                     uint8_t n2[] = {0x90, 0x90};
                     SaveAndPatch(p + 7, n2, 2);
+                    RL::Log::Info("taint: hwgate[%d] JNE->NOP2 at 0x%08X", hw, (unsigned)(p + 7));
                     ++hw;
                 }
             }
         }
+        if (hw == 0) {
+            RL::Log::Warn("taint: hwgate scan found ZERO matches — HardwareEventFlag address may be wrong for this build");
+        } else if (hw > 100) {
+            RL::Log::Error("taint: hwgate scan found %d matches — SUSPICIOUS, flag address may be too common", hw);
+        }
         RL::Log::Info("taint: hardware-event gates patched=%d", hw);
+    } else {
+        RL::Log::Warn("taint: hwgate scan SKIPPED — text=%d flag=0x%08X",
+                      (int)(textS != 0 && textE != 0), (unsigned)HardwareEventFlag);
     }
 
     g_applied = true;

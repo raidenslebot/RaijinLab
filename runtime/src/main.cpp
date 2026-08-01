@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <string>
 #include <cstdio>
+#include <cinttypes>
 #include "bridge/Ipc.h"
 #include "core/Log.h"
 #include "core/Config.h"
@@ -17,6 +18,61 @@
 static volatile bool g_run = true;
 static HANDLE g_mutex = nullptr;
 static HMODULE g_self = nullptr;
+
+// ---- Vectored Exception Handler — crash diagnostics ----------------------
+// Captures FULL register + stack context on ANY access violation and logs
+// to runtime.log BEFORE the process terminates. This is the "black box"
+// that answers "what crashed and why" for every ERROR #132.
+static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION
+        && code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_IN_PAGE_ERROR)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    CONTEXT* ctx = ep->ContextRecord;
+    uintptr_t ip = ctx->Eip;
+    uintptr_t faultAddr = 0;
+    char faultType[32] = "?";
+
+    if (code == EXCEPTION_ACCESS_VIOLATION) {
+        faultAddr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        DWORD op = ep->ExceptionRecord->ExceptionInformation[0];
+        snprintf(faultType, sizeof(faultType), "AV_%s", op == 0 ? "READ" : op == 1 ? "WRITE" : op == 8 ? "EXEC" : "?");
+    } else if (code == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        snprintf(faultType, sizeof(faultType), "ILLEGAL");
+    } else if (code == EXCEPTION_STACK_OVERFLOW) {
+        snprintf(faultType, sizeof(faultType), "STACK_OVF");
+    } else {
+        snprintf(faultType, sizeof(faultType), "PAGE_ERR");
+    }
+
+    // Stack walk: read return addresses from current stack frame
+    uintptr_t stack[32] = {};
+    int stackN = 0;
+    uintptr_t* frame = (uintptr_t*)ctx->Ebp;
+    for (int i = 0; i < 32 && frame && IsBadReadPtr(frame, 8) == 0; ++i) {
+        uintptr_t ret = frame[1]; // return address is at [ebp+4]
+        if (ret > 0x00400000 && ret < 0x07FFFFFF) {
+            stack[stackN++] = ret;
+        }
+        uintptr_t* next = (uintptr_t*)frame[0]; // [ebp+0] = saved ebp
+        if (!next || next <= frame) break;
+        frame = next;
+    }
+
+    LOG_E("crash.fatal", "code=0x%08X type=%s eip=0x%08X fault=0x%08X eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X ebp=0x%08X esp=0x%08X",
+          code, faultType, (unsigned)ip, (unsigned)faultAddr,
+          (unsigned)ctx->Eax, (unsigned)ctx->Ebx, (unsigned)ctx->Ecx, (unsigned)ctx->Edx,
+          (unsigned)ctx->Esi, (unsigned)ctx->Edi, (unsigned)ctx->Ebp, (unsigned)ctx->Esp);
+
+    for (int i = 0; i < stackN; ++i) {
+        LOG_E("crash.stack", "frame=%d ret=0x%08X", i, (unsigned)stack[i]);
+    }
+
+    // Flush log to disk before the process dies
+    RL::Log::Shutdown();
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 // Worker: register IsLinuxClient ONLY. Never Execute from worker, never full Taint::Apply,
 // never OM enum from worker thread (TLS empty).
@@ -36,6 +92,12 @@ static DWORD WINAPI MainThread(LPVOID param) {
     }
     RL::Log::Init("C:\\Ascension\\Workspace\\logs\\runtime.log");
     RL::Config::Init(cfgPath);
+
+    // Install crash diagnostics FIRST — before any client memory is touched.
+    // This captures EIP, registers, and stack trace on any AV/illegal instruction
+    // and logs them to runtime.log before the process terminates.
+    AddVectoredExceptionHandler(1, CrashHandler);
+    LOG_I("sys.crash", "handler installed");
 
     RL::Config::Set("om.enable", "0");
     RL::Config::Set("taint.patch", "1");

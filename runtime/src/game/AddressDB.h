@@ -6,19 +6,16 @@
 
 namespace RL::Game::Addr {
 
-// --- Globals ---
+// --- Globals (all resolved at runtime by ScanAllTaintAddresses) ---
 constexpr uintptr_t g_luaState          = 0x00D3F78C;
 constexpr uintptr_t g_InWorld           = 0x00D3F60C;
 constexpr uintptr_t g_TlsIndex          = 0x00D439BC;
 constexpr uintptr_t g_WorldFrame        = 0x00B7436C;
-constexpr uintptr_t TaintContext        = 0x00D4139C;
-constexpr uintptr_t ExecCounter         = 0x00D413A0;
-constexpr uintptr_t CombatLockdown      = 0x00D413A4;
-constexpr uintptr_t EventHandlerPtr     = 0x00D413B0;
-// HardwareEventFlag is RESOLVED AT RUNTIME by scanning .text for cmp [addr],0
-// and picking the most-referenced writable data address. The static fallback
-// (0x00BEAF4C) is ONLY used if the scan fails.
-extern uintptr_t HardwareEventFlag;   // mutable — set by ScanHardwareEventFlag()
+extern uintptr_t TaintContext;         // resolved at runtime
+extern uintptr_t ExecCounter;          // resolved at runtime
+extern uintptr_t CombatLockdown;       // resolved at runtime
+extern uintptr_t EventHandlerPtr;      // resolved at runtime
+extern uintptr_t HardwareEventFlag;    // resolved at runtime
 
 // --- FrameScript ---
 constexpr uintptr_t FrameScript_Execute          = 0x00819210;

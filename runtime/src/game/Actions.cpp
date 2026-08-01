@@ -165,9 +165,6 @@ static thread_local lua_State* g_currentL = nullptr;
 } // namespace
 
 void SoftHardwareUnlock() {
-    // Only HardwareEventFlag. TaintContext write is SUSPENDED — it was
-    // corrupting memory (AV_READ crash at our DLL+0x6B68). Flag address
-    // is scanner-resolved (0x00C21000) with VirtualQuery guard.
     auto safeWrite = [](uintptr_t addr, uint32_t value) -> bool {
         if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
         MEMORY_BASIC_INFORMATION mbi{};
@@ -183,8 +180,7 @@ void SoftHardwareUnlock() {
         }
     };
     safeWrite(Addr::HardwareEventFlag, 1);
-    // TaintContext DISABLED — crash source isolated
-    // safeWrite(Addr::TaintContext, 0);
+    safeWrite(Addr::TaintContext, 0);
 }
 
 namespace {
@@ -343,28 +339,11 @@ static int SafeScript(const char* code) {
 } // namespace
 
 void ArmUnlock() {
-    // Re-enable only HardwareEventFlag write. TaintContext is still disabled
-    // for isolation. Scanner confirmed flag=0x00C21000 with 9 refs.
-    auto safeWrite = [](uintptr_t addr, uint32_t value) -> bool {
-        if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) return false;
-        if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
-            return false;
-        if (!(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY))) return false;
-        __try {
-            *reinterpret_cast<volatile uint32_t*>(addr) = value;
-            return true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
-        }
-    };
-    bool hwOk = safeWrite(Addr::HardwareEventFlag, 1);
-    // TaintContext write DISABLED for isolation
-    // bool tcOk = safeWrite(Addr::TaintContext, 0);
+    SoftHardwareUnlock();
     if (!g_armed) {
         g_armed = true;
-        RL::Log::Warn("Actions: armed hwflag=%d (taint=DISABLED)", (int)hwOk);
+        RL::Log::Warn("Actions: armed hwflag=0x%08X taint=0x%08X",
+                      (unsigned)Addr::HardwareEventFlag, (unsigned)Addr::TaintContext);
     }
 }
 

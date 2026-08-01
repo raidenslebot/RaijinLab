@@ -2,7 +2,9 @@
 #include <string>
 #include <cstdio>
 #include <cinttypes>
+#include <cstdint>
 #include <map>
+#include <vector>
 #include <algorithm>
 #include "bridge/Ipc.h"
 #include "core/Log.h"
@@ -17,16 +19,24 @@
 #include "lua/Lua.h"
 #include "bridge/Dispatch.h"
 
-// ---- Runtime HardwareEventFlag resolver ----------------------------------
-// The hardcoded address from AddressDB (0x00BEAF4C) is wrong for this Ascension
-// build — writes to it corrupt executable code causing ILLEGAL_INSTRUCTION.
-// Instead, scan .text for 'cmp [addr], 0' patterns, filter for addresses in
-// writable data sections, and pick the most-referenced one. This is the
-// definitive HardwareEventFlag for THIS build.
-static uintptr_t ScanHardwareEventFlag() {
-    HMODULE base = GetModuleHandleA(nullptr);
-    if (!base) return RL::Game::Addr::HardwareEventFlag; // fallback
+// ---- Runtime Address Resolver — finds ALL taint globals dynamically ------
+// Scans .text for cmp/mov/inc [disp32] patterns, groups addresses by proximity
+// to find the taint structure (TaintContext, ExecCounter, CombatLockdown,
+// EventHandlerPtr) and the standalone HardwareEventFlag.
+struct ResolvedAddrs {
+    uintptr_t HardwareEventFlag = 0;
+    uintptr_t TaintContext = 0;
+    uintptr_t ExecCounter = 0;
+    uintptr_t CombatLockdown = 0;
+    uintptr_t EventHandlerPtr = 0;
+};
 
+static ResolvedAddrs g_resolved;
+
+static ResolvedAddrs ScanAllTaintAddresses() {
+    ResolvedAddrs out;
+    HMODULE base = GetModuleHandleA(nullptr);
+    if (!base) return out;
     auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
     auto nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<uint8_t*>(base) + dos->e_lfanew);
     auto sec = IMAGE_FIRST_SECTION(nt);
@@ -38,53 +48,70 @@ static uintptr_t ScanHardwareEventFlag() {
             break;
         }
     }
-    if (!textS) return RL::Game::Addr::HardwareEventFlag;
+    if (!textS) return out;
 
-    // Collect all cmp [disp32], 0 addresses
     std::map<uintptr_t, int> refCounts;
-    uint8_t pattern[7] = {0x83, 0x3D, 0, 0, 0, 0, 0x00}; // cmp [disp32], 0
-    for (uintptr_t p = textS; p + 7 < textE; ++p) {
-        if (memcmp(reinterpret_cast<void*>(p), pattern, 3) == 0) { // match opcode bytes
-            uintptr_t addr = *reinterpret_cast<uint32_t*>(p + 2); // displacement
-            // Verify it's a writable data address (not executable code)
-            MEMORY_BASIC_INFORMATION mbi{};
-            if (VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) {
-                if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-                    if (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) {
-                        refCounts[addr]++;
-                    }
-                }
-            }
-        }
+    for (uintptr_t p = textS; p + 10 < textE; ++p) {
+        uint8_t* bp = reinterpret_cast<uint8_t*>(p);
+        uintptr_t addr = 0;
+        if (bp[0] == 0x83 && bp[1] == 0x3D)      addr = *reinterpret_cast<uint32_t*>(bp + 2);
+        else if (bp[0] == 0xC7 && bp[1] == 0x05)   addr = *reinterpret_cast<uint32_t*>(bp + 2);
+        else if (bp[0] == 0xFF && bp[1] == 0x05)   addr = *reinterpret_cast<uint32_t*>(bp + 2);
+        else continue;
+        if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) continue;
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) continue;
+        if (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) continue;
+        if (!(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY))) continue;
+        refCounts[addr]++;
     }
+    if (refCounts.empty()) { LOG_W("sys.scan", "no writable refs"); return out; }
 
-    // Pick most-referenced writable address
-    uintptr_t best = 0;
-    int bestN = 0;
+    // Group by proximity
+    struct Group { std::vector<uintptr_t> a; int n = 0; };
+    std::vector<Group> groups;
     for (auto& kv : refCounts) {
-        if (kv.second > bestN) {
-            bestN = kv.second;
-            best = kv.first;
+        bool placed = false;
+        for (auto& g : groups) {
+            for (auto ga : g.a) {
+                if (std::abs((int64_t)(kv.first - ga)) < 0x100) { g.a.push_back(kv.first); g.n += kv.second; placed = true; break; }
+            }
+            if (placed) break;
         }
+        if (!placed) { Group ng; ng.a.push_back(kv.first); ng.n = kv.second; groups.push_back(ng); }
     }
+    Group* best = nullptr;
+    for (auto& g : groups) { if (!best || g.n > best->n) best = &g; }
+    if (!best || best->a.empty()) return out;
+    std::sort(best->a.begin(), best->a.end());
+    uintptr_t baseAddr = best->a[0];
+    out.TaintContext = baseAddr;
+    out.ExecCounter = baseAddr + 0x04;
+    out.CombatLockdown = baseAddr + 0x08;
+    out.EventHandlerPtr = baseAddr + 0x14;
 
-    if (best && bestN >= 3) {
-        LOG_W("sys.scan", "HardwareEventFlag resolved: 0x%08X (refs=%d, was static 0x%08X)",
-              (unsigned)best, bestN, (unsigned)0x00BEAF4C);
-        return best;
+    uintptr_t bestHw = 0; int bestHwN = 0;
+    for (auto& kv : refCounts) {
+        if (kv.first >= baseAddr && kv.first < baseAddr + 0x100) continue;
+        if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; }
     }
-    LOG_W("sys.scan", "HardwareEventFlag scan FAILED (best=0x%08X refs=%d), using fallback",
-          (unsigned)best, bestN);
-    return RL::Game::Addr::HardwareEventFlag;
+    if (bestHw && bestHwN >= 3) out.HardwareEventFlag = bestHw;
+    LOG_W("sys.scan", "taint=0x%08X sz=%d refs=%d hw=0x%08X refs=%d",
+          (unsigned)baseAddr, (int)best->a.size(), best->n, (unsigned)out.HardwareEventFlag, bestHwN);
+    return out;
 }
 
 static volatile bool g_run = true;
 static HANDLE g_mutex = nullptr;
 static HMODULE g_self = nullptr;
 
-// Mutable HardwareEventFlag — resolved at runtime by scanner, not hardcoded.
+// Mutable globals — resolved at runtime by scanner, not hardcoded.
 namespace RL::Game::Addr {
-    uintptr_t HardwareEventFlag = 0x00BEAF4C; // fallback, overwritten by scanner
+    uintptr_t HardwareEventFlag = 0x00BEAF4C;
+    uintptr_t TaintContext      = 0x00D4139C;
+    uintptr_t ExecCounter       = 0x00D413A0;
+    uintptr_t CombatLockdown    = 0x00D413A4;
+    uintptr_t EventHandlerPtr   = 0x00D413B0;
 }
 
 // ---- Vectored Exception Handler — crash diagnostics ----------------------
@@ -167,13 +194,17 @@ static DWORD WINAPI MainThread(LPVOID param) {
     AddVectoredExceptionHandler(1, CrashHandler);
     LOG_W("sys.crash", "handler installed");
 
-    // Resolve HardwareEventFlag dynamically — the hardcoded address in
-    // AddressDB is wrong for this Ascension build. Scanner finds the real
-    // flag by looking for 'cmp [addr], 0' references in .text and picking
-    // the most-referenced writable data address.
-    RL::Game::Addr::HardwareEventFlag = ScanHardwareEventFlag();
-    LOG_W("sys.boot", "self=%p ver=%s om=0 taint=0 hwflag=0x%08X",
-          self, RL::Bridge::Version(), (unsigned)RL::Game::Addr::HardwareEventFlag);
+    // Resolve HardwareEventFlag and TaintContext dynamically.
+    g_resolved = ScanAllTaintAddresses();
+    RL::Game::Addr::HardwareEventFlag = g_resolved.HardwareEventFlag ? g_resolved.HardwareEventFlag : 0x00BEAF4C;
+    RL::Game::Addr::TaintContext      = g_resolved.TaintContext      ? g_resolved.TaintContext      : 0x00D4139C;
+    RL::Game::Addr::ExecCounter       = g_resolved.ExecCounter       ? g_resolved.ExecCounter       : 0x00D413A0;
+    RL::Game::Addr::CombatLockdown    = g_resolved.CombatLockdown    ? g_resolved.CombatLockdown    : 0x00D413A4;
+    RL::Game::Addr::EventHandlerPtr   = g_resolved.EventHandlerPtr   ? g_resolved.EventHandlerPtr   : 0x00D413B0;
+    LOG_W("sys.boot", "self=%p ver=%s hwflag=0x%08X taint=0x%08X",
+          self, RL::Bridge::Version(),
+          (unsigned)RL::Game::Addr::HardwareEventFlag,
+          (unsigned)RL::Game::Addr::TaintContext);
 
     RL::Config::Set("om.enable", "0");
     RL::Config::Set("taint.patch", "1");

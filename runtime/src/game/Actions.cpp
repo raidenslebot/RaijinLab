@@ -610,8 +610,9 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
     // never get "spell not ready yet" / "ability not ready yet" notifications.
     if (g_currentL) {
         double cdMs = RL::Lua::SpellCooldownMs(g_currentL, spellId);
-        if (cdMs > 50.0) { // >50ms → genuinely on cooldown
+        if (cdMs > 30.0) { // >30ms → genuinely on cooldown (sub-frame jitter tolerance)
             r.reason = "cooldown";
+            r.cooldownMs = cdMs;
             return r;
         }
     }

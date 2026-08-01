@@ -110,25 +110,27 @@ double SpellCooldownMs(lua_State* L, int spellId) {
     if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
         return 0.0;
     int top = p_gettop(L);
-    // Push GetSpellCooldown function from globals
+
+    // 1) GetSpellCooldown(spellId) → start, duration (game-time seconds)
     p_getfield(L, kGlobals, "GetSpellCooldown");
-    // Push argument: spellId
     p_pushnumber(L, (double)spellId);
-    // pcall: 1 arg, 2 results, 0 errfunc
     int rc = p_pcall(L, 1, 2, 0);
-    if (rc != 0) {
-        // Error: pop error message, restore stack
-        p_settop(L, top);
-        return 0.0;
-    }
-    double start = p_tonumber(L, -2);
+    if (rc != 0) { p_settop(L, top); return 0.0; }
+    double start    = p_tonumber(L, -2);
     double duration = p_tonumber(L, -1);
-    p_settop(L, top); // restore stack
-    if (duration <= 0.0) return 0.0;
-    // Compute remaining: (start + duration) - now
-    double rem = (start + duration) - (GetTickCount64() * 0.001);
-    if (rem < 0.0) rem = 0.0;
-    return rem * 1000.0; // return milliseconds
+    p_settop(L, top);
+    if (duration <= 0.0) return 0.0; // no cooldown on this spell
+
+    // 2) GetTime() → current game-time seconds (same clock as GetSpellCooldown)
+    p_getfield(L, kGlobals, "GetTime");
+    rc = p_pcall(L, 0, 1, 0);
+    if (rc != 0) { p_settop(L, top); return 0.0; }
+    double now = p_tonumber(L, -1);
+    p_settop(L, top);
+
+    double end = start + duration;
+    if (now >= end) return 0.0; // cooldown expired
+    return (end - now) * 1000.0; // remaining milliseconds
 }
 
 } // namespace RL::Lua

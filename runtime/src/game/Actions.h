@@ -25,6 +25,7 @@ constexpr uint32_t kCastCheckLos        = 8u;
 struct CastGateResult {
     bool ok;
     const char* reason; // static string, never heap
+    double cooldownMs;  // remaining cooldown milliseconds (0 when reason != "cooldown")
 };
 
 // Live face toward unit (TurnByDelta + CommitMovement). Does NOT change selection.

@@ -73,15 +73,28 @@ micro_lock = function()
     return 0.016
 end
 
--- Authoritative remaining GCD/CD for a spell (seconds). Prefer live GetSpellCooldown;
--- also honor Executor._gcd_until after a wire attempt. Includes lag pad so we
--- never re-fire while the server still thinks we are on GCD.
+-- Authoritative remaining GCD/CD for a spell (seconds). Prefer runtime
+-- SpellCooldownMs (C++ reads client cooldown data directly via lua_getfield pcall,
+-- no Blizzard API round-trip). Also honor Executor._gcd_until.
 local function spell_ready_remaining(sid, name)
     local t = now()
     local best = 0
     local until_t = tonumber(Executor._gcd_until) or 0
     if until_t > t then best = until_t - t end
-    if GetSpellCooldown then
+    -- Primary: runtime C++ SpellCooldownMs (sub-ms precision, no Blizzard API)
+    local RL = RaijinLab
+    if RL and RL.RuntimeCall and sid and sid > 0 then
+        local ok, packed = pcall(RL.RuntimeCall, RL, "SpellCooldownMs", sid)
+        if ok and type(packed) == "string" then
+            local cdMs = tonumber(packed) or 0
+            if cdMs > 0 then
+                local rem = cdMs / 1000
+                if rem > best then best = rem end
+            end
+        end
+    end
+    -- Fallback: Blizzard GetSpellCooldown (still works, just slower)
+    if best <= 0 and GetSpellCooldown then
         local function sample(key)
             if not key then return end
             local s, d = GetSpellCooldown(key)
@@ -93,11 +106,7 @@ local function spell_ready_remaining(sid, name)
         end
         if name and name ~= "" then sample(name) end
         if sid and sid > 0 then sample(sid) end
-        -- Any short CD is a GCD witness (WotLK book).
-        sample(61304) -- GCD proxy if present on this client
     end
-    -- No artificial lag pad. Awareness = live GetSpellCooldown only. Pads created
-    -- multi-hundred-ms freezes after failed casts when rem was already ~0.
     return best
 end
 
@@ -1990,9 +1999,9 @@ function Executor.attempt_action(action, ctx)
                 if not_facing and want_auto_face then
                     last_why = "facing"
                 else
-                    local reason = nil
+                    local reason, cdMs = nil, 0
                     if Act.CastSpellEx then
-                        ok, reason = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
+                        ok, reason, cdMs = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
                     else
                         ok = Act.CastSpell(cast_sid, cg)
                         reason = ok and "ok" or "cast_fail"
@@ -2010,10 +2019,16 @@ function Executor.attempt_action(action, ctx)
                     end
                     ok = false
                     last_why = reason or "cast_fail"
-                    if tostring(last_why) == "facing" or tostring(last_why) == "los"
+                    if tostring(last_why):find("^cooldown") then
+                        cdMs = tonumber(cdMs) or 0
+                        if cdMs > 0 then
+                            Executor._gcd_until = now() + (cdMs / 1000)
+                            Executor._gcd_src = "cd_precast"
+                        end
+                        break
+                    elseif tostring(last_why) == "facing" or tostring(last_why) == "los"
                         or tostring(last_why) == "oor" then
-                        -- try next candidate
-                    elseif tostring(last_why) == "not_ready" or tostring(last_why) == "cooldown" then
+                    elseif tostring(last_why) == "not_ready" then
                         break
                     end
                 end

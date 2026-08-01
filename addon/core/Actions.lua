@@ -73,15 +73,16 @@ A.CAST_CHECK_LOS         = 8
 
 local function parse_cast_result(res)
     if res == true or res == 1 or res == "true" then
-        return true, "ok"
+        return true, "ok", 0
     end
     if type(res) == "string" then
-        local okb, reason = res:match("^(%d+)|(.+)$")
+        local okb, reason, cdMs = res:match("^(%d+)|([^|]+)|?(%d*)$")
         if okb then
-            return okb == "1", reason or "?"
+            local cd = tonumber(cdMs) or 0
+            return okb == "1", reason or "?", cd
         end
     end
-    return false, "cast_fail"
+    return false, "cast_fail", 0
 end
 
 function A.CastSpell(spellId, unitOrGuid)
@@ -147,9 +148,10 @@ function A.CastSpellEx(spellId, unitOrGuid, flags)
     if type(res) ~= "string" then
         -- Old runtime: fall back to plain CastSpell
         local ok = A.CastSpell(spellId, unitOrGuid)
-        return ok, ok and "ok" or "cast_fail"
+        return ok, ok and "ok" or "cast_fail", 0
     end
-    return parse_cast_result(res)
+    local ok, reason, cdMs = parse_cast_result(res)
+    return ok, reason, cdMs
 end
 
 function A.CanCast(spellId, unitOrGuid, flags)

@@ -1114,8 +1114,12 @@ static int Handle(lua_State* L, const char* name) {
         Actions::SetCurrentLuaState(L);
         auto r = Actions::CastSpellEx(spellId, g, flags);
         Actions::SetCurrentLuaState(nullptr);
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
+        char buf[80];
+        if (!r.ok && r.reason && !std::strcmp(r.reason, "cooldown") && r.cooldownMs > 0.0) {
+            snprintf(buf, sizeof(buf), "0|cooldown|%.0f", r.cooldownMs);
+        } else {
+            snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
+        }
         // Trace-only success; Warn refuses (was Info every cast → I/O lag under RL_LOG).
         if (!r.ok) {
             static int s_refuseLog = 0;

@@ -1006,13 +1006,20 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Usable: skip dual probes under GCD (only off_gcd can cast).
-            -- On Ascension custom spells, IsUsableSpell may return nil (unknown).
-            -- Treat unknown as usable — fail-open, server is final authority.
+            -- Usable: try Blizzard API first, fall back to runtime IsSpellUsableRt
+            -- which sets HardwareEventFlag before querying — reliable on Ascension.
             if not gcd_lock and IsUsableSpell then
                 local u, nomana = IsUsableSpell(id)
                 if u == nil and name then u, nomana = IsUsableSpell(name) end
-                -- nil=unknown (not on action bar or custom spell) → assume usable
+                -- If Blizzard API returned nil (Ascension custom spell), try runtime
+                if u == nil and RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                    local okr, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellUsableRt", id)
+                    if okr and type(packed) == "string" then
+                        local ru, rnomana = string.match(packed, "^(-?%d+)|(-?%d+)$")
+                        ru, rnomana = tonumber(ru), tonumber(rnomana)
+                        if ru and ru >= 0 then u, nomana = (ru == 1), (rnomana == 1) end
+                    end
+                end
                 local can = (u == nil) or (not not u)
                 if nomana then can = false end
                 ctx.spell_usable[id] = can
@@ -1046,9 +1053,8 @@ local function fill_live_spell_state(ctx, spell_ids)
                 end
                 if client_r == 0 then
                     -- IsSpellInRange returns 0 for Ascension custom spells even
-                    -- when the target IS in range. Trust precise measurement
-                    -- when it contradicts the client API. Use `band` (which
-                    -- already defaults to 5yd when maxR is unknown).
+                    -- when the target IS in range. Try runtime API (sets HW flag
+                    -- before querying) then precise measurement override.
                     if precise and edge ~= nil then
                         if edge <= band + RANGE_EPS then
                             inr = true   -- precise says in range, override client
@@ -1056,7 +1062,16 @@ local function fill_live_spell_state(ctx, spell_ids)
                             inr = false  -- both agree: OOR
                         end
                     else
-                        inr = false      -- no precise data, trust client
+                        -- No precise data: try runtime IsSpellInRangeRt as fallback
+                        local rtok, rtr = false, nil
+                        if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                            rtok, rtr = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
+                        end
+                        if rtok and type(rtr) == "number" and rtr >= 0 then
+                            inr = (rtr == 1)
+                        else
+                            inr = false
+                        end
                     end
                     targeted = true
                 elseif client_r == 1 then
@@ -2477,13 +2492,6 @@ function Executor._tick_body()
     end
 
     local t = now()
-
-    -- Per-frame soft unlock: set *HardwareEventFlag=1 so IsUsableSpell,
-    -- IsSpellInRange, and other client APIs return correct values without
-    -- binary HW gate patches. The client resets this flag each frame.
-    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "SoftUnlock")
-    end
 
     -- ---- Resolve a cast that's in flight (set on the previous cast) ---------
     -- This is the heart of "lightning fast". Act.CastSpell returning true only

@@ -175,6 +175,106 @@ double SpellCooldownMs(lua_State* L, int spellId) {
     return rem; // remaining milliseconds
 }
 
+// ---- IsSpellInRange / IsSpellUsable with HardwareEventFlag set ----------
+// These call the Blizzard Lua APIs from C++ with SEH protection AND set the
+// hardware event flag before the call. The flag is written directly to memory
+// (no binary patches needed). This is the CORRECT way to make these APIs work
+// on Ascension — one atomic call that sets the flag and queries the API,
+// without leaving the flag set across frames (which interferes with the
+// client's event loop).
+
+static void SetHwFlag() {
+    __try {
+        volatile uint32_t* hw = reinterpret_cast<volatile uint32_t*>(RL::Game::Addr::HardwareEventFlag);
+        if (hw) *hw = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+int IsSpellInRangeRuntime(lua_State* L, int spellId) {
+    if (!L || !p_getfield || !p_pcall || !p_pushstring || !p_tonumber || !p_settop || spellId <= 0)
+        return -1;
+
+    // Get spell name first
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+
+    char spellName[128] = {};
+    __try {
+        p_getfield(L, kGlobals, "GetSpellInfo");
+        p_pushnumber(L, (double)spellId);
+        int rc = p_pcall(L, 1, 1, 0);
+        if (rc == 0) {
+            const char* s = p_tolstring(L, -1, nullptr);
+            if (s) { strncpy_s(spellName, s, 127); }
+        }
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1;
+    }
+    if (!spellName[0]) return -1;
+
+    // Set flag + call IsSpellInRange(name, "target")
+    __try {
+        SetHwFlag();
+        p_getfield(L, kGlobals, "IsSpellInRange");
+        p_pushstring(L, spellName);
+        p_pushstring(L, "target");
+        int rc = p_pcall(L, 2, 1, 0);
+        if (rc != 0) { p_settop(L, top); return -1; }
+        // IsSpellInRange returns 1 (in range), 0 (OOR), or nil (unknown)
+        int isnil = (p_gettop(L) >= top + 1) ? 0 : 1;
+        double r = p_tonumber(L, -1);
+        p_settop(L, top);
+        if (isnil) return -1;
+        return (r == 0.0) ? 0 : 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1;
+    }
+}
+
+int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana) {
+    if (outNomana) *outNomana = 0;
+    if (!L || !p_getfield || !p_pcall || !p_pushstring || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
+        return -1;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+
+    char spellName[128] = {};
+    __try {
+        p_getfield(L, kGlobals, "GetSpellInfo");
+        p_pushnumber(L, (double)spellId);
+        int rc = p_pcall(L, 1, 1, 0);
+        if (rc == 0) {
+            const char* s = p_tolstring(L, -1, nullptr);
+            if (s) { strncpy_s(spellName, s, 127); }
+        }
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1;
+    }
+    if (!spellName[0]) return -1;
+
+    __try {
+        SetHwFlag();
+        p_getfield(L, kGlobals, "IsUsableSpell");
+        p_pushstring(L, spellName);
+        int rc = p_pcall(L, 1, 2, 0);  // returns usable, nomana
+        if (rc != 0) { p_settop(L, top); return -1; }
+        double usable = p_tonumber(L, -2);
+        double nomana = p_tonumber(L, -1);
+        p_settop(L, top);
+        if (outNomana) *outNomana = (nomana != 0.0) ? 1 : 0;
+        return (usable == 0.0) ? 0 : 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return -1;
+    }
+}
+
 double GameTimeFromLua(lua_State* L) {
     if (!L || !p_getfield || !p_pcall || !p_tonumber || !p_settop) return -1.0;
     int top = 0;

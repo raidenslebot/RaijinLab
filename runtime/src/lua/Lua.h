@@ -48,6 +48,16 @@ void MapInfoFromLua(char* buf, size_t bufSize);
 // Call Lua's GetShapeshiftForm(). Returns form index (0=normal, 1=bear, etc.) or -1.
 void ShapeshiftFormFromLua(int* outForm);
 
+// Set HardwareEventFlag=1 then call IsSpellInRange(spellName, "target").
+// Returns 1 (in range), 0 (out of range), or -1 (unreadable/error).
+// Does NOT modify TaintContext — only sets the HW flag long enough for the query.
+int IsSpellInRangeRuntime(lua_State* L, int spellId);
+
+// Set HardwareEventFlag=1 then call IsUsableSpell(spellName).
+// Returns 1 (usable), 0 (not usable), or -1 (unreadable/error).
+// nomana is written to *outNomana if non-null.
+int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana = nullptr);
+
 // Try to resolve spell school from Lua (GetSpellInfo + school lookup). Returns -1 if unknown.
 int SpellSchoolFromLua(lua_State* L, int spellId);
 

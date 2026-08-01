@@ -1262,6 +1262,22 @@ static int Handle(lua_State* L, const char* name) {
         snprintf(buf, sizeof(buf), "%.0f", rem);
         return PushString(L, buf);
     }
+    // Runtime-level IsSpellInRange: sets HardwareEventFlag, calls Lua API,
+    // returns reliable result even for Ascension custom spells.
+    if (!std::strcmp(name, "IsSpellInRangeRt")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        int r = RL::Lua::IsSpellInRangeRuntime(L, spellId);
+        return PushNumber(L, (double)r);
+    }
+    // Runtime-level IsUsableSpell: sets flag + calls API. Returns "usable|nomana".
+    if (!std::strcmp(name, "IsSpellUsableRt")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        int nomana = 0;
+        int r = RL::Lua::IsSpellUsableRuntime(L, spellId, &nomana);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d|%d", r, nomana);
+        return PushString(L, buf);
+    }
     if (!std::strcmp(name, "CanCast")) {
         int spellId = (int)optnumber(L, 2, 0);
         uint64_t g = parseGuidArg(3);

@@ -1006,20 +1006,11 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Usable: try Blizzard API first, fall back to runtime IsSpellUsableRt
-            -- which sets HardwareEventFlag before querying — reliable on Ascension.
+            -- Usable: Blizzard API only. On Ascension custom spells, IsUsableSpell
+            -- may return nil (unknown). Treat nil as usable — fail-open, server decides.
             if not gcd_lock and IsUsableSpell then
                 local u, nomana = IsUsableSpell(id)
                 if u == nil and name then u, nomana = IsUsableSpell(name) end
-                -- If Blizzard API returned nil (Ascension custom spell), try runtime
-                if u == nil and RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    local okr, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellUsableRt", id)
-                    if okr and type(packed) == "string" then
-                        local ru, rnomana = string.match(packed, "^(-?%d+)|(-?%d+)$")
-                        ru, rnomana = tonumber(ru), tonumber(rnomana)
-                        if ru and ru >= 0 then u, nomana = (ru == 1), (rnomana == 1) end
-                    end
-                end
                 local can = (u == nil) or (not not u)
                 if nomana then can = false end
                 ctx.spell_usable[id] = can
@@ -1053,8 +1044,8 @@ local function fill_live_spell_state(ctx, spell_ids)
                 end
                 if client_r == 0 then
                     -- IsSpellInRange returns 0 for Ascension custom spells even
-                    -- when the target IS in range. Try runtime API (sets HW flag
-                    -- before querying) then precise measurement override.
+                    -- when the target IS in range. Trust precise measurement
+                    -- when it contradicts the client API.
                     if precise and edge ~= nil then
                         if edge <= band + RANGE_EPS then
                             inr = true   -- precise says in range, override client
@@ -1062,16 +1053,7 @@ local function fill_live_spell_state(ctx, spell_ids)
                             inr = false  -- both agree: OOR
                         end
                     else
-                        -- No precise data: try runtime IsSpellInRangeRt as fallback
-                        local rtok, rtr = false, nil
-                        if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                            rtok, rtr = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
-                        end
-                        if rtok and type(rtr) == "number" and rtr >= 0 then
-                            inr = (rtr == 1)
-                        else
-                            inr = false
-                        end
+                        inr = false      -- no precise data, trust client
                     end
                     targeted = true
                 elseif client_r == 1 then

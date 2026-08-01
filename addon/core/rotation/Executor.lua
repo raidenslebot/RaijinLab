@@ -1006,21 +1006,29 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Usable: runtime C++ IsSpellUsableRt only. No Blizzard API fallback —
-            -- the runtime reads client memory directly (CD, power, HW flag).
+            -- Runtime C++ ValidateCast: single call validates cooldown, power,
+            -- range, facing. Returns "ok" or "oor:N" / "cooldown:N" / "no_power:N".
             if not gcd_lock then
-                local can = true
+                local verdict = "ok"
                 if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    local okr, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellUsableRt", id)
-                    if okr and type(packed) == "string" then
-                        local ru, rn = string.match(packed, "^(-?%d+)|(-?%d+)$")
-                        ru, rn = tonumber(ru), tonumber(rn)
-                        if ru == 0 then can = false end
-                        if rn == 1 then can = false end
+                    local maxR = meta.maxR or 5.0
+                    local okr, result = pcall(RaijinLab.RuntimeCall, RaijinLab, "ValidateCast", id, maxR)
+                    if okr and type(result) == "string" and result ~= "" then
+                        verdict = result
                     end
                 end
-                ctx.spell_usable[id] = can
-                ctx.spell_usable[tostring(id)] = can
+                local ok = (verdict == "ok")
+                ctx.spell_usable[id] = ok
+                ctx.spell_usable[tostring(id)] = ok
+                if not ok then
+                    local oor = string.match(verdict, "^oor:(.+)")
+                    ctx.spell_in_range[id] = false
+                    ctx.spell_in_range[tostring(id)] = false
+                    ctx.spell_range_diag[id] = { sid = id, name = name, verdict = verdict, edge = tonumber(oor) }
+                else
+                    ctx.spell_in_range[id] = true
+                    ctx.spell_in_range[tostring(id)] = true
+                end
             elseif ctx.spell_usable[id] == nil then
                 ctx.spell_usable[id] = true
                 ctx.spell_usable[tostring(id)] = true
@@ -1040,18 +1048,9 @@ local function fill_live_spell_state(ctx, spell_ids)
                 targeted = false
                 ctx.spell_range_diag[id] = { sid = id, name = name, kind = "ground_aoe", verdict = "in_ground_aoe" }
             elseif has_target then
-                -- Runtime C++ IsSpellInRangeRt only: reads positions from
-                -- descriptors, computes edge distance vs spell maxRange.
-                local inr = true
-                if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    local maxR = meta.maxR or 5.0
-                    local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id, maxR)
-                    if rok and type(rval) == "number" and rval >= 0 then
-                        inr = (rval == 1)
-                    end
-                end
+                -- Range + usable handled by ValidateCast above. Range diag only.
                 targeted = true
-                ctx.spell_range_diag[id] = { sid = id, name = name, kind = "targeted", verdict = inr and "in_rt" or "oor_rt" }
+                ctx.spell_range_diag[id] = ctx.spell_range_diag[id] or { sid = id, name = name, kind = "targeted", verdict = "by_validatecast" }
             else
                 ctx.spell_range_diag[id] = { sid = id, name = name, kind = "no_target", verdict = "no_target" }
             end

@@ -1279,6 +1279,14 @@ static int Handle(lua_State* L, const char* name) {
         snprintf(buf, sizeof(buf), "%d|%d", r, nomana);
         return PushString(L, buf);
     }
+    // Single definitive pre-cast validation — one call per spell per tick.
+    if (!std::strcmp(name, "ValidateCast")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        float maxRange = (float)optnumber(L, 3, 5.0);
+        char buf[64];
+        RL::Lua::ValidateCast(L, spellId, maxRange, buf, sizeof(buf));
+        return PushString(L, buf);
+    }
     if (!std::strcmp(name, "CanCast")) {
         int spellId = (int)optnumber(L, 2, 0);
         uint64_t g = parseGuidArg(3);

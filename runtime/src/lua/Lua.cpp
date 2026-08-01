@@ -235,6 +235,59 @@ int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana) {
     return 1;
 }
 
+// ---- ValidateCast — single definitive pre-cast check ---------------------
+// Replaces individual IsSpellInRangeRt + IsSpellUsableRt calls. One C++ call
+// reads everything from client memory and returns a packed verdict string.
+// Lua context builder calls this once per spell per tick.
+void ValidateCast(lua_State* L, int spellId, float maxRange, char* outBuf, size_t bufSize) {
+    if (!outBuf || !bufSize) return;
+    outBuf[0] = 0;
+    if (spellId <= 0) { snprintf(outBuf, bufSize, "bad_spell"); return; }
+    if (maxRange <= 0.f) maxRange = 5.0f;
+
+    RL::Game::Actions::SoftHardwareUnlock();
+
+    uint64_t localGuid = RL::Game::OM::LocalGuid();
+    if (!localGuid) { snprintf(outBuf, bufSize, "no_player"); return; }
+
+    // 1. Cooldown check
+    double cdMs = SpellCooldownMs(L, spellId);
+    if (cdMs > 0.0) { snprintf(outBuf, bufSize, "cooldown:%.0f", cdMs); return; }
+
+    // 2. Power check
+    for (int pt = 0; pt <= 7; ++pt) {
+        int maxPower = RL::Game::OM::UnitMaxPower(localGuid, pt);
+        if (maxPower > 0) {
+            int curPower = RL::Game::OM::UnitPower(localGuid, pt);
+            if (curPower <= 0) { snprintf(outBuf, bufSize, "no_power:%d", pt); return; }
+        }
+    }
+
+    // 3. Range check (if target exists)
+    uint64_t targetGuid = RL::Game::OM::UnitTargetGuid(localGuid);
+    if (targetGuid) {
+        RL::Game::Vec3 pPos = RL::Game::OM::Position(localGuid);
+        RL::Game::Vec3 tPos = RL::Game::OM::Position(targetGuid);
+        if (pPos.x != 0.f || pPos.y != 0.f) {
+            float dx = pPos.x - tPos.x;
+            float dy = pPos.y - tPos.y;
+            float center = sqrtf(dx * dx + dy * dy);
+            float pReach = RL::Game::OM::CombatReach(localGuid);
+            if (pReach <= 0.f) pReach = 1.5f;
+            float tReach = RL::Game::OM::CombatReach(targetGuid);
+            if (tReach <= 0.f) tReach = 1.5f;
+            float edge = center - pReach - tReach;
+            if (edge < 0.f) edge = 0.f;
+            if (edge > maxRange + 0.05f) {
+                snprintf(outBuf, bufSize, "oor:%.1f", edge);
+                return;
+            }
+        }
+    }
+
+    snprintf(outBuf, bufSize, "ok");
+}
+
 double GameTimeFromLua(lua_State* L) {
     if (!L || !p_getfield || !p_pcall || !p_tonumber || !p_settop) return -1.0;
     int top = 0;

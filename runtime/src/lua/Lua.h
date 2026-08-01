@@ -56,7 +56,13 @@ int IsSpellInRangeRuntime(lua_State* L, int spellId, float maxRange);
 // Set HardwareEventFlag=1 then call IsUsableSpell(spellName).
 // Returns 1 (usable), 0 (not usable), or -1 (unreadable/error).
 // nomana is written to *outNomana if non-null.
+int IsSpellInRangeRuntime(lua_State* L, int spellId, float maxRange);
 int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana = nullptr);
+
+// Single definitive pre-cast validation. Reads cooldown, power, range from
+// client memory. Returns packed verdict: "ok", "oor:N", "cooldown:N",
+// "no_power:N", "no_player", "bad_spell".
+void ValidateCast(lua_State* L, int spellId, float maxRange, char* outBuf, size_t bufSize);
 
 // Try to resolve spell school from Lua (GetSpellInfo + school lookup). Returns -1 if unknown.
 int SpellSchoolFromLua(lua_State* L, int spellId);

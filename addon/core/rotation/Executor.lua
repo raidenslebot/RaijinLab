@@ -2478,6 +2478,13 @@ function Executor._tick_body()
 
     local t = now()
 
+    -- Per-frame soft unlock: set *HardwareEventFlag=1 so IsUsableSpell,
+    -- IsSpellInRange, and other client APIs return correct values without
+    -- binary HW gate patches. The client resets this flag each frame.
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "SoftUnlock")
+    end
+
     -- ---- Resolve a cast that's in flight (set on the previous cast) ---------
     -- This is the heart of "lightning fast". Act.CastSpell returning true only
     -- means the CLIENT accepted the call - the server can still refuse it for

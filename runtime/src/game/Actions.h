@@ -10,6 +10,12 @@ bool CastSpell(int spellId, uint64_t targetGuid);
 bool MoveTo(float x, float y, float z);
 bool FaceDirection(float radians);
 
+// Set HardwareEventFlag=1 and TaintContext=0 — required before ANY client API
+// query (IsUsableSpell, IsSpellInRange) or cast operation. The client resets
+// this flag each frame, so it must be called at the start of every tick that
+// queries these APIs. Safe to call redundantly; writes are SEH-protected.
+void SoftHardwareUnlock();
+
 // ---- Authoritative cast gates (main-thread only) --------------------------
 // flags for CanCast / CastSpellEx:
 //   FACE_IF_NEEDED (1)  : TurnByDelta toward guid if not facing (no TargetUnit)

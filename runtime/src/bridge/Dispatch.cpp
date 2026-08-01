@@ -1394,6 +1394,14 @@ static int Handle(lua_State* L, const char* name) {
         Actions::ArmUnlock();
         return PushBool(L, true);
     }
+    if (!std::strcmp(name, "SoftUnlock") || !std::strcmp(name, "HardwareUnlock")) {
+        // Per-frame unlock: sets *HardwareEventFlag=1 so IsUsableSpell,
+        // IsSpellInRange, and other client APIs work without HW gate patches.
+        // Must be called at start of every tick that queries these APIs —
+        // the client resets the flag each frame. Safe to call redundantly.
+        Actions::SoftHardwareUnlock();
+        return PushBool(L, true);
+    }
     if (!std::strcmp(name, "ExecSecure") || !std::strcmp(name, "RunSecure")) {
         const char* code = checkstring(L, 2);
         return PushBool(L, code && Actions::ExecSecure(code));

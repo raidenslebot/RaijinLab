@@ -21,6 +21,8 @@
 namespace RL::Game::Actions {
 namespace {
 
+using RL::Game::Actions::SoftHardwareUnlock;
+
 using fnVoid = void(__cdecl*)();
 using fnFSExec3 = void(__cdecl*)(const char* code, const char* name, int taintArg);
 // Real client cast used by FrameScript CastSpellByID / CastSpellByName
@@ -160,7 +162,9 @@ static int g_cast_fail = 0;
 // ever see a non-null value.
 static thread_local lua_State* g_currentL = nullptr;
 
-static void SoftHardwareUnlock() {
+} // namespace
+
+void SoftHardwareUnlock() {
     __try {
         volatile uint32_t* hw = reinterpret_cast<volatile uint32_t*>(Addr::HardwareEventFlag);
         if (hw) *hw = 1;
@@ -172,6 +176,8 @@ static void SoftHardwareUnlock() {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
+
+namespace {
 
 static uint64_t ActiveGuid() {
     auto fn = reinterpret_cast<fnGetActive>(Addr::ClntObjMgrGetActivePlayer);

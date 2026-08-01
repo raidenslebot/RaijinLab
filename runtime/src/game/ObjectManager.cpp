@@ -2186,6 +2186,78 @@ void PlayerCastState(int* outSpellId, int* outTotalMs, int* outElapsedMs) {
     *outSpellId = s_cachedSid; *outTotalMs = s_cachedTotal;
 }
 
+// ---- Mounted / movement impairment (verified descriptor offsets) -----------
+int IsUnitMounted(uint64_t guid) {
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    // MountDisplayId at descriptor offset 0x114 — non-zero means mounted
+    __try {
+        uint32_t mountId = Mem::Read<uint32_t>(d + Offsets::D().MountDisplayId);
+        return (mountId != 0) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+int UnitMovementImpairing(uint64_t guid) {
+    uintptr_t p = Ptr(guid);
+    if (!p || !Mem::Readable(p)) return -1;
+    uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
+    if (!d || !Mem::Readable(d)) return -1;
+    static constexpr uint32_t kUF_STUNNED    = 0x00040000u;
+    static constexpr uint32_t kUF_DISARMED   = 0x00200000u;
+    static constexpr uint32_t kUF_CONFUSED   = 0x00000040u;
+    static constexpr uint32_t kUF_FLEEING    = 0x00000800u;
+    __try {
+        uint32_t flags = Mem::Read<uint32_t>(d + Offsets::D().Flags);
+        int result = 0;
+        if (flags & kUF_STUNNED)  result |= 1;
+        if (flags & kUF_DISARMED) result |= 2;
+        if (flags & kUF_CONFUSED) result |= 4;
+        if (flags & kUF_FLEEING)  result |= 8;
+        return result;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Packed player state using verified descriptor fields
+static int PlayerSwimFlySEH(uintptr_t pp) {
+    if (!pp || !AcceptObjPtr(pp)) return -1;
+    uintptr_t movPtr = Mem::Read<uintptr_t>(pp + Offsets::O().Movement);
+    if (!movPtr || !AcceptObjPtr(movPtr)) return -1;
+    static constexpr uint32_t MOVEF_SWIMMING = 0x00200000u;
+    static constexpr uint32_t MOVEF_FLYING   = 0x00000200u;
+    int result = 0;
+    __try {
+        uint32_t mf = Mem::Read<uint32_t>(movPtr + 0x28);
+        if (mf & MOVEF_SWIMMING) result |= 1;
+        if (mf & MOVEF_FLYING)   result |= 2;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return result;
+}
+
+std::string PlayerStatePacked() {
+    uint64_t local = SafeGetActive();
+    if (!local) return "combat=-1|mounted=-1|dead=-1|swim=-1|flying=-1";
+
+    int combat = UnitCombatState(local);
+    int mounted = IsUnitMounted(local);
+    int hp = Health(local);
+    bool isDead = (hp == 0);
+    int swim = -1, flying = -1;
+    uintptr_t pp = LocalPtr();
+    int sf = PlayerSwimFlySEH(pp);
+    if (sf >= 0) { swim = (sf & 1) ? 1 : 0; flying = (sf & 2) ? 1 : 0; }
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "combat=%d|mounted=%d|dead=%d|swim=%d|flying=%d",
+             combat, mounted, isDead ? 1 : 0, swim, flying);
+    return std::string(buf);
+}
+
 // Dynamic flags, read from the field that ACTUALLY holds them for this type.
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at

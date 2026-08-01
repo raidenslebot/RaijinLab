@@ -101,6 +101,14 @@ int UnitCreatureType(uint64_t guid);
 // Player casting state: returns spellId (0 if not casting), cast total ms, elapsed ms.
 // Returns {-1,0,0} if unreadable. CastTotalMs = 0 means no cast in progress.
 void PlayerCastState(int* outSpellId, int* outTotalMs, int* outElapsedMs);
+// Mounted check: reads MountDisplayId descriptor field (0x114). Non-zero = mounted.
+int IsUnitMounted(uint64_t guid);
+// Movement-impairing flags from UNIT_FIELD_FLAGS: stunned/disarmed/fleeing/confused.
+// Returns 0 if none, or a bitmask of impairment flags. -1 if unreadable.
+int UnitMovementImpairing(uint64_t guid);
+// Packed player state string: "combat=X|mounted=X|dead=X|ghost=X|stealth=X|caster=X"
+// Uses descriptor reads + Lua UnitAura pcall for stealth. X is 0/1/-1 (unknown).
+std::string PlayerStatePacked();
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

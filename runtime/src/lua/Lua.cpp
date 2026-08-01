@@ -258,4 +258,38 @@ void PlayerCastInfo(int* outSpellId, int* outCastTotalMs) {
     }
 }
 
+void MapInfoFromLua(char* buf, size_t bufSize) {
+    if (!buf || bufSize < 8) return;
+    buf[0] = '\0';
+    void* rawL = RL::Game::Addr::LuaState();
+    if (!rawL || !p_getfield || !p_pcall || !p_gettop || !p_settop || !p_tonumber || !p_tolstring) return;
+    auto L = (lua_State*)rawL;
+
+    int top = 0;
+    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+
+    int rc = -1;
+    __try {
+        p_getfield(L, kGlobals, "GetMapInfo");
+        rc = p_pcall(L, 0, 6, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return;
+    }
+    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
+
+    __try {
+        // Stack: 1=mapFile 2=mapName 3=mapDesc 4=zoneId 5=zoneName 6=zoneDesc
+        int mapId = (int)p_tonumber(L, -6);
+        const char* mapName = p_tolstring(L, -5, nullptr);
+        int zoneId = (int)p_tonumber(L, -3);
+        const char* zoneName = p_tolstring(L, -2, nullptr);
+        snprintf(buf, bufSize, "mapId=%d|mapName=%s|zoneId=%d|zoneName=%s",
+                 mapId, mapName ? mapName : "?", zoneId, zoneName ? zoneName : "?");
+        p_settop(L, top);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 } // namespace RL::Lua

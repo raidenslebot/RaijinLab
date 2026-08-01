@@ -42,4 +42,7 @@ void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCas
 // Call Lua's UnitCastingInfo("player"). Returns spellId (-1 if not casting) and total cast ms.
 void PlayerCastInfo(int* outSpellId, int* outCastTotalMs);
 
+// Call Lua's GetMapInfo(). Writes packed "mapId=N|mapName=X|zoneId=N|zoneName=X" into buf.
+void MapInfoFromLua(char* buf, size_t bufSize);
+
 } // namespace RL::Lua

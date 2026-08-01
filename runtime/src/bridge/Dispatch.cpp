@@ -1024,6 +1024,34 @@ static int Handle(lua_State* L, const char* name) {
         snprintf(buf, sizeof(buf), "%d|%d|%d", sid, total, elapsed);
         return PushString(L, buf);
     }
+    if (!std::strcmp(name, "IsUnitMounted")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        int v = OM::IsUnitMounted(g);
+        if (v < 0) return PushNil(L);
+        return PushBool(L, v == 1);
+    }
+    if (!std::strcmp(name, "UnitMovementImpairing")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        int v = OM::UnitMovementImpairing(g);
+        return PushNumber(L, (double)v);
+    }
+    if (!std::strcmp(name, "PlayerState")) {
+        auto s = OM::PlayerStatePacked();
+        return PushString(L, s.c_str());
+    }
+    // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
+    if (!std::strcmp(name, "GetCurrentMapInfo")) {
+        static char s_mapBuf[128] = {};
+        static ULONGLONG s_mapAt = 0;
+        ULONGLONG now = GetTickCount64();
+        if (!s_mapAt || (now - s_mapAt) > 500ull) {
+            s_mapAt = now;
+            RL::Lua::MapInfoFromLua(s_mapBuf, sizeof(s_mapBuf));
+        }
+        return PushString(L, s_mapBuf[0] ? s_mapBuf : "mapId=?|mapName=?|zoneId=?|zoneName=?");
+    }
     if (!std::strcmp(name, "UnitIsLootable") || !std::strcmp(name, "UnitIsSkinnable") ||
         !std::strcmp(name, "UnitIsMounted") ||
         !std::strcmp(name, "StopFalling") || !std::strcmp(name, "CancelPendingSpell") ||

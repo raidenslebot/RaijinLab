@@ -88,15 +88,21 @@ static ResolvedAddrs ScanAllTaintAddresses() {
         }
     }
 
-    // HardwareEventFlag: must have BOTH cmp AND mov1 refs (checked + set)
-    uintptr_t bestHw = 0; int bestHwN = 0;
-    for (auto& kv : cmpRefs) {
-        if (mov1Refs[kv.first] > 0 && kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; }
+    // HardwareEventFlag: most cmp-referenced writable address.
+    // cmp [flag], 0 is the definitive gate-check pattern used by Spell_C_CastSpell.
+    // mov1 is supplementary — not all builds set the flag via mov [addr], 1.
+    {
+        uintptr_t best = 0; int bestN = 0;
+        for (auto& kv : cmpRefs) { if (kv.second > bestN) { bestN = kv.second; best = kv.first; } }
+        if (best && bestN >= 3) out.HardwareEventFlag = best;
     }
-    if (bestHw && bestHwN >= 3) out.HardwareEventFlag = bestHw;
 
-    // TaintContext + ExecCounter: must have BOTH mov0 AND inc refs (zeroed + incremented)
-    // These are the ONLY globals with this dual pattern — eliminates false positives.
+    // TaintContext: must have BOTH mov0 AND inc refs.
+    // If dual-pattern found nothing, fall back to most mov0-ref'd address
+    // that is NOT the HardwareEventFlag and has ≥2 refs.
+
+    // TaintContext + ExecCounter: prefer dual-pattern (mov0+inc).
+    // Fall back to most mov0-ref'd address (≠HW flag, ≥2 refs) if no dual match.
     std::vector<std::pair<uintptr_t,int>> dualRefs;
     for (auto& kv : mov0Refs) {
         if (incRefs[kv.first] > 0) {
@@ -109,16 +115,22 @@ static ResolvedAddrs ScanAllTaintAddresses() {
         for (auto& d : dualRefs) {
             if (d.second > bestTcN) { bestTcN = d.second; bestTc = d.first; }
         }
-        if (bestTc && bestTcN >= 3) {
+        if (bestTc && bestTcN >= 2) {
             out.TaintContext = bestTc;
-            // ExecCounter: second dual-pattern addr ≤0x10 from TaintContext
             for (auto& d : dualRefs) {
                 if (d.first != bestTc && std::abs((int64_t)(d.first - bestTc)) <= 0x10) {
-                    out.ExecCounter = d.first;
-                    break;
+                    out.ExecCounter = d.first; break;
                 }
             }
         }
+    }
+    if (!out.TaintContext) {
+        // Fallback: most mov0-ref'd writable address that's not the HW flag
+        uintptr_t best = 0; int bestN = 0;
+        for (auto& kv : mov0Refs) {
+            if (kv.first != out.HardwareEventFlag && kv.second > bestN) { bestN = kv.second; best = kv.first; }
+        }
+        if (best && bestN >= 2) out.TaintContext = best;
     }
 
     // CombatLockdown + EventHandlerPtr: mov0-only near TaintContext (no inc refs)

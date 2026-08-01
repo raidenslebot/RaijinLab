@@ -179,38 +179,27 @@ double SpellCooldownMs(lua_State* L, int spellId) {
 }
 
 // ---- IsSpellInRange / IsSpellUsable — PURE C++ memory reads ---------------
-// No Lua pcall. No stack manipulation. Read spell range + object positions
-// from client memory via ObjectManager. Set HardwareEventFlag first (address
-// is now dynamically resolved by scanner — confirmed correct 0x00C21000).
-//
-// This is the PROPER runtime approach: direct memory access, zero Lua overhead,
-// no stack corruption risk.
+// ZERO Lua pcall. Spell range passed from Lua's cached spell_meta.
+// Only ObjectManager descriptor reads + SoftHardwareUnlock.
 
-int IsSpellInRangeRuntime(lua_State* L, int spellId) {
+int IsSpellInRangeRuntime(lua_State* L, int spellId, float maxRange) {
     (void)L;
     if (spellId <= 0) return -1;
 
     RL::Game::Actions::SoftHardwareUnlock();
 
-    // Get spell range from cache
-    float maxRange = -1.f;
-    int castMs = -1, powerType = -1;
-    SpellInfoFromLua(L, spellId, &maxRange, &castMs, &powerType);
-    if (maxRange < 0.f) maxRange = 5.0f; // fallback melee range
+    if (maxRange <= 0.f) maxRange = 5.0f;
 
-    // Get local player GUID and position
     uint64_t localGuid = RL::Game::OM::LocalGuid();
     if (!localGuid) return -1;
     RL::Game::Vec3 pPos = RL::Game::OM::Position(localGuid);
     if (pPos.x == 0.f && pPos.y == 0.f && pPos.z == 0.f) return -1;
 
-    // Get target GUID from LocalPlayer's UNIT_FIELD_TARGET
     uint64_t targetGuid = RL::Game::OM::UnitTargetGuid(localGuid);
     if (!targetGuid) return -1;
     RL::Game::Vec3 tPos = RL::Game::OM::Position(targetGuid);
     if (tPos.x == 0.f && tPos.y == 0.f && tPos.z == 0.f) return -1;
 
-    // Compute edge distance
     float dx = pPos.x - tPos.x;
     float dy = pPos.y - tPos.y;
     float center = sqrtf(dx * dx + dy * dy);
@@ -231,31 +220,19 @@ int IsSpellUsableRuntime(lua_State* L, int spellId, int* outNomana) {
 
     RL::Game::Actions::SoftHardwareUnlock();
 
-    // For now: check if spell is known + has sufficient resources.
-    // Read power cost from cached SpellInfo, compare to current power.
-    float maxRange = -1.f;
-    int castMs = -1, powerType = -1;
-    SpellInfoFromLua(L, spellId, &maxRange, &castMs, &powerType);
-    // SpellInfoFromLua fills powerType from GetSpellInfo pcall (safe, existing code)
-
-    // Get local player
     uint64_t localGuid = RL::Game::OM::LocalGuid();
     if (!localGuid) return -1;
 
-    // Check if spell is on cooldown
-    double cdMs = SpellCooldownMs(L, spellId);
-    if (cdMs > 0.0) return 0; // on cooldown → not usable
-
-    // Check power if powerType >= 0
-    if (powerType >= 0) {
-        int curPower = RL::Game::OM::UnitPower(localGuid, powerType);
-        int maxPower = RL::Game::OM::UnitMaxPower(localGuid, powerType);
-        if (curPower >= 0 && maxPower > 0) {
-            if (curPower <= 0 && outNomana) *outNomana = 1;
+    // Check all power types for resource starvation
+    for (int pt = 0; pt <= 7; ++pt) {
+        int maxPower = RL::Game::OM::UnitMaxPower(localGuid, pt);
+        if (maxPower > 0) {
+            int curPower = RL::Game::OM::UnitPower(localGuid, pt);
+            if (curPower == 0 && outNomana) { *outNomana = 1; break; }
         }
     }
 
-    return 1; // default: usable
+    return 1;
 }
 
 double GameTimeFromLua(lua_State* L) {

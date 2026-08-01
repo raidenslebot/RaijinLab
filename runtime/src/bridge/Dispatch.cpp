@@ -1266,7 +1266,8 @@ static int Handle(lua_State* L, const char* name) {
     // returns reliable result even for Ascension custom spells.
     if (!std::strcmp(name, "IsSpellInRangeRt")) {
         int spellId = (int)optnumber(L, 2, 0);
-        int r = RL::Lua::IsSpellInRangeRuntime(L, spellId);
+        float maxRange = (float)optnumber(L, 3, 5.0);
+        int r = RL::Lua::IsSpellInRangeRuntime(L, spellId, maxRange);
         return PushNumber(L, (double)r);
     }
     // Runtime-level IsUsableSpell: sets flag + calls API. Returns "usable|nomana".

@@ -1044,7 +1044,8 @@ local function fill_live_spell_state(ctx, spell_ids)
                 -- descriptors, computes edge distance vs spell maxRange.
                 local inr = true
                 if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id)
+                    local maxR = meta.maxR or 5.0
+                    local rok, rval = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsSpellInRangeRt", id, maxR)
                     if rok and type(rval) == "number" and rval >= 0 then
                         inr = (rval == 1)
                     end

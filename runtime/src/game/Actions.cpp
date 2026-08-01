@@ -165,13 +165,6 @@ static thread_local lua_State* g_currentL = nullptr;
 } // namespace
 
 void SoftHardwareUnlock() {
-    // Only HardwareEventFlag. TaintContext/ExecCounter/CombatLockdown are
-    // NOT written — their addresses differ per Ascension build and writing
-    // to wrong addresses corrupts critical client state (observed: "action
-    // blocked" on every input — camera, movement, everything).
-    //
-    // Spell_C_CastSpell (our cast path) only checks HardwareEventFlag.
-    // FrameScript taint (TaintContext) is irrelevant for native casts.
     auto safeWrite = [](uintptr_t addr, uint32_t value) -> bool {
         if (!addr || addr < 0x00400000 || addr > 0x07FFFFFF) return false;
         MEMORY_BASIC_INFORMATION mbi{};
@@ -187,6 +180,9 @@ void SoftHardwareUnlock() {
         }
     };
     safeWrite(Addr::HardwareEventFlag, 1);
+    // TaintContext: cross-reference scanner now requires BOTH mov0+inc patterns
+    // for identification — eliminates false positives from generic zeroed globals.
+    safeWrite(Addr::TaintContext, 0);
 }
 
 namespace {

@@ -88,44 +88,58 @@ static ResolvedAddrs ScanAllTaintAddresses() {
         }
     }
 
-    // HardwareEventFlag: most cmp-referenced OR most mov1-referenced
+    // HardwareEventFlag: must have BOTH cmp AND mov1 refs (checked + set)
     uintptr_t bestHw = 0; int bestHwN = 0;
-    for (auto& kv : cmpRefs) { if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; } }
-    for (auto& kv : mov1Refs) { if (kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; } }
+    for (auto& kv : cmpRefs) {
+        if (mov1Refs[kv.first] > 0 && kv.second > bestHwN) { bestHwN = kv.second; bestHw = kv.first; }
+    }
     if (bestHw && bestHwN >= 3) out.HardwareEventFlag = bestHw;
 
-    // TaintContext: most mov0-referenced address
-    uintptr_t bestTc = 0; int bestTcN = 0;
-    for (auto& kv : mov0Refs) { if (kv.second > bestTcN) { bestTcN = kv.second; bestTc = kv.first; } }
-    if (bestTc && bestTcN >= 2) out.TaintContext = bestTc;
-
-    // ExecCounter: most inc-referenced address (may be same as TaintContext zone)
-    uintptr_t bestEc = 0; int bestEcN = 0;
-    for (auto& kv : incRefs) { if (kv.second > bestEcN) { bestEcN = kv.second; bestEc = kv.first; } }
-    if (bestEc && bestEcN >= 2) out.ExecCounter = bestEc;
-
-    // CombatLockdown: second most mov0-referenced, near TaintContext
+    // TaintContext + ExecCounter: must have BOTH mov0 AND inc refs (zeroed + incremented)
+    // These are the ONLY globals with this dual pattern — eliminates false positives.
+    std::vector<std::pair<uintptr_t,int>> dualRefs;
     for (auto& kv : mov0Refs) {
-        if (kv.first != bestTc && std::abs((int64_t)(kv.first - bestTc)) < 0x20 && kv.second >= 2) {
-            out.CombatLockdown = kv.first;
-            break;
+        if (incRefs[kv.first] > 0) {
+            dualRefs.push_back({kv.first, kv.second + incRefs[kv.first]});
+        }
+    }
+    if (!dualRefs.empty()) {
+        std::sort(dualRefs.begin(), dualRefs.end());
+        uintptr_t bestTc = 0; int bestTcN = 0;
+        for (auto& d : dualRefs) {
+            if (d.second > bestTcN) { bestTcN = d.second; bestTc = d.first; }
+        }
+        if (bestTc && bestTcN >= 3) {
+            out.TaintContext = bestTc;
+            // ExecCounter: second dual-pattern addr ≤0x10 from TaintContext
+            for (auto& d : dualRefs) {
+                if (d.first != bestTc && std::abs((int64_t)(d.first - bestTc)) <= 0x10) {
+                    out.ExecCounter = d.first;
+                    break;
+                }
+            }
         }
     }
 
-    // EventHandlerPtr: near TaintContext, not already identified
-    for (auto& kv : mov0Refs) {
-        if (kv.first != bestTc && kv.first != out.CombatLockdown
-            && std::abs((int64_t)(kv.first - bestTc)) < 0x20) {
-            out.EventHandlerPtr = kv.first;
-            break;
+    // CombatLockdown + EventHandlerPtr: mov0-only near TaintContext (no inc refs)
+    if (out.TaintContext) {
+        std::vector<uintptr_t> nearby;
+        for (auto& kv : mov0Refs) {
+            if (kv.first != out.TaintContext && kv.first != out.ExecCounter
+                && std::abs((int64_t)(kv.first - out.TaintContext)) <= 0x18
+                && incRefs[kv.first] == 0) {
+                nearby.push_back(kv.first);
+            }
         }
+        std::sort(nearby.begin(), nearby.end());
+        if (nearby.size() >= 1) out.CombatLockdown = nearby[0];
+        if (nearby.size() >= 2) out.EventHandlerPtr = nearby[1];
     }
 
-    LOG_W("sys.scan", "hw=0x%08X(cmp=%d,mov1=%d) taint=0x%08X(mov0=%d) exec=0x%08X(inc=%d) cl=0x%08X eh=0x%08X",
-          (unsigned)out.HardwareEventFlag, bestHwN, (int)mov1Refs[out.HardwareEventFlag],
-          (unsigned)out.TaintContext, bestTcN,
-          (unsigned)out.ExecCounter, bestEcN,
-          (unsigned)out.CombatLockdown, (unsigned)out.EventHandlerPtr);
+    LOG_W("sys.scan", "hw=0x%08X(cmp=%d+m1=%d) tc=0x%08X(m0=%d+inc=%d) ec=0x%08X cl=0x%08X eh=0x%08X",
+          (unsigned)out.HardwareEventFlag, (int)cmpRefs[out.HardwareEventFlag], (int)mov1Refs[out.HardwareEventFlag],
+          (unsigned)out.TaintContext, (int)mov0Refs[out.TaintContext], (int)incRefs[out.TaintContext],
+          (unsigned)out.ExecCounter, (unsigned)out.CombatLockdown, (unsigned)out.EventHandlerPtr);
     return out;
 }
 

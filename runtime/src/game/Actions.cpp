@@ -631,9 +631,19 @@ CastGateResult CastSpellEx(int spellId, uint64_t targetGuid, uint32_t flags) {
         if ((myPos.x != 0.f || myPos.y != 0.f) && (tgtPos.x != 0.f || tgtPos.y != 0.f)) {
             float dx = tgtPos.x - myPos.x;
             float dy = tgtPos.y - myPos.y;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            // 0.5yd tolerance for position jitter / movement between reads
-            if (dist > spellMaxRange + 0.5f) {
+            float dz = tgtPos.z - myPos.z;
+            float dist2d = std::sqrt(dx * dx + dy * dy);
+            float dist3d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            // Primary: 2D distance check with 0.5yd tolerance
+            if (dist2d > spellMaxRange + 0.5f) {
+                r.reason = "oor";
+                return r;
+            }
+            // Secondary: vertical range check — melee generally ~5yd, most spells ~8-15yd vertical
+            // Use 2x the spell range as vertical cap (generous: e.g., 30yd spell = 60yd vertical allowed)
+            float vertCap = spellMaxRange * 2.f;
+            if (vertCap < 5.f) vertCap = 5.f;
+            if (std::fabs(dz) > vertCap) {
                 r.reason = "oor";
                 return r;
             }

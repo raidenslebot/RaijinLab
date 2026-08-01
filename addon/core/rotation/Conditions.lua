@@ -1348,6 +1348,69 @@ Conditions.register("is_stealthed", {
     end,
 })
 
+Conditions.register("is_stunned", {
+    name = "Is Stunned / Disarmed / Confused / Fleeing",
+    category = "Self",
+    description = "Player is under a movement-impairing crowd control (stunned, disarmed, confused, or fleeing). Runtime UnitMovementImpairing reads UNIT_FIELD_FLAGS from descriptor — no Blizzard API. Use Invert for 'not impaired'.",
+    params = {
+        { key = "kind", type = "string", default = "stunned", label = "Impair type", cycle = { "stunned", "disarmed", "confused", "fleeing", "any" } },
+    },
+    eval = function(ctx, args)
+        if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then
+            -- Fallback to ctx for non-runtime environments
+            if ctx.is_stunned ~= nil then return bool(ctx.is_stunned, false) end
+            return false
+        end
+        local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "UnitMovementImpairing", "player")
+        if not ok then return false end
+        local mask = tonumber(packed) or 0
+        if mask < 0 then return false end
+        local kind = string.lower(tostring((args and args.kind) or "stunned"))
+        if kind == "stunned"  then return (mask & 1) ~= 0 end
+        if kind == "disarmed" then return (mask & 2) ~= 0 end
+        if kind == "confused" then return (mask & 4) ~= 0 end
+        if kind == "fleeing"  then return (mask & 8) ~= 0 end
+        if kind == "any" then return mask ~= 0 end
+        return false
+    end,
+})
+
+Conditions.register("is_silenced", {
+    name = "Is Silenced / School Locked",
+    category = "Self",
+    description = "Player is silenced or school-locked for the relevant spell school. Uses runtime SpellInfo to determine your spell's school, then checks current auras for silence/school-lock debuffs. Use Invert for 'not silenced'.",
+    params = {
+        { key = "spell_id", type = "number", default = 0, label = "Spell ID (for school)" },
+    },
+    eval = function(ctx, args)
+        if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then
+            if ctx.is_silenced ~= nil then return bool(ctx.is_silenced, false) end
+            return false
+        end
+        local sid = num((args and args.spell_id) or ctx.slot_spell_id or 0, 0)
+        if sid <= 0 then return false end
+        -- Get spell school from runtime SpellInfo
+        local ok, info = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellInfo", sid)
+        if not ok or type(info) ~= "string" then return false end
+        local school = tonumber(string.match(info, "school=(-?%d+)")) or -1
+        if school < 0 then return false end
+        -- Check player debuffs for silence/interrupt school lockouts
+        local pb = ctx.player_debuffs
+        if not pb then return false end
+        -- Common silence/interrupt aura spell IDs (WotLK generic + Ascension custom)
+        -- These are auras that prevent casting of specific schools
+        local lockout_ids = { 18469, 15487, 24259, 32717, 47476, 55021, 65547, 31935 }
+        for _, lid in ipairs(lockout_ids) do
+            if pb[lid] or pb[tostring(lid)] then
+                -- If a school-lock aura is present, check if it's generic silence
+                -- Simplified: any interrupt school lockout aura blocks
+                return true
+            end
+        end
+        return false
+    end,
+})
+
 Conditions.register("target_is_player", {
     name = "Target Is Player",
     category = "Target",

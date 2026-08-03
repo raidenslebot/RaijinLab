@@ -2518,6 +2518,16 @@ function Executor.attempt_action(action, ctx)
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
+        -- 2026-08-03 (MULTI-CANDIDATE FIX — the "stuck on one target it can't
+        -- cast on" bug the user diagnosed): last_why was NEVER reset between
+        -- candidates, so when candidate #1 was rejected (oor / los / a refused
+        -- cast), every later candidate's `if not last_why` guard was false and
+        -- they were NEVER evaluated or wired — the rotation stayed stuck on the
+        -- one uncastable target instead of falling through to a castable one
+        -- (live: aura search "massively inconsistent — sometimes casts fine,
+        -- sometimes not on a target right in front of me"). Reset per-candidate
+        -- so each is evaluated independently and the first WIREABLE one wins.
+        last_why = nil
         if not cg or cg == 0 or tostring(cg) == "0x0" or tostring(cg) == "0x0000000000000000" then
             last_why = "bad_guid"
         elseif Executor.guid_blacklisted(cg) then

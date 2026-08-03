@@ -1,0 +1,12 @@
+fix(addon): reset last_why per candidate in the try_list loop - aura search stuck on one uncastable target (user-diagnosed)
+
+The try_list candidate loop never cleared last_why between iterations, so when
+candidate #1 (the CLOSEST, ascending sort) was rejected (oor / los / bad_guid /
+a refused cast), every later candidate's "if not last_why" guard was false and
+they were NEVER evaluated or wired. With a far add as the closest candidate,
+the target right in front of the player (candidate #2+) was never cast.
+
+Fix: last_why = nil at the top of each try_list iteration, so every candidate
+is evaluated independently and the first WIREABLE one wins (break on success).
+
+Addon-only change; runtime unchanged (1.10.103-facing0).

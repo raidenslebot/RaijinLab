@@ -1943,3 +1943,51 @@ determinate result every time.
    deterministically.
 3. Cast throughput at point-blank is continuous — GCD cycles normally, no
    80-tick holds.
+
+---
+
+## 2026-08-03 (39th round — 00:30 session): "aura search massively inconsistent" — the STUCK-CANDIDATE bug (user-diagnosed, code-confirmed)
+
+User: "everything works to a degree, but aura search is massively inconsistent.
+Sometimes it just doesn't cast on a target right in front of me, sometimes it
+casts fine. I think it's trying to cast on one target at a time, and incorrectly
+getting stuck on that one target, that it knows it can't cast on, instead of
+looking for a target that it actually can cast on."
+
+### CONFIRMED — exactly right. The bug was in the try_list loop (Executor.lua).
+```lua
+for ci = 1, #try_list do
+    local cand = try_list[ci]
+    ...
+    if not last_why and ... then    -- range gate
+        if cdist > cmaxR then last_why = "oor" end
+    end
+    if not last_why and ... then    -- LOS gate
+        if ... then last_why = "los" end
+    end
+    if not last_why then            -- WIRE
+        ...
+    end
+    -- ❌ last_why was NEVER reset before the next candidate
+end
+```
+`last_why` persisted across iterations. If candidate #1 (the CLOSEST — the
+sort is ascending) was rejected (oor / los / bad_guid / a refused cast), every
+later candidate's `if not last_why` guard was false → they were NEVER evaluated
+or wired. So with a far add as the closest candidate (out of a 5yd melee
+spell's range), the target right in front of the player (candidate #2+) was
+never cast — "stuck on the one target it can't cast on instead of looking for
+one it can." The in-front target IS in the list; it just never got its turn.
+
+### FIX (addon-only, this round)
+`last_why = nil` at the top of each `try_list` iteration, so EVERY candidate is
+evaluated independently and the first WIREABLE one wins (breaks on success).
+A rejected candidate moves to the next; only a full pass with zero castable
+candidates leaves the slot skipped that tick (re-evaluated next tick, as
+before). Runtime unchanged (1.10.103-facing0).
+
+### Live watchlist
+1. Aura search with several mobs + one in front: if the closest is out of the
+   spell's range, the in-front target is cast (fall-through now works).
+2. No regressions: closest-first preference preserved (candidate #1 still wins
+   when it IS castable).

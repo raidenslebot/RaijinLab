@@ -17,7 +17,12 @@
 // Cast rules:
 // - Never full Taint::Apply from here (freezes)
 // - HardwareEvent gate patches only (safe) via ArmUnlock
-// - Native Spell_C_CastSpell @ 0x80DA40: __cdecl(spellId, itemId, guidLo, guidHi, isTrade)
+// - Native Spell_C_CastSpell @ 0x80DA40: __cdecl(unused, spellId, guidLo,
+//   guidHi, isTrade). ROUND 34 (disasm-proven): the wrapper IGNORES arg1 and
+//   forwards arg2 into the real logic 0x80CCE0, where GetSpellEntry reads
+//   [ebp+0xc] (arg2) and the cast record stores it as the spell id. Passing
+//   the spell id as arg1 (the old fnCastSpell convention) meant the real
+//   logic looked up SPELL 0 all along.
 // - Also FrameScript_Execute CastSpellByID with origin "*" (3-arg FS)
 // - Nested lua_pcall CastSpellByID when L is available from Dispatch
 
@@ -97,7 +102,10 @@ using RL::Game::Actions::SoftHardwareUnlock;
 using fnVoid = void(__cdecl*)();
 using fnFSExec3 = void(__cdecl*)(const char* code, const char* name, int taintArg);
 // Real client cast used by FrameScript CastSpellByID / CastSpellByName
-using fnCastSpell = int(__cdecl*)(int spellId, int itemId,
+// ROUND 34: arg1 is UNUSED by the wrapper (0x80DA40 never reads [ebp+8]);
+// arg2 is the SPELL ID the real logic (0x80CCE0) passes to GetSpellEntry and
+// stores in the cast record at +0x20. Always call with fn(0, spellId, ...).
+using fnCastSpell = int(__cdecl*)(int unused, int spellId,
                                   uint32_t guidLo, uint32_t guidHi, int isTrade);
 // ObjectPtr(guidLo, guidHi, typeMask)
 using fnObjectPtr3 = uintptr_t(__cdecl*)(uint32_t lo, uint32_t hi, int typeMask);
@@ -484,6 +492,15 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 // locked, [0xBEAF44] = allowed-action mask (bit 2 = spell).
                 uint32_t beaf44 = Mem::Read<uint32_t>(0x00BEAF44);
                 uint32_t beaf4c = Mem::Read<uint32_t>(0x00BEAF4C);
+                // ROUND 34 root-cause confirmation: GetSpellEntry(0xad49d0,
+                // X, &out) succeeds for X=0 iff minSpell==0 AND slot 0 is
+                // valid. The real logic was called with X=0 (spell id in the
+                // ignored arg1), so minS==0 && slot0!=0 proves every cast ran
+                // on SPELL 0's data.
+                uint32_t minS = Mem::Read<uint32_t>(0x00AD49D0 + 0x10);
+                uint32_t maxS = Mem::Read<uint32_t>(0x00AD49D0 + 0x0C);
+                uint32_t tbl  = Mem::Read<uint32_t>(0x00AD49D0 + 0x20);
+                uint32_t slot0 = (tbl >= 0x10000u) ? Mem::Read<uint32_t>(tbl) : 0;
                 uint32_t bd078c = Mem::Read<uint32_t>(0xBD078C);
                 uint32_t bd124c = 0, bd1250 = 0;
                 if (bd078c >= 0x10000u) {
@@ -524,7 +541,8 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                               "entry=%d a0=%08X a10=%08X a28=%08X fam=%X gate=%d "
                               "d4139c=%08X a4=%08X obj1250=%08X busyV=%d busyP=%d "
                               "a30V=%08X f60V=%08X a30P=%08X f60P=%08X "
-                              "e238=%08X beaf44=%08X beaf4c=%08X",
+                              "e238=%08X beaf44=%08X beaf4c=%08X "
+                              "minS=%08X maxS=%08X slot0=%08X",
                               spellId, mode, (unsigned)desc40,
                               (unsigned long)r8, (unsigned long)r1,
                               entryFound, (unsigned)attr0, (unsigned)attr10,
@@ -534,7 +552,9 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                               (unsigned)a30V, (unsigned)f60V,
                               (unsigned)a30P, (unsigned)f60P,
                               (unsigned)e238, (unsigned)beaf44,
-                              (unsigned)beaf4c);
+                              (unsigned)beaf4c,
+                              (unsigned)minS, (unsigned)maxS,
+                              (unsigned)slot0);
             }
         }
         // ROUND 33 — MASK GATE (0x50F4D0) + TRANSIENT SELECTION.
@@ -563,7 +583,19 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0x00BEAF44, maskLo | 4u);
             wroteMask = true;
         }
-        int rc = fn(spellId, 0, guidPtr, 0, 0);
+        // ROUND 34 — THE ACTUAL ROOT CAUSE: the wrapper (0x80DA40) ignores
+        // arg1 and forwards arg2 into the real logic 0x80CCE0, where
+        // GetSpellEntry(0xad49d0, [ebp+0xc], &out) reads arg2 as the SPELL
+        // ID and the cast record stores it at +0x20. The old call
+        // fn(spellId, 0, ...) put the spell id in the IGNORED arg1 and 0 in
+        // the arg2 the real logic reads — so EVERY cast looked up SPELL 0
+        // (GetSpellEntry(0) succeeds because minSpell==0 and slot 0 is
+        // valid), ran the whole gate chain on SPELL 0's empty data, and only
+        // guid=0 casts (Consecration) happened to return success. That is
+        // why the probe's entry=1 (our own table read with the real id) was
+        // misleading and why every targeted cast failed regardless of every
+        // gate. Fix: pass the spell id in arg2.
+        int rc = fn(0, spellId, guidPtr, 0, 0);
         if (wroteSel) {
             // Restore the user's selection — invisible to the unitframe (no
             // frame rendered between the write and this restore).

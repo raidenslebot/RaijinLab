@@ -1580,3 +1580,51 @@ Spell_C, restore after. Page committed first (idempotent, same BSS tail as
    the gate.
 4. If still al=0 with `beaf44&4==1` (we set it) → the fail moved past
    0x50f4d0 → next is the 0x80D334+ cast-build region.
+
+---
+
+## 2026-08-02 (33rd round, 22:50 session) — THE ACTUAL ROOT CAUSE: SPELL ID 0 → 1.10.99-spellid
+
+1.10.98 live (22:50) — the probe EXONERATED the mask gate too:
+```
+CastProbe id=45477 mode=6 ... e238=000005DC beaf44=00000000 beaf4c=00000000
+SafeNativeCast rc=0x4CA1C600 al=0
+CastProbe id=45513 mode=2 ... e238=000005DC beaf44=00000000 beaf4c=00000000
+SafeNativeCast rc=0x4CA1C600 al=0
+```
+- `e238=000005DC` — the 0x50f4d0 gate RUNS for unit spells (confirmed).
+- **`beaf4c=00000000`** — the input-lock flag is ZERO → 0x50f4d0(2) returns 1
+  (the mask gate PASSES). NOT the gate. All probed gates pass — yet al=0.
+
+### THE REAL ROOT CAUSE (RE, disasm-proven this round)
+1. The spell-cast wrapper `0x80DA40` **never reads its arg1** (`[ebp+8]` is
+   unused). It forwards arg2 (`[ebp+0xc]`) into the real logic `0x80CCE0`,
+   where **GetSpellEntry(0xad49d0, [ebp+0xc], &out)** reads it as the SPELL ID
+   and the cast record stores it at `+0x20`.
+2. All client callers (CastSpellByID 0x53E060, 0x523486, 0x51041E) pass
+   `(spellId, 0, guidLo, guidHi, ...)` — so 0x80CCE0's GetSpellEntry receives
+   **0**. GetSpellEntry(0) SUCCEEDS when minSpell==0 and slot 0 is valid
+   (live to confirm: minS/slot0). So **every cast ran the whole gate chain on
+   SPELL 0's empty data**.
+3. That is why: the probe's `entry=1` (our OWN table read with the real id)
+   was misleading; every targeted cast failed at whatever check spell 0's
+   data trips regardless of every gate we cleared; and guid=0 casts
+   (Consecration) happened to return success.
+4. The SIBLING function `0x80DA80` is the clean path: its callers
+   (0x53BCA0, 0x53C168, 0x540598 — the action-bar/keybind handlers) pass
+   `(spellId, 0, guidLo, guidHi)` and 0x80DA80 does GetSpellEntry([ebp+8])
+   — spell id FIRST, correctly — then 0x802cb0 check + 0x802f80 cast. No
+   canCast, no mask gate, no sync-resolution chain.
+
+### FIX (1.10.99-spellid)
+Call `fn(0, spellId, guidPtr, 0, 0)` — put the real spell id in arg2 (the
+position 0x80CCE0's GetSpellEntry and cast record actually use). arg1 is
+ignored by the wrapper. All existing machinery (desc+0x40 write, transient
+0xBD07B0 selection, walk slots, action-state, mask bit) stays.
+
+### Live watchlist (1.10.99-spellid)
+1. VER reads `1.10.99-spellid`.
+2. Probe adds `minS`/`maxS`/`slot0` — expect `minS==0` + `slot0!=0`
+   (confirms GetSpellEntry(0) was succeeding = root cause).
+3. **`al=1` → THE CASTS FINALLY LAND** (real spell id through the real
+   logic; all gates were already verified clean).

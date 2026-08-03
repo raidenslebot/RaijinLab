@@ -1768,3 +1768,54 @@ crash-defenses + probes).
    / 0x8091d0 / 0x8093d0 / 0x809610 / 0x739650 (VEH-guarded, correct args)
    to name the exact refusing gate, or switch to the 0x80DA80 sibling
    (keybind path: 0x802cb0 → 0x802f80, no canCast/mask/sync gates).
+
+---
+
+## 2026-08-02 (36th round — RELOAD CRASH) → 1.10.102-reloadfix
+
+The 23:13 session ALSO crashed ~460ms after a `/reload`:
+```
+23:14:39.563 br.rebind old=380A3148 new=4CF62648 rebind=1
+23:14:39.563 om.freeze durMs=10000 reason=reload
+23:14:40.023 crash.fatal AV_READ eip=0x684BF090 fault=0x3C eax=0
+  crash.stack frame=0 ret=0x0040CF09  frame=1 ret=0x0040D16E  frame=2 ret=0x0040D15D
+```
+USER DIRECTIVE: reloads must be handled PERFECTLY — /reload is a normal action.
+
+### Root cause (disasm)
+- `0x40CEE4` is a delay-load stub: resolve a module (string 0x9E30F4
+  "...or constructor iterator'" = MSVC CRT static-init/atexit) + function
+  (0x9E30E4) via `[0x9DF1B0]`/`[0xB2ED98]`, then `call eax` at 0x40CF07.
+  `eax` = 0x684BF090 = a function in a module loaded at ~0x68400000 that
+  AV'd reading [reg+0x3C] (eax=0 → null-ish deref). Callers 0x40D150/0x40D161
+  → `0x40d06e` are the CRT init/atexit dispatch wrappers (the game's reload
+  teardown).
+- **Our vector**: the frame tick hook (0x7E5120) runs EVERY frame — including
+  every frame of the /reload teardown. `TickHookBody` unconditionally calls
+  `DrainCastQueue` → `SafeNativeCast` → **Spell_C**, `RefreshLiveFacingCache`
+  (camera/object resolution), and `PulseSelectionRestore`. The OM freeze
+  (`RebindFrozen`, 10s) ONLY gates `OM::Refresh` — it does NOT gate the cast
+  drain or facing cache. Running Spell_C / game resolution mid-Lua-teardown
+  crashes the client (the game was already inside its CRT atexit/init walk).
+
+### FIX (1.10.102-reloadfix)
+1. **Frame-hook reload/glue gate** (`NativeHook.cpp TickHookBody`): before any
+   game-call work, require a REAL active player GUID + a live lua_State via
+   PURE MEMORY (`ActiveGuidPure()` + `LuaState()`) — the same signals the
+   worker uses. Both are 0 during glue/char-select/loading/reload and set
+   once in-world. While absent: skip OM refresh, facing cache, cast drain,
+   selection restore, deferred actions (keep the harmless blocked-counter
+   reset). Fail-open: there is nothing to cast during a reload.
+2. **Crash handler module dump** (`main.cpp CrashHandler`): on any fault,
+   enumerate loaded modules (Toolhelp32) and log `crash.mod eip=... in
+   '<module>' base=... size=...` so every future crash names its module
+   instead of a bare address.
+3. The stale-queue drop (2s) already clears any cast queued across the reload.
+
+### Live watchlist (1.10.102-reloadfix)
+1. VER reads `1.10.102-reloadfix`.
+2. **`/reload` mid-session must NOT crash** — expect `br.rebind` +
+   `om.freeze` + `om.freeze_clear` and NO `crash.fatal`. Casting resumes
+   after the freeze clears (player GUID present → gate opens).
+3. Cast behavior unchanged in-world (the gate is transparent once a player
+   exists — the raw-GUID al=0 question is still open and tracked separately).

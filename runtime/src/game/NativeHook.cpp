@@ -4,6 +4,7 @@
 #include "Guard.h"
 #include "Actions.h"
 #include "ObjectManager.h"
+#include "AddressDB.h"
 #include "core/Log.h"
 #include "core/Config.h"
 #include <Windows.h>
@@ -96,6 +97,24 @@ void TickHookBody() {
     // main thread. If the main-thread id isn't established yet (pre-register),
     // treat the first firings as main (the ticker is a main-loop counter);
     // once known, refuse enumeration from any other thread.
+    //
+    // 2026-08-02 (ROUND 37 — RELOAD/GLUE GATE): the game calls below (Spell_C
+    // via DrainCastQueue, camera/object resolution in RefreshLiveFacingCache,
+    // selection writes in PulseSelectionRestore) are ONLY safe in a STABLE
+    // in-world state. During /reload the Lua VM is torn down and rebuilt on
+    // the main thread — running Spell_C or game resolution mid-teardown crashes
+    // the client (live 23:14:40: AV_READ eip=0x684BF090 in the CRT
+    // atexit/init path, 460ms after the rebind was detected — the OM freeze
+    // only gates OM::Refresh, NOT the cast drain or facing cache). Gate on the
+    // same PURE-MEMORY signals the worker uses: a real active player GUID + a
+    // live lua_State. Both are 0 during glue / char-select / loading / reload
+    // and set once in-world. Fail-open: during a reload there is nothing to
+    // cast and the addon Lua is not running.
+    if (RL::Game::Addr::ActiveGuidPure() == 0 ||
+        RL::Game::Addr::LuaState() == nullptr) {
+        RL::Game::Actions::ResetBlockedCastCounter(); // harmless, keep alive
+        return;
+    }
     if (g_mainThreadId == 0 || tid == g_mainThreadId) {
         // One-time loud marker proving the NATIVE carrier (not the Lua bridge)
         // is the enumeration path — the verification tool greps this line.

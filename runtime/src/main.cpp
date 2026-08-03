@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <tlhelp32.h>
 #include <string>
 #include <cstdio>
 #include <cinttypes>
@@ -324,6 +325,37 @@ static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
         if (!next || next <= frame) break;
         frame = next;
     }
+
+    // 2026-08-02 (ROUND 37): name the module containing the faulting EIP so
+    // every crash is attributable. Reload crashes land in loaded DLLs / LuaJIT
+    // exec regions far from the runtime's own base (live: AV_READ eip=0x684BF090
+    // in the CRT atexit/init path 460ms after a /reload rebind) — a module name
+    // turns "some address" into "which DLL" for the fix.
+    char faultModName[MAX_PATH] = "?";
+    uintptr_t faultModBase = 0;
+    uintptr_t faultModSize = 0;
+    if (ip >= 0x10000u) {
+        MODULEENTRY32 me{ sizeof(me) };
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
+                                               GetCurrentProcessId());
+        if (snap != INVALID_HANDLE_VALUE) {
+            if (Module32First(snap, &me)) {
+                do {
+                    uintptr_t b = (uintptr_t)me.modBaseAddr;
+                    if (ip >= b && ip < b + me.modBaseSize) {
+                        faultModBase = b;
+                        faultModSize = me.modBaseSize;
+                        snprintf(faultModName, sizeof(faultModName), "%s", me.szModule);
+                        break;
+                    }
+                } while (Module32Next(snap, &me));
+            }
+            CloseHandle(snap);
+        }
+    }
+    LOG_E("crash.mod", "eip=0x%08X in '%s' base=0x%lX size=0x%lX runtime=%p",
+          (unsigned)ip, faultModName,
+          (unsigned long)faultModBase, (unsigned long)faultModSize, (void*)g_self);
 
     LOG_E("crash.fatal", "code=0x%08X type=%s eip=0x%08X fault=0x%08X eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X ebp=0x%08X esp=0x%08X",
           code, faultType, (unsigned)ip, (unsigned)faultAddr,

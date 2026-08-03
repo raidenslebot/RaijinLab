@@ -5428,6 +5428,104 @@ def main() -> int:
 # test_* function is dispatched by construction, and adding one needs no
 # bookkeeping. The banner and label are generated, which is cosmetic - being
 # RUN is not.
+
+def test_spell_record() -> list:
+    """World.spell_req + the classifiers that replaced the English name lists.
+
+    These shipped with no coverage, which is how three GetSpellInfo indexing
+    defects and four unimplemented basic checks all survived a green suite.
+    The mock returns the same packed shape the runtime emits, including the
+    cases the live 35,427-spell sweep turned up: FacingCasterFlags is a MASK
+    (values 7 and 15 exist), gcdcat 0 means genuinely off-GCD, and a record
+    the client does not hold answers found=0 rather than throwing.
+    """
+    from lupa import LuaRuntime
+    fails = []
+
+    def chk(name, cond):
+        if not cond:
+            fails.append(name)
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("""
+RaijinLab = {}
+function RaijinLab:HasRuntime() return true end
+GetTime = function() return 100 end
+BOOKTYPE_SPELL = "spell"
+_BOOK = {
+  [1] = { name = "Fireball",    link = "|cff71d5ff|Hspell:133|h[Fireball]|h|r" },
+  [2] = { name = "Backstab",    link = "|cff71d5ff|Hspell:53|h[Backstab]|h|r" },
+  [3] = { name = "Fireball",    link = "|cff71d5ff|Hspell:9999|h[Fireball]|h|r" },
+}
+GetSpellName = function(i) local e = _BOOK[i]; return e and e.name or nil end
+GetSpellLink = function(i) local e = _BOOK[i]; return e and e.link or nil end
+RaijinLab.RuntimeCall = function(self, name, a)
+  if name ~= "SpellCastReq" then return nil end
+  -- 10: facing MASK 7 (bit 0 set), off-GCD by data, enemy-targeted
+  if a == 10 then return "sid=10|found=1|facing=7|gcdcat=0|gcd=0|targets=0x0"
+    .. "|ta0=6|cd=0|catcd=0|school=0x1|power=1" end
+  -- 11: facing MASK 15 (bit 0 set) - the other live value
+  if a == 11 then return "sid=11|found=1|facing=15|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=6|cd=0|catcd=0|school=0x1|power=0" end
+  -- 12: ground-targeted AoE (TARGET_FLAG_DEST_LOCATION), no facing
+  if a == 12 then return "sid=12|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x40|ta0=18|cd=8000|catcd=0|school=0x4|power=0" end
+  -- 13: facing MASK 2 - bit 0 CLEAR, so the client does NOT face-check
+  if a == 13 then return "sid=13|found=1|facing=2|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=6|cd=0|catcd=0|school=0x1|power=0" end
+  if a == 14 then return "sid=14|found=0" end
+  return nil
+end
+""")
+    lua.execute((ADDON / "core/World.lua").read_text(encoding="utf-8"))
+    W = "RaijinLab.World."
+
+    chk("spell_req parses a decimal field", lua.eval(W + "spell_req(10).gcd") == 0)
+    chk("spell_req parses a 0x field as hex", lua.eval(W + "spell_req(12).school") == 4)
+    chk("spell_req on found=0 is nil (never a fabricated table)",
+        lua.eval(W + "spell_req(14)") is None)
+    chk("spell_req on an unknown id is nil", lua.eval(W + "spell_req(99)") is None)
+
+    # FACING IS A MASK. The live sweep found values 7 and 15; a boolean test
+    # (`facing == 1`) would call both of those "no facing required" and wire
+    # straight into the client's own refusal.
+    chk("facing mask 7 -> face-checked", lua.eval(W + "spell_needs_facing(10)") is True)
+    chk("facing mask 15 -> face-checked", lua.eval(W + "spell_needs_facing(11)") is True)
+    chk("facing mask 2 (bit 0 clear) -> NOT face-checked",
+        lua.eval(W + "spell_needs_facing(13)") is False)
+    chk("facing 0 -> NOT face-checked", lua.eval(W + "spell_needs_facing(12)") is False)
+    chk("facing unknown -> nil, not false", lua.eval(W + "spell_needs_facing(14)") is None)
+
+    chk("gcdcat 0 + gcd 0 -> off the GCD", lua.eval(W + "spell_off_gcd(10)") is True)
+    chk("gcdcat 133 -> on the GCD", lua.eval(W + "spell_off_gcd(11)") is False)
+    chk("off_gcd unknown -> nil", lua.eval(W + "spell_off_gcd(14)") is None)
+
+    chk("dest-location target -> self/ground area", lua.eval(W + "spell_is_self_area(12)") is True)
+    chk("enemy-targeted -> NOT self area", lua.eval(W + "spell_is_self_area(10)") is False)
+    chk("self_area unknown -> nil", lua.eval(W + "spell_is_self_area(14)") is None)
+
+    # SpellIdByName: this client's GetSpellInfo returns NO spell id, so the id
+    # comes from the spellbook link. Reading it from GetSpellInfo gave powerType
+    # and would have cast spell 3 for every energy ability.
+    chk("name -> id from the spellbook link",
+        lua.eval("RaijinLab.SpellIdByName('Fireball')") == 133)
+    chk("name lookup is case-insensitive",
+        lua.eval("RaijinLab.SpellIdByName('bAcKsTaB')") == 53)
+    chk("duplicate name keeps the FIRST (lowest-rank) entry",
+        lua.eval("RaijinLab.SpellIdByName('Fireball')") == 133)
+    chk("unknown name -> nil (never a fabricated id)",
+        lua.eval("RaijinLab.SpellIdByName('Nonexistent Spell')") is None)
+    chk("empty name -> nil", lua.eval("RaijinLab.SpellIdByName('')") is None)
+
+    # The index must be droppable when the spellbook changes (rank-up / new
+    # ability), or a stale id is cast forever.
+    lua.execute("RaijinLab.ClearSpellNameIndex()")
+    lua.execute("_BOOK[1] = { name = 'Fireball', link = '|Hspell:456|h' }")
+    chk("cleared index rebuilds from the new spellbook",
+        lua.eval("RaijinLab.SpellIdByName('Fireball')") == 456)
+    return fails
+
+
 def _discover_groups() -> list:
     out = []
     for name in sorted(globals()):

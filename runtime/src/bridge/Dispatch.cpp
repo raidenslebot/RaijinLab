@@ -34,7 +34,7 @@ namespace {
 // from inside the Lua VM when the cache was stale → VM corruption (crash.fatal
 // eip=0x512B07 right after a clean CastQueue DRAIN + GatherMate2/XPerl UI-error
 // cascade). Only the native frame hook resolves via the camera now.
-const char* kVersion = "1.10.83-castguid";
+const char* kVersion = "1.10.84-ccface";
 
 // ---- Crash forensics: ring buffer of the last bridge calls ----------------
 // The CrashHandler in main.cpp dumps this on ANY access violation so the
@@ -937,7 +937,13 @@ static int Handle(lua_State* L, const char* name) {
         }
         if (!a || !b) return PushNil(L);          // no answer, not "not facing"
         double arc = RL::Lua::optnumber(L, 4, 1.5707963267948966); // π/2
-        return PushBool(L, OM::IsFacing(a, b, (float)arc));
+        // 2026-08-02 (19:05 FAIL-OPEN): OM::IsFacing is tri-state — -1 means
+        // UNDETERMINED (position unmeasurable). Push nil so the addon ALLOWS
+        // the cast instead of blocking it as a confident not-facing (that
+        // froze the rotation: "aura search did not cast at all").
+        int facing = OM::IsFacing(a, b, (float)arc);
+        if (facing < 0) return PushNil(L);
+        return PushBool(L, facing != 0);
     }
     if (!std::strcmp(name, "ObjectIsBehind")) {
         uint64_t a = GuidArg(L, 2), b = GuidArg(L, 3);

@@ -187,7 +187,10 @@ bool Exists(uint64_t guid);
 float Distance(uint64_t a, uint64_t b);
 float DistancePos(const Vec3& a, const Vec3& b);
 // arcRadians = HALF-angle. Default π/2 = WotLK unit-target face (full 180° front).
-bool IsFacing(uint64_t a, uint64_t b, float arcRadians = 1.5707963f);
+// TRI-STATE (2026-08-02): 1 = facing, 0 = measured not-facing, -1 = UNDETERMINED
+// (player/target position unmeasurable — callers MUST allow, never block). A
+// confident false for an unmeasured (0,0) position froze the rotation.
+int IsFacing(uint64_t a, uint64_t b, float arcRadians = 1.5707963f);
 bool IsBehind(uint64_t a, uint64_t b);
 
 // Movement

@@ -465,11 +465,42 @@ local function apply_pending_refuse(reason, fail_name)
         return true
     end
 
+    -- CHARMED / CC REFUSE (2026-08-02, 19:01 SPAM FIX): "Can't attack while
+    -- charmed" / fear / mind-control / stun means the player is CC'd — the
+    -- client refuses EVERY spell until it clears. Floor this spell AND set a
+    -- player-CC window so the whole rotation pauses (wait_cc) instead of
+    -- re-firing the same cast into the refusal every ~10ms (live: Plague
+    -- Strike FIRE'd ~100x/sec into "Can't attack while charmed" — a hard
+    -- spam loop that also starved every lower-priority slot, aura search
+    -- included).
+    if rl:find("charmed", 1, true) or rl:find("can't attack", 1, true)
+        or rl:find("cannot attack", 1, true)
+        or rl:find("mind control", 1, true) or rl:find("mind-control", 1, true)
+        or rl:find("feared", 1, true)
+        or rl:find("stunned", 1, true) or rl:find("can't do that", 1, true)
+        or rl:find("cannot do that", 1, true) then
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "refuse_cc"
+        Executor._recent = Executor._recent or {}
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
+        Executor._player_cc_until = now() + 0.5
+        log_cast("refused", sid, name or fail_name,
+            "cc:" .. (reason ~= "" and tostring(reason) or "charmed"), cast_t)
+        return true
+    end
+
     -- Other refuses: free list completely. Same-tick fallthrough / retick.
     Executor._gcd_until = 0
     Executor._gcd_provisional = false
     Executor._gcd_src = "refuse_instant"
     clear_sid_soft_locks(sid)
+    -- 2026-08-02 (19:01 SPAM FIX): ALWAYS floor the refused spell — an
+    -- unrecognized client refusal must NEVER re-fire at 100Hz (the charmed
+    -- spam lived here: this path never set _recent). The floor is a backoff,
+    -- not a fallback: the client refused, so do not hammer it.
+    Executor._recent = Executor._recent or {}
+    if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
     if rl:find("corpse") then
         local WW = RaijinLab and RaijinLab.World
         local cg = Executor._last_cast and Executor._last_cast.corpse
@@ -1151,13 +1182,11 @@ local function live_castable(sid, name, opts)
                     if not band then
                         return false, "range_unknown"
                     end
-                    -- 2026-08-02 (14:09 RANGE FIX — client measures CENTER, not
-                    -- edge): compare CENTER against the spell's real max range.
-                    -- MELEE is strict; ranged gets a small hitbox tolerance.
-                    local melee = (rt_melee == true or rt_melee == 1
-                        or tostring(rt_melee) == "1")
-                    local tol = melee and 0.5 or 1.5
-                    if center > band + tol then return false, "oor" end
+                    -- 2026-08-02 (19:05 PERFECT RANGE, user directive): compare
+                    -- the search unit's CENTER distance directly against the
+                    -- spell's real max range — NO tolerance (the old ranged
+                    -- +1.5yd slack let a 20yd spell cast at 21.5yd center).
+                    if center > band then return false, "oor" end
                     if minR and minR > 0 and center + 0.05 < minR then return false, "oor" end
                 end
                 -- 2026-08-02 (NO FALLBACKS): a search hit with NO valid measured
@@ -2589,7 +2618,15 @@ function Executor.attempt_action(action, ctx)
                 -- 1-tick skip, never a hard wait).
                 local facing = W and W.is_facing_guid
                     and W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                if facing ~= true then
+                -- 2026-08-02 (19:05 FAIL-OPEN FIX): block ONLY on a CONFIDENT
+                -- measured not-facing (facing == false). An UNDETERMINED
+                -- verdict (nil — the runtime could not place the player/target)
+                -- ALLOWS the cast: the client is the final authority, and a
+                -- refused cast is one phantom (recovered, fail-open) whereas
+                -- blocking on undetermined froze the rotation ("aura search did
+                -- not cast at all" + "wait facing:X" — the runtime returned a
+                -- confident false for unmeasured (0,0) positions).
+                if facing == false then
                     last_why = "facing"
                 end
             end
@@ -2774,7 +2811,10 @@ function Executor.attempt_action(action, ctx)
                         _c_los = false
                     end
                 end
-                if facing ~= true then
+                -- 2026-08-02 (19:05 FAIL-OPEN FIX): same as the candidate gate —
+                -- block only on a CONFIDENT measured not-facing; undetermined
+                -- (nil) allows (client is the authority, phantom recovery).
+                if facing == false then
                     last_why = "facing"
                 elseif not _c_los then
                     last_why = "los"
@@ -3647,7 +3687,24 @@ function Executor._tick_body()
     local exclude = nil
     local action, ok, how, err, before_snap
     local trace = { n = 0 }
-    for _ = 1, maxTries do
+    -- 2026-08-02 (19:01 CHARMED SPAM FIX): while the player is charmed (or
+    -- within a short window after a "Can't attack while charmed" refusal),
+    -- NOTHING can cast — the client refuses every spell. Skip the whole slot
+    -- loop so the rotation enters a visible "wait_cc" state instead of
+    -- re-firing the same cast into the refusal at ~100Hz. Not a fallback:
+    -- it is the authoritative player state (charmed = no casts possible).
+    local cc_active = (tonumber(Executor._player_cc_until) or 0) > t
+    if not cc_active and UnitIsCharmed and UnitIsCharmed("player") then
+        cc_active = true
+        Executor._player_cc_until = t + 0.5
+    elseif not cc_active then
+        Executor._player_cc_until = nil -- charm ended; clear the window
+    end
+    if cc_active then
+        how = "wait_cc"
+    end
+    local loopMax = cc_active and 0 or maxTries
+    for _ = 1, loopMax do
         action, err = Engine.evaluate(rotation, ctx, Conditions,
             { ignore_ready = false, exclude = exclude, trace = trace })
         if not action then break end
@@ -3861,12 +3918,13 @@ function Executor._tick_body()
     if (Executor._gcd_until or 0) > t then gcd_rem = Executor._gcd_until - t end
     local changed = (key ~= Executor._last_skip_key)
     Executor._skip_streak = (not changed and (Executor._skip_streak or 0) or 0) + 1
-    -- Quiet waits (no target / gcd / power): heartbeat every 5s.
+    -- Quiet waits (no target / gcd / power / cc): heartbeat every 5s.
     -- Other waits: every 3s. Always log on reason change.
     local boring = (reason == "no_target" or reason == "no_target_await_attacker"
         or reason == "target_dead"
         or reason == "gcd" or reason == "power"
-        or reason == "enemies_in_range" or reason == "user_busy" or reason == "idle")
+        or reason == "enemies_in_range" or reason == "user_busy" or reason == "idle"
+        or reason == "wait_cc")
     local hb = boring and 5.0 or 3.0
     local heartbeat = (t - (Executor._last_skip_log_t or 0)) >= hb
     if changed or heartbeat then

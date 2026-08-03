@@ -3379,11 +3379,18 @@ bool Exists(uint64_t guid) { return SnapByGuid(guid) != nullptr; }
 float Distance(uint64_t a, uint64_t b) { return Position(a).Dist(Position(b)); }
 float DistancePos(const Vec3& a, const Vec3& b) { return a.Dist(b); }
 
-bool IsFacing(uint64_t a, uint64_t b, float arcRadians) {
+int IsFacing(uint64_t a, uint64_t b, float arcRadians) {
     if (arcRadians <= 0.f) arcRadians = kDefaultCastFaceArc;
     Vec3 pa = Position(a), pb = Position(b);
+    // 2026-08-02 (19:05 FAIL-OPEN FIX — the "aura search did not cast at all"
+    // root cause): an UNMEASURED position (0,0) is NOT a confident "not
+    // facing" — it is UNDETERMINED. Returning false here made the addon treat
+    // every cast to a not-yet-placed unit as a confirmed not-facing and block
+    // it forever ("wait facing:X" freeze + aura search dead). Return -1 so
+    // the bridge pushes nil and the rotation ALLOWS the cast (client is the
+    // final authority; a wrong cast is one phantom, a false freeze is forever).
     if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
-        return false;
+        return -1;
     // 2026-08-02 (18:16): with the angle-convention fix in IsFacingPos, the
     // measurement is correct at ALL distances INCLUDING point-blank — a mob
     // the player faces at 0.5yd is measured facing, a mob behind is measured
@@ -3392,9 +3399,10 @@ bool IsFacing(uint64_t a, uint64_t b, float arcRadians) {
     // at EXACTLY the viewer's position, dx²+dy² < 0.01 yd²) is undefined —
     // treat that as facing (a target you are standing on cannot be "behind").
     float dx = pb.x - pa.x, dy = pb.y - pa.y;
-    if ((dx * dx + dy * dy) < 0.01f) return true;
+    if ((dx * dx + dy * dy) < 0.01f) return 1;
     float face = Facing(a);
-    return IsFacingPos(face, pa.x, pa.y, pb.x, pb.y, arcRadians);
+    if (!LooksLikeFacingEarly(face)) return -1;
+    return IsFacingPos(face, pa.x, pa.y, pb.x, pb.y, arcRadians) ? 1 : 0;
 }
 
 bool IsBehind(uint64_t a, uint64_t b) {

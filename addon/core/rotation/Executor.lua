@@ -3439,13 +3439,26 @@ function Executor._tick_body()
             return tostring(nm):lower() == pname
         end
         local ok_hit   = ok_t > 0 and ok_t >= p.cast_t and ev_matches(e.ok_name)
-        local fail_hit = fail_t > 0 and fail_t >= (p.cast_t - 0.02)
-                         and (e.fail_name == nil or ev_matches(e.fail_name)
-                              or looks_like_cast_error(e.fail_msg or e.err_msg or ""))
-        -- Also treat any recent cast-looking UI error as fail (name optional).
-        if not fail_hit and fail_t > 0 and fail_t >= (p.cast_t - 0.02)
-            and looks_like_cast_error(e.err_msg or e.fail_msg or "") then
-            fail_hit = true
+        -- ROUND 50 (phantom fix): a fail event only fails THIS pending when it
+        -- NAMES this spell (UNIT_SPELLCAST_FAILED with the spell name) or its
+        -- message contains this spell's name. A generic UI_ERROR (fail_name==
+        -- nil, e.g. "Not enough runes" from a DIFFERENT cast) is ambiguous and
+        -- MUST NOT fail an accepted in-flight cast — that cross-contamination
+        -- produced the false "phantom_grace -> re-fire" churn (live 14:47:
+        -- accepted Icy Touch al=1 phantomed 3x). Genuine refusals are still
+        -- handled IMMEDIATELY by the event handler (apply_pending_refuse).
+        local fail_hit = false
+        if fail_t > 0 and fail_t >= (p.cast_t - 0.02) then
+            local fn = e.fail_name
+            if fn ~= nil and ev_matches(fn) then
+                fail_hit = true
+            else
+                local msg = string.lower(tostring(e.fail_msg or e.err_msg or ""))
+                if p.name and msg ~= ""
+                    and msg:find(string.lower(tostring(p.name)), 1, true) then
+                    fail_hit = true
+                end
+            end
         end
 
         if ok_hit and ok_t >= fail_t then
@@ -4046,6 +4059,12 @@ function Executor._tick_body()
                     guid = cast_guid,
                     multidot = is_md and true or false,
                     no_gcd = is_md or (not has_live_gcd),
+                    -- ROUND 50 (phantom fix): this pending is created only on
+                    -- the accepted-wire path (ok=true) — mark it accepted so
+                    -- the late-grace branch credits it as LANDED instead of
+                    -- phantoming it (live 14:47: accepted Icy Touch al=1
+                    -- phantomed 3x because this field was missing here).
+                    accepted = true,
                 }
             end
             -- REAL GCD FLOOR on wire-ok (2026-08-01). After a SUCCESSFUL wire

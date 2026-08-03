@@ -3038,6 +3038,58 @@ int RuneCooldownMs(int runeIndex) {
     }
     return s_cached[runeIndex-1];
 }
+
+// ROUND 50: ready runes per type (blood/frost/unholy), 100ms cache. Uses the
+// client's GetRuneType + GetRuneCooldown via the same native pcall pattern as
+// RuneCooldownMs. A ready DEATH rune (type 3) counts toward every type. Feeds
+// the addon's rune gate so a rune-costing spell is never wired without its
+// rune (the client's IsUsableSpell misses rune costs on custom spells — live
+// 14:47 "Not enough runes" on Blood Strike).
+void RuneStatePacked(char* buf, size_t cap) {
+    if (!buf || !cap) return;
+    buf[0] = 0;
+    int ready[3] = {0, 0, 0};
+    static ULONGLONG s_cachedAt = 0;
+    static int s_cached[3] = {0, 0, 0};
+    ULONGLONG now = GetTickCount64();
+    if (s_cachedAt && (now - s_cachedAt) < 100ull) {
+        snprintf(buf, cap, "%d:%d:%d", s_cached[0], s_cached[1], s_cached[2]);
+        return;
+    }
+    s_cachedAt = now;
+    void* L = RL::Game::Addr::LuaState();
+    if (L && RL::Lua::Ready()) {
+        auto rawL = (lua_State*)L;
+        typedef void(__cdecl* GF)(lua_State*, int, const char*);
+        typedef void(__cdecl* PN)(lua_State*, double);
+        typedef int(__cdecl* PC)(lua_State*, int, int, int);
+        typedef int(__cdecl* GT)(lua_State*);
+        typedef void(__cdecl* ST)(lua_State*, int);
+        typedef double(__cdecl* TN)(lua_State*, int);
+        auto gf = (GF)0x0084E670; auto pn = (PN)0x0084E2A0; auto pc = (PC)0x0084EC50;
+        auto gt = (GT)0x0084DBD0; auto st = (ST)0x0084DBF0; auto tn = (TN)0x0084E030;
+        int top = gt(rawL);
+        for (int i = 1; i <= 6; ++i) {
+            int type = -1;
+            gf(rawL, -10002, "GetRuneType");
+            pn(rawL, (double)i);
+            if (pc(rawL, 1, 1, 0) == 0) { type = (int)tn(rawL, -1); st(rawL, top); }
+            else { st(rawL, top); continue; }
+            gf(rawL, -10002, "GetRuneCooldown");
+            pn(rawL, (double)i);
+            if (pc(rawL, 1, 3, 0) == 0) {
+                double readyf = tn(rawL, -1);
+                st(rawL, top);
+                if (readyf != 0.0) {
+                    if (type >= 0 && type <= 2) ready[type]++;
+                    else if (type == 3) { ready[0]++; ready[1]++; ready[2]++; }
+                }
+            } else { st(rawL, top); continue; }
+        }
+    }
+    s_cached[0] = ready[0]; s_cached[1] = ready[1]; s_cached[2] = ready[2];
+    snprintf(buf, cap, "%d:%d:%d", ready[0], ready[1], ready[2]);
+}
 //
 // A gameobject's dynamic flags live at GAMEOBJECT_DYNAMIC (0x38), not at
 // UNIT_DYNAMIC_FLAGS (0x13C) - see the derivation in Offsets.h. Using the unit

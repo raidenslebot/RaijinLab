@@ -34,7 +34,7 @@ namespace {
 // from inside the Lua VM when the cache was stale → VM corruption (crash.fatal
 // eip=0x512B07 right after a clean CastQueue DRAIN + GatherMate2/XPerl UI-error
 // cascade). Only the native frame hook resolves via the camera now.
-const char* kVersion = "1.10.106-aa";
+const char* kVersion = "1.10.107-aa";
 
 // ---- Crash forensics: ring buffer of the last bridge calls ----------------
 // The CrashHandler in main.cpp dumps this on ANY access violation so the
@@ -1179,6 +1179,11 @@ static int Handle(lua_State* L, const char* name) {
         int idx = (int)optnumber(L, 2, 1.0);
         int ms = OM::RuneCooldownMs(idx);
         return PushNumber(L, (double)ms);
+    }
+    if (!std::strcmp(name, "RuneState")) {
+        char buf[32];
+        OM::RuneStatePacked(buf, sizeof(buf));
+        return PushString(L, buf);
     }
     // AUTHORITATIVE PLAYER/SPELL STATE — pure client-memory reads (RE-verified
     // 2026-08-01). These replace the HW-gated / protected Lua APIs that no-op

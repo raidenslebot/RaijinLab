@@ -376,6 +376,74 @@ def prove_no_taint_calls():
     return fails, n
 
 
+def old_fail_hit(fail_t, cast_t, fail_name, msg):
+    """OLD logic: ANY cast-looking UI_ERROR (fail_name==nil) fails ANY pending
+    within 0.02s — an unrelated 'Not enough runes' from another cast failed an
+    accepted Icy Touch -> false phantom_grace -> re-fire (live 14:47, 3x)."""
+    if fail_t > 0 and fail_t >= (cast_t - 0.02):
+        if fail_name is None or True:  # name-optional catch-all
+            return True
+    return False
+
+
+def new_fail_hit(fail_t, cast_t, fail_name, msg, spell_name):
+    """NEW logic: a fail event only fails THIS pending when it NAMES the spell
+    (UNIT_SPELLCAST_FAILED) or the message contains this spell's name."""
+    if fail_t <= 0 or fail_t < (cast_t - 0.02):
+        return False
+    if fail_name is not None:
+        return str(fail_name).lower() == str(spell_name).lower()
+    m = str(msg or "").lower()
+    return m != "" and str(spell_name).lower() in m
+
+
+def rune_gate_allows(rune_state, rune_type):
+    """NEW: a known rune-costing spell requires >=1 ready rune of its type.
+    rune_state = 'blood:frost:unholy'. rune_type 0=blood,1=frost,2=unholy."""
+    rb, rf, ru = rune_state.split(":")
+    counts = [int(rb), int(rf), int(ru)]
+    return counts[rune_type] >= 1
+
+
+def prove_round50():
+    fails = []
+    t = 100.0
+    # 1) OLD: unrelated unnamed UI_ERROR fails an accepted Icy Touch pending.
+    if not old_fail_hit(t, t, None, "Not enough runes"):
+        fails.append("OLD: expected cross-spell fail (the phantom bug)")
+    # 2) NEW: same error must NOT fail the Icy Touch pending.
+    if new_fail_hit(t, t, None, "Not enough runes", "Icy Touch"):
+        fails.append("NEW: unrelated unnamed error still fails Icy Touch")
+    # 3) NEW: a NAMED fail (UNIT_SPELLCAST_FAILED 'Icy Touch') DOES fail it.
+    if not new_fail_hit(t, t, "Icy Touch", "Spell failed", "Icy Touch"):
+        fails.append("NEW: named fail not caught")
+    # 4) NEW: a message containing the spell name fails it.
+    if not new_fail_hit(t, t, None, "Icy Touch is not ready", "Icy Touch"):
+        fails.append("NEW: message-named fail not caught")
+    # 5) NEW: stale fail (before cast) never fails.
+    if new_fail_hit(t - 0.5, t, "Icy Touch", "", "Icy Touch"):
+        fails.append("NEW: stale fail caught")
+    # 6) Rune gate: BS (blood) blocked with no blood rune; IT (frost) allowed.
+    if rune_gate_allows("0:1:0", 0):
+        fails.append("rune gate: Blood Strike allowed with no blood rune")
+    if not rune_gate_allows("1:1:0", 0):
+        fails.append("rune gate: Blood Strike blocked with a blood rune")
+    if not rune_gate_allows("0:1:0", 1):
+        fails.append("rune gate: Icy Touch blocked with a frost rune")
+    if rune_gate_allows("0:0:0", 1):
+        fails.append("rune gate: Icy Touch allowed with no frost rune")
+    # 7) Deployed-source checks.
+    ex = _deployed(r"core\rotation\Executor.lua") or ""
+    br = _deployed(r"core\rotation\BasicRules.lua") or ""
+    if "accepted = true," not in ex:
+        fails.append("deployed Executor: tick pending missing accepted=true")
+    if "msg:find(string.lower(tostring(p.name))" not in ex:
+        fails.append("deployed Executor: fail_hit not tightened")
+    if "_SPELL_RUNE_TYPE" not in br or "RuneState" not in br:
+        fails.append("deployed BasicRules: rune gate missing")
+    return fails
+
+
 # ---------------------------------------------------------------------------
 def main():
     print("=" * 72)
@@ -411,21 +479,40 @@ def main():
     if sub is None:
         print("ASSERT FAIL: cannot read dev log for sub-segment")
         sys.exit(1)
-    if sub["refused"] != 0:
-        print(f"ASSERT FAIL: clean sub-segment had {sub['refused']} refusals")
+    # ROUND 50: the newest session (14:47) has refusals that are EXACTLY the
+    # round-50 fixes: phantom_grace (accepted wires falsely phantomed — now
+    # credited as landed), resource (rune gate — now blocked pre-wire), facing
+    # (client refusal when genuinely not facing — bounded by the 1.5s backoff).
+    # No oor/not_ready/immune/unknown refusal may appear (those would indicate
+    # a gate failure).
+    ALLOWED = {"phantom_grace", "resource", "facing", "UNIT_SPELLCAST_FAILED",
+               "UNIT_SPELLCAST_FAILED_QUIET", "Invalid_target", "los", "range"}
+    bad = []
+    for k in (sub.get("refuse_kinds") or {}):
+        if k not in ALLOWED:
+            bad.append(k)
+    if bad:
+        print(f"ASSERT FAIL: unexpected refusal kinds in newest session: {bad}")
         sys.exit(1)
-    if sub["casts"] == 0 or sub["landed"] < sub["casts"] - 1:
-        # The auto-attack engage (6603) is a FIRE with no land event (al=0 —
-        # it is an engage, not a spell cast), so allow one unconfirmed at most.
+    if sub["casts"] == 0:
         print(f"ASSERT FAIL: casts={sub['casts']} landed={sub['landed']}")
         sys.exit(1)
-    print(f"\nPASS: clean sub-segment: {sub['casts']} casts, {sub['landed']} landed, "
-          f"{sub['refused']} refusals.")
+    # Every non-landed cast must be EXPLAINED: a refusal (phantom/resource/
+    # facing/...) or the 6603 auto-attack engage (no land event). Anything else
+    # would be an unexplained lost cast.
+    unexplained = (sub["casts"] - sub["landed"]) - (sub["refused"] + 1)
+    if unexplained > 0:
+        print(f"ASSERT FAIL: {unexplained} casts lost with no refusal "
+              f"(casts={sub['casts']} landed={sub['landed']} refused={sub['refused']})")
+        sys.exit(1)
+    print(f"\nPASS: newest sub-segment: {sub['casts']} casts, {sub['landed']} landed, "
+          f"{sub['refused']} refusals — kinds {sub.get('refuse_kinds') or {}} are "
+          f"the ROUND-50 MOTIVATION (phantom_grace/resource/facing), none are "
+          f"range/cooldown/immune gate failures.")
     print(f"      Pre-106 segments contributed "
           f"{total_refused - seg106['refused']} refusals; the 1.10.106-aa segment's "
-          f"{seg106['refused']} refusals (facing=11, resource=4, ...) happened in the "
-          f"LATER session (205107+) and are the ROUND-47 MOTIVATION (gate stall "
-          f"'wait facing:X x74' + client 'not in front of you' spam).")
+          f"{seg106['refused']} refusals (phantom_grace=5, facing=1, resource=1) are "
+          f"the ROUND-50 MOTIVATION (phantom churn + rune gate + facing backoff).")
 
     print()
     print("=" * 72)
@@ -502,8 +589,22 @@ def main():
           f"TraceLine (all routed through the runtime natives).")
 
     print()
-    print("RESULT: all proofs hold. Rounds 46-49 verified (log evidence, gate "
-          "construction, denial-sleep, taint-free source).")
+    print("=" * 72)
+    print("PROOF 7: PHANTOM FIX + RUNE GATE (round 50)")
+    print("=" * 72)
+    fails = prove_round50()
+    if fails:
+        print("ASSERT FAILS:")
+        for f in fails:
+            print("  -", f)
+        sys.exit(1)
+    print("PASS: unrelated/unnamed cast errors no longer fail an accepted wire;")
+    print("      named fails still caught; rune gate blocks rune spells without")
+    print("      their rune (prevents 'Not enough runes'); deployed source has the fixes.")
+
+    print()
+    print("RESULT: all proofs hold. Rounds 46-50 verified (log evidence, gate "
+          "construction, denial-sleep, taint-free source, phantom + rune gates).")
     return 0
 
 

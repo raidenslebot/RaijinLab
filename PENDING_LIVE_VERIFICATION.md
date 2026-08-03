@@ -2460,3 +2460,50 @@ The 14:25 session (runtime 1.10.106-aa) PROVED the round-47 fixes work:
   UI-error source, and it is now structurally gone.
 - /reload after deploy. Watch: no 'tainted the call of the secure function'
   errors, no AscensionResources crashes, casts unchanged (all landed).
+
+---
+
+## 2026-08-03 (round 50 — 1.10.107-aa: phantom_grace churn + "Not enough runes" + the last facing refusal)
+The 14:47 session's refusals, exactly: phantom_grace=5, facing=1, resource=1.
+Two real addon bugs + one runtime addition fixed:
+
+### 1) FALSE phantom_grace ON ACCEPTED CASTS (the "choking" — 5 in the session)
+- A cast the CLIENT ACCEPTED (SafeNativeCast al=1) was marked phantom when no
+  SUCCESS event arrived within grace, then "refused phantom_grace" + re-fired.
+- TWO causes, both fixed (Executor.lua):
+  (a) The _tick_body pending was created WITHOUT the ccepted field, so the
+      late-grace branch saw p.accepted==nil -> phantom instead of landed.
+      FIX: ccepted = true on that path.
+  (b) fail_hit treated ANY unnamed "cast-looking" UI_ERROR (e.g. "Not enough
+      runes" from a DIFFERENT spell) as failing the CURRENT pending — cross-
+      spell contamination failed accepted in-flight casts. FIX: a fail event
+      only fails the pending when it NAMES this spell (UNIT_SPELLCAST_FAILED)
+      or the message contains this spell's name. Genuine refusals are still
+      handled instantly by the event handler (apply_pending_refuse).
+
+### 2) "Not enough runes" (1 in the session) — runtime RUNE GATE (1.10.107-aa)
+- The client's IsUsableSpell misses RUNE costs on custom Ascension spells, so
+  Blood Strike wired with no blood rune -> client red error.
+- RUNTIME (new): RuneStatePacked -> "blood:frost:unholy" ready-rune counts
+  (client GetRuneType+GetRuneCooldown, 100ms cache; death runes count for all).
+  Version bumped 1.10.106-aa -> 1.10.107-aa; rebuilt (230400 bytes).
+- ADDON (BasicRules.lua): check_resources gates known rune-costing DK spells
+  (PS/BS -> blood, IT -> frost) on the runtime rune state BEFORE wiring.
+
+### 3) "Target needs to be in front of you" (1 in the session)
+- Genuine not-facing (player at 0yd, facing=1.2969 rad); the round-47 1.5s
+  melee backoff bounds it. This is the one client refusal that can still occur
+  (the player must turn; the engine never turns, and the runtime facing read
+  is unreliable — round 41 FINAL). It is ONE refusal + a 1.5s quiet backoff,
+  never a storm.
+
+### VERIFY: tools/_verify_round47.py now 7 proofs, exit 0.
+- P1 live-log: the newest session's refusals are EXACTLY the round-50 set
+  {phantom_grace, resource, facing} — zero range/cooldown/immune gate failures.
+- P7 by construction: unrelated unnamed errors no longer fail accepted wires;
+  named fails still caught; rune gate blocks rune spells without their rune;
+  deployed source contains both fixes.
+
+### LIVE CHECK (after re-inject 1.10.107-aa + /reload): NO phantom_grace lines;
+  NO "Not enough runes" (rune gate pre-wires); melee only refusals = genuine
+  not-facing (one + 1.5s backoff). Casts unchanged.

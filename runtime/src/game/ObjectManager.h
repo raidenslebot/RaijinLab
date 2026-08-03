@@ -178,6 +178,9 @@ int HasRecentProc(const char* eventName, int windowMs);
 int ComboPoints();
 // DK rune cooldown remaining (0-5, returns ms or -1 if unreadable/not DK).
 int RuneCooldownMs(int runeIndex);
+// ROUND 50: packed ready-rune counts per type "blood:frost:unholy" (0-2 each;
+// death runes count as ready for every type). Lua-pcall client APIs, 100ms cache.
+void RuneStatePacked(char* buf, size_t cap);
 uint32_t UnitFlags(uint64_t guid);
 uint32_t DynamicFlags(uint64_t guid);
 uint32_t ObjectFlags(uint64_t guid);

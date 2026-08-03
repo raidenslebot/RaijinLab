@@ -14,6 +14,19 @@
 
 local BasicRules = {}
 
+-- ROUND 50 (rune gate): spell id -> rune type index (0=blood, 1=frost,
+-- 2=unholy) for the standard DK rune-costing spells in this rotation family.
+-- The client's IsUsableSpell misses RUNE costs on Ascension custom spells
+-- (live 14:47: Blood Strike wired with no blood rune -> client "Not enough
+-- runes" red error), so the engine gates these on the runtime's native
+-- ready-rune counts BEFORE wiring.
+local _SPELL_RUNE_TYPE = {
+    [45462] = 0, [45513] = 0, [49917] = 0, [49918] = 0, [49919] = 0,
+    [49920] = 0, [49921] = 0,                             -- Plague Strike -> blood
+    [45902] = 0, [46501] = 0,                              -- Blood Strike -> blood
+    [45477] = 1, [49896] = 1, [49903] = 1, [49904] = 1, [49909] = 1, [49910] = 1,  -- Icy Touch -> frost
+}
+
 local function num(v, d)
     v = tonumber(v)
     if v == nil then return d end
@@ -175,6 +188,22 @@ local function slot_has_aura_search(slot)
 end
 
 local function check_resources(ctx, sid, name, slot)
+    -- ROUND 50 (rune gate, FIRST so every path is covered incl. aura_search
+    -- multi-dot): for a known rune-costing spell, if the runtime reports zero
+    -- ready runes of the required type, block BEFORE wiring — the client's
+    -- IsUsableSpell misses rune costs on custom spells and would otherwise
+    -- refuse with a red "Not enough runes" error.
+    local rtype = _SPELL_RUNE_TYPE[sid] or _SPELL_RUNE_TYPE[tostring(sid)]
+    if rtype ~= nil and RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        local okr, rp = pcall(RaijinLab.RuntimeCall, RaijinLab, "RuneState")
+        if okr and type(rp) == "string" then
+            local rb, rf, ru = rp:match("^(%d+):(%d+):(%d+)$")
+            local ready = { tonumber(rb) or 0, tonumber(rf) or 0, tonumber(ru) or 0 }
+            if (ready[rtype + 1] or 0) < 1 then
+                return false, "no_rune"
+            end
+        end
+    end
     -- IsUsableSpell greys unit-targeted spells when the client has NO current
     -- target — even when we will CastSpell(id, guid). BasicRules runs BEFORE
     -- aura_search, so aura_search_hit is still nil. Blocking on "unusable"

@@ -2998,11 +2998,33 @@ function Executor.attempt_action(action, ctx)
                 -- re-fires into the live client GCD — that re-fire was the
                 -- "spell not ready" spam + double-casts. Land/fail events
                 -- refine or free it.
+                -- 2026-08-02 (00:04 LOCKUP FIX — instant melee credited as
+                -- landed, never phantom): the runtime returned al=1 (the cast
+                -- was ACCEPTED), but instant melee (Plague Strike / Blood
+                -- Strike) has NO cast bar and fires no UNIT_SPELLCAST_SUCCESS/
+                -- FAILED on this client, so cast_confirmed() stays false and
+                -- the ~0.14s grace expired -> phantom_grace -> the addon
+                -- re-fired a cast the client HAD accepted, landing on the now-
+                -- real 6s ability cooldown -> "wait cooldown:Blood Strike
+                -- x80/x161" (the rotation locked for seconds). Since the
+                -- runtime al=1 is a RELIABLE acceptance, credit the cast as
+                -- landed on the real GCD window: set _pending.deadline to the
+                -- optimistic GCD end so the grace/confirm path confirms via the
+                -- GCD floor (cast_confirmed ability_cd) instead of phantoming.
                 local dur = select(1, Executor.gcd_fallback())
                 Executor._gcd_until = tnow + dur
                 Executor._gcd_provisional = true
                 Executor._gcd_src = "wire_optimistic"
                 arem = dur
+            end
+            -- 2026-08-02 (00:04): deadline for an ACCEPTED instant wire = the
+            -- optimistic GCD end (not the net_grace ~0.14s). A real short GCD
+            -- is the strongest confirmation that the instant cast landed. The
+            -- land/fail event path still wins if it arrives earlier (it clears
+            -- _pending below); this only prevents the false phantom on the
+            -- event-less melee/rune instant casts.
+            if ok and Executor._gcd_until and Executor._gcd_until > tnow then
+                grace = (Executor._gcd_until - tnow) + 0.05
             end
             Executor._pending = {
                 sid = sid, cast_t = tnow, deadline = tnow + grace, grace = grace,
@@ -3012,6 +3034,11 @@ function Executor.attempt_action(action, ctx)
                 guid = guid,
                 multidot = false,
                 no_gcd = (Executor._gcd_until or 0) <= tnow,
+                -- 2026-08-02 (00:04): the runtime returned al=1 for this
+                -- instant wire (accepted, cast is out). Used by the late-grace
+                -- branch to credit an accepted instant cast as LANDED instead
+                -- of a phantom (instant melee/rune casts fire no SUCCESS event).
+                accepted = (ok == true) and true or false,
             }
             Executor._recent = Executor._recent or {}
             if arem > 0.02 then
@@ -3375,7 +3402,17 @@ function Executor._tick_body()
         elseif t >= (p.deadline or 0) or (t - (p.cast_t or 0)) >= (p.grace or net_grace()) then
             -- Grace expired with no SUCCESS and no FAIL event.
             local sid = p.sid
-            if cast_confirmed(sid, p.before_cd) then
+            -- 2026-08-02 (00:04): an ACCEPTED instant wire (runtime al=1, no
+            -- castbar -> no SUCCESS event on this client) whose real GCD window
+            -- has fully elapsed with no FAIL event is a LANDED cast, not a
+            -- phantom. Phantoms only happen when the runtime REFUSED (al=0) —
+            -- i.e. a wire that was never accepted. Crediting an accepted instant
+            -- as landed stops the false "phantom_grace -> re-fire into the real
+            -- ability cooldown -> wait cooldown xN" lockup (live 00:04: Plague/
+            -- Blood Strike, runtime accepted al=1, addon phantomed them and
+            -- locked the rotation ~4s).
+            local accepted_wire = (p.accepted == true) and not fail_hit
+            if cast_confirmed(sid, p.before_cd) or accepted_wire then
                 Executor._gcd_until = p.off_gcd and 0 or gcd_end(sid, p.cast_t)
                 Executor._gcd_src = "grace_poll"
                 Executor._gcd_provisional = false
@@ -3390,7 +3427,7 @@ function Executor._tick_body()
                         pcall(W.note_aura_on_guid, p.guid, sid, p.name, 1, 21)
                     end
                 end
-                log_cast("landed", sid, p.name, "grace_confirm", p.cast_t)
+                log_cast("landed", sid, p.name, accepted_wire and "accepted_wire" or "grace_confirm", p.cast_t)
             else
                 -- PHANTOM / FAILED RECOVERY (2026-08-02): a phantom is a cast
                 -- that produced NO success and NO fail event — it never landed.

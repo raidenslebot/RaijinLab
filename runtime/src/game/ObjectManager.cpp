@@ -1158,15 +1158,25 @@ void RefreshLiveFacingCache() {
     // This is not a "guess": it is the exact source the client's own
     // GetPlayerFacing prefers when the object method cannot be relied on, and
     // it always holds a live value on this build.
+    // 2026-08-03 (ROUND 46 — 0.0 failed-read sentinel, live-proven): the
+    // camera read returns 0.0000 on many frames (FacingLive face=0.0000
+    // constantly). The old acceptance test `v >= -0.01f && v <= 6.30f` treats
+    // 0.0 as a REAL facing of north → g_liveFacingCache=0.0 → OM::IsFacing
+    // computes a confident WRONG verdict → the addon's melee facing gate
+    // blocked engaged players / wired spells the client refused "target needs
+    // to be in front of you". Reject |v|<0.0001 exactly like the object reads
+    // (round 41) so a 0.0 read is UNDETERMINED (falls through to the object
+    // paths; if all fail, the cache stays 1e9 → ObjectIsFacing → nil →
+    // fail-open). A verdict is CONFIDENT only from a real non-zero read.
     if (cam) {
         float v = Mem::Read<float>(cam + 0x11C);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+        if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
     }
     // Path 1 — client's exact path object field, only when no camera facing.
     if (f >= 1e8f && (clo || chi)) obj = CallObjectPtr3(clo, chi, 1);
     if (f >= 1e8f && obj) {
         float v = Mem::Read<float>(obj + 0x7AC);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+        if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
     }
     // Path 3 — GetActive player object (mask 0x10 = player).
     if (f >= 1e8f) {
@@ -1175,7 +1185,7 @@ void RefreshLiveFacingCache() {
             uintptr_t pobj = CallObjectPtr3((uint32_t)active, (uint32_t)(active >> 32), 0x10);
             if (pobj) {
                 float v = Mem::Read<float>(pobj + 0x7AC);
-                if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+                if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
             }
         }
     }
@@ -1203,7 +1213,14 @@ void RefreshLiveFacingCache() {
 // is stale (hook not yet installed / cold start). NEVER calls CameraPlayerPtr.
 float FacingLiveLocal() {
     ULONGLONG now = GetTickCount64();
-    if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f)
+    // 2026-08-03 (ROUND 46): also reject |v|<0.0001 — a 0.0 cache value is a
+    // failed read, never a real facing of north (the old acceptance in
+    // RefreshLiveFacingCache let 0.0 through and the addon's facing gate
+    // blocked engaged players / wired spells the client refused). The pure
+    // read contract: only a real non-zero value is a facing; everything else
+    // is 1e9 = undetermined.
+    if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f
+        && !(g_liveFacingCache > -0.0001f && g_liveFacingCache < 0.0001f))
         return g_liveFacingCache;
     return 1e9f; // undetermined — never resolve from the VM (0x512B07 rule)
 }

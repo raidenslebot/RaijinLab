@@ -2223,3 +2223,47 @@ phantom (never a hold). Removed the now-unused skip_face_cast. KEPT:
    gone); casts still land (al=1).
 4. Aura search wires the closest search candidate immediately (no facing
    pre-block) and multi-dots the top-N.
+
+---
+
+## 2026-08-03 (round 46 — 1.10.106-aa) — REAL client facing refusals + the runtime facing READ was the bug
+
+User: "spammed with target not infront of you, you are facing the wrong way,
+out of range and spell not ready yet... it should be more precise and
+accurate... the runtime is the key."
+
+### LIVE-PROVEN (13:50 log, 1.10.105-aa)
+- The CLIENT genuinely refuses MELEE on facing: efused Blood Strike
+  facing:You are facing the wrong way! and efused Blood Strike
+  facing:Target needs to be in front of you. (at edge=0.1-2yd) — four
+  refusals in ~20s. Round 45's "wire and let the client decide" exposed these.
+- RANGED spells are NEVER refused: Icy Touch (30yd) landed every cast,
+  facing or not.
+- ROOT CAUSE of BOTH round-44 lockups AND these refusals: the runtime's
+  facing cache ACCEPTED a 0.0 camera read as a real facing of north
+  ( >= -0.01f && v <= 6.30f includes 0.0; FacingLive face=0.0000
+  constantly) → OM::IsFacing produced confident WRONG verdicts.
+
+### FIX
+- RUNTIME (ObjectManager.cpp, 1.10.106-aa): RefreshLiveFacingCache rejects
+  |v|<0.0001 on ALL three paths (camera [cam+0x11C], ObjectPtr, GetActive);
+  FacingLiveLocal also rejects 0.0. A failed read → cache 1e9 →
+  ObjectIsFacing → nil (undetermined, wire). A verdict is CONFIDENT only
+  from a real non-zero facing → OM::IsFacing is now ACCURATE.
+- ADDON (Executor.lua): re-added the facing gate but MELEE-ONLY
+  (melee_rt == 1 from runtime SpellMeleeInfo — ranged spells are never
+  gated) and RUNTIME-AUTHORITATIVE (direct ObjectIsFacing call, no Lua
+  fallback that could return a confident wrong boolean). Confident-false →
+  skip that melee cast (the client would refuse it); the moment the player
+  turns, the frame cache flips and the cast wires immediately — no pause,
+  no lockup (undetermined → wire).
+- KEPT round 45's removals where correct: no ranged facing gate, no
+  attempt-storm path (the 0.0 fix removes the wrong-verdict lockup source).
+
+### Live watchlist (1.10.106-aa)
+1. VER reads 1.10.106-aa (re-inject; addon change needs /reload too).
+2. NO "facing:..." refusals on Blood Strike when the player genuinely faces
+   the target (the gate wires only when facing); when the player turns away,
+   the melee slot skips (no client error) and wires the instant facing is OK.
+3. Ranged Icy Touch still casts regardless of facing.
+4. No "wait facing:X" lockup (undetermined → wire) and no attempt storm.

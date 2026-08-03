@@ -2699,22 +2699,34 @@ function Executor.attempt_action(action, ctx)
             --     hook-cached). With a correct read, a not-facing verdict is a
             --     genuine 1-tick skip, and the moment the player's facing is
             --     sufficient the native cache flips and this slot wires.
-            -- FACING IS DETECTION-ONLY (round 45 — RESTORES round 41 FINAL):
-            -- the round-44 "confident not-facing" gate is REMOVED. Live proof
-            -- it was still wrong: 13:42-13:43 log showed "wait facing:Icy
-            -- Touch" with NO target (a 30yd ranged spell!) and "wait
-            -- facing:Blood Strike xN at edge=0yd point-blank" repeatedly —
-            -- the runtime ObjectIsFacing STILL returns confident `false` when
-            -- the player is clearly engaged (it misreads at 0yd and for
-            -- ranged casts). Every blocked slot re-evaluated every frame →
-            -- the `attempt` storm (50+/sec) → the UNIT_SPELLCAST/UI_ERROR
-            -- event flood that crashed XPerl + GatherMate2 (the user's UI
-            -- error flood). The client is the SOLE determinate authority:
-            -- we WIRE and let it accept (al=1) or refuse (al=0, one phantom,
-            -- recovered immediately) — never a multi-tick hold on our own
-            -- unreliable measurement. Facing remains used ONLY for candidate
-            -- ORDERING (closest+facing-first in AuraSearchPacked), never a
-            -- gate.
+            -- FACING — ROUND 46 (RUNTIME-ACCURATE, MELEE-ONLY): round 45 removed
+            -- the gate because the runtime accepted a 0.0 camera read as a real
+            -- "facing of north" (FacingLive face=0.0000 constantly) → confident
+            -- WRONG verdicts → lockups. The runtime now rejects |f|<0.0001 in
+            -- the facing cache (round 46), so ObjectIsFacing is CONFIDENT only
+            -- when the camera held a REAL non-zero facing AND the target is
+            -- genuinely outside the front cone; a failed read → nil (wire).
+            -- The live 13:50 log proves the CLIENT really refuses melee on
+            -- facing ("You are facing the wrong way!" / "Target needs to be in
+            -- front of you." on Blood Strike at edge=0-2yd) while RANGED spells
+            -- are never refused (Icy Touch landed every cast, facing or not).
+            -- So: gate MELEE spells ONLY, on a confident-false verdict — the
+            -- rotation then never wires a melee cast the client would refuse,
+            -- and the moment the player turns, the frame cache flips and the
+            -- cast wires immediately (no pause, no lockup). Ranged spells are
+            -- NEVER gated.
+            if not last_why and melee_rt == 1 and needs_enemy then
+                -- Runtime-authoritative ONLY (the Lua fallback in
+                -- World.is_facing_guid can return a confident wrong boolean
+                -- when the runtime is undetermined — that re-froze rotations).
+                -- The runtime now rejects the 0.0 sentinel, so `false` here is
+                -- a real not-facing verdict; nil (undetermined) wires.
+                local _fok, _fv = pcall(RaijinLab.RuntimeCall, RaijinLab,
+                    "ObjectIsFacing", "player", cg, 1.5707963267948966)
+                if _fok and _fv == false then
+                    last_why = "facing"
+                end
+            end
             -- WIRE (range was already validated in live_castable)
             -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
             -- ONLY the HEAD candidate (ctx.aura_search_hit.dist). But the try_list
@@ -2911,18 +2923,31 @@ function Executor.attempt_action(action, ctx)
                         _c_los = false
                     end
                 end
-                -- FACING IS DETECTION-ONLY (round 45 — RESTORES round 41
-                -- FINAL): the round-44 "confident not-facing" gate here is
-                -- REMOVED for the same reason as the candidate path — the
-                -- runtime ObjectIsFacing returns confident `false` at
-                -- point-blank / for ranged casts (live: "wait facing:Blood
-                -- Strike xN edge=0yd", "wait facing:Icy Touch" with no
-                -- target). Wiring and letting the client decide (al=1 accept
-                -- / al=0 one recovered refusal) never locks up; the gate
-                -- caused the attempt storm + event flood that crashed
-                -- XPerl/GatherMate2. LoS stays (reliable + user-requested).
+                -- FACING — ROUND 46 (RUNTIME-ACCURATE, MELEE-ONLY): same as the
+                -- candidate path. The runtime now rejects the 0.0 failed-read
+                -- sentinel, so a confident `false` is a REAL "melee target not
+                -- in front" — the client WOULD refuse ("Target needs to be in
+                -- front of you.", live on Blood Strike). Gate melee spells only
+                -- (ranged spells are never refused by the client); the player
+                -- turning flips the frame cache and the cast wires immediately.
+                local _tr_melee = false
+                if needs_enemy then
+                    local _mm, _ = runtime_spell_melee(cast_sid)
+                    _tr_melee = (_mm == 1)
+                end
+                local _c_face = true
+                if _tr_melee then
+                    -- Runtime-authoritative ONLY (see candidate path).
+                    local _fok2, _fv2 = pcall(RaijinLab.RuntimeCall, RaijinLab,
+                        "ObjectIsFacing", "player", cg2, 1.5707963267948966)
+                    if _fok2 and _fv2 == false then
+                        _c_face = false
+                    end
+                end
                 if not _c_los then
                     last_why = "los"
+                elseif not _c_face then
+                    last_why = "facing"
                 else
                     if Act.CastQueued then
                         cok, creason = Act.CastQueued(cast_sid, cg2, NOTGT)

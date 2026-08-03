@@ -1530,6 +1530,17 @@ static constexpr float kDefaultCastFaceArc = 1.5707963f; // π/2 rad = 90° half
 static inline bool LooksLikeFacingEarly(float f) {
     if (f != f) return false;
     if (f < -6.30f || f > 12.60f) return false;
+    // 2026-08-02 (00:11 ROOT CAUSE — the random 'wait facing:X' lockup): 0.0
+    // is the FAILED-READ sentinel, NOT a real orientation. FacingLive shows
+    // face=0.0000 on almost every line on this Ascension client (the +0x7AC
+    // read intermittently returns 0). It slipped through this check and was
+    // treated as a VALID facing of 0 (north) -> IsFacing compared the target
+    // against north -> confident 'not facing' -> the rotation hard-blocked
+    // EVERY cast (edge=0yd melee AND ranged) with 'wait facing:X x80+'. Treat
+    // |f| below epsilon as UNDETERMINED so IsFacing returns -1 and the addon
+    // lets the client decide. A player genuinely facing exactly 0.0 is
+    // vanishingly rare and self-corrects the instant a real read lands.
+    if (f > -0.0001f && f < 0.0001f) return false;
     return true;
 }
 static float AngleDiffRad(float from, float to) {
@@ -2457,6 +2468,10 @@ void PosLayoutDiag(char* buf, size_t bufN) {
 static inline bool LooksLikeFacing(float f) {
     if (f != f) return false;                       // NaN
     if (f < -6.30f || f > 12.60f) return false;     // ~[-2pi, 4pi] with slack
+    // 2026-08-02 (00:11): same 0.0 sentinel fix as LooksLikeFacingEarly — a
+    // zero facing read is a failed read, never a real orientation. Keeping it
+    // prevented Facing(player) from ever returning the broken 0 as 'valid'.
+    if (f > -0.0001f && f < 0.0001f) return false;
     return true;
 }
 

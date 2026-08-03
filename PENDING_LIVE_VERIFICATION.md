@@ -1876,3 +1876,54 @@ on reload either (the 1.10.102 gate held). The runtime is done.
 3. After a phantom/refuse, the rotation recovers to the next castable slot
    without spinning multiple `wait cooldown` ticks (the confirm loop is the
    next issue to hammer if it persists).
+
+---
+
+## 2026-08-03 (38th round — 00:11 session) — THE TRUE ROOT CAUSE of the random lockups: facing read returns 0.0 → treated as a real north-facing
+
+The 00:11 session still locked up, but the log makes the ACTUAL cause obvious:
+```
+00:11:36 attempt Blood Strike sid=46501 needs_enemy=y ... tgt=y
+00:11:36 [rot] wait facing:Blood Strike  x1  tgt=yes  edge=0yd   ← blocked AT 0yd
+00:11:37-39 ... repeated
+00:11:39 [rot] wait facing:Blood Strike  x80  tgt=yes  edge=0yd   ← ~3.5s lock
+00:12:08 attempt Icy Touch sid=45477 search=n ... tgt=y
+00:12:08 [rot] wait facing:Icy Touch  x1  tgt=yes  edge=0yd     ← Icy Touch (RANGED) blocked AT 0yd
+```
+The rotation is being hard-blocked by `wait facing:X` for BOTH melee (Blood
+Strike) AND ranged (Icy Touch) at `edge=0yd` — literally standing on the mob.
+Aura search was NOT the blocker (it wired+landed Icy Touch/Plague at 13.7yd /
+12.9yd / 7.4yd fine earlier). The random lockup is the FACING GATE.
+
+### ROOT CAUSE (runtime, disasm/data-proven)
+- The Ascension facing read (`[obj+0x7AC]` via camera) intermittently returns
+  `0.0`. The FacingLive runtime log shows `face=0.0000` on essentially EVERY
+  line; only occasionally a real value (1.62, 2.98, 3.09, ...).
+- `LooksLikeFacingEarly(0.0)` / `LooksLikeFacing(0.0)` both returned TRUE
+  (0.0 is in [-6.30, 12.60]) — so `0.0` (the FAILED-READ SENTINEL) was treated
+  as a VALID facing of 0 (= north/+Y).
+- `IsFacing(a,b)` then compared the target heading against NORTH, and for any
+  target not due north returned a CONFIDENT `0` (not facing) → the addon
+  hard-blocked with `last_why="facing"` → `wait facing:X x80+`.
+- It is "random" because whether it locks depends on whether the 50ms cache
+  refresh happened to hold a real facing vs the 0.0 sentinel at that instant.
+
+### FIX (1.10.103-facing0 — RUNTIME, ObjectManager.cpp)
+- `LooksLikeFacingEarly` and `LooksLikeFacing` now REJECT `|f| < 0.0001` — the
+  `0.0` failed-read sentinel is UNDETERMINED, not a real orientation. `Facing()`
+  returns it through FacingLiveLocal; `IsFacing` then hits the
+  `LooksLikeFacingEarly(face)` guard → returns `-1` → bridge PushNil → Lua nil
+  → the addon ALLOWS the cast (client is the final authority). A genuinely
+  facing-0 player is vanishingly rare and self-corrects the instant a real read
+  lands.
+- This is the structural fix behind all the round-38/39 point-blank exemptions —
+  they were band-aids on this root cause. The 00:11 log PROVES the facing gate
+  (not aura search, not the phantom logic) was the lockup.
+
+### Live watchlist (1.10.103-facing0)
+1. VER reads `1.10.103-facing0`.
+2. **No more `wait facing:X` lockup at ANY range** — when the read returns 0.0
+   (undetermined) the cast wires and the client decides (a refused cast is one
+   phantom, recovered; a false face-block was a 3.5s freeze).
+3. Cast throughput at point-blank (Blood/Plague Strike + Icy Touch) is
+   continuous — GCD cycles normally, no 80-tick holds.

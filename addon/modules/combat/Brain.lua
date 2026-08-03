@@ -54,7 +54,11 @@ function Brain.act(state)
     if state.recommendation == "disengage" and pp and Nav then
         -- Step backward along facing inverse (simple kite vector)
         local facing = 0
-        if GetPlayerFacing then facing = GetPlayerFacing() end
+        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED — runtime native only.
+        if RaijinLab and RaijinLab.ObjectFacing then
+            local f = RaijinLab:ObjectFacing("player")
+            if type(f) == "number" and f == f then facing = f end
+        end
         local back = facing + math.pi
         local gx = pp.x + math.cos(back) * 12
         local gy = pp.y + math.sin(back) * 12
@@ -64,7 +68,12 @@ function Brain.act(state)
     end
 
     if state.recommendation == "reposition" and pp and Nav then
-        local facing = GetPlayerFacing and GetPlayerFacing() or 0
+        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED — runtime native only.
+        local facing = 0
+        if RaijinLab and RaijinLab.ObjectFacing then
+            local f = RaijinLab:ObjectFacing("player")
+            if type(f) == "number" and f == f then facing = f end
+        end
         local side = facing + (math.pi / 2)
         Nav.request_move({ x = pp.x + math.cos(side) * 8, y = pp.y + math.sin(side) * 8, z = pp.z }, {})
         return state

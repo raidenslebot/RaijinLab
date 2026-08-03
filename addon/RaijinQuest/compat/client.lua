@@ -66,8 +66,18 @@ for k, v in pairs({Minimap:GetChildren()}) do
   end
 end
 
--- vanilla+tbc: return the player facing based on the minimap arrow
-RaijinQuestCompat.GetPlayerFacing = GetPlayerFacing or function()
+-- vanilla+tbc: return the player facing based on the minimap arrow.
+-- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED — the runtime's native
+-- PlayerFacing is preferred; the minimap arrow (not protected) is the fallback.
+RaijinQuestCompat.GetPlayerFacing = function()
+  if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
+    local ok, f = pcall(RaijinLab.RuntimeCall, RaijinLab, "PlayerFacing")
+    if ok and type(f) == "number" and f == f and f > -0.01 and f < 6.30 then return f end
+  end
+  if RaijinLab and RaijinLab.ObjectFacing then
+    local f = RaijinLab:ObjectFacing("player")
+    if type(f) == "number" and f == f then return f end
+  end
   if RaijinQuestCompat.rotateMinimap then
     return (MiniMapCompassRing:GetFacing() * -1)
   else

@@ -2429,3 +2429,34 @@ The 14:25 session (runtime 1.10.106-aa) PROVED the round-47 fixes work:
   wired only after basic+conditions pass, and a genuinely-refused cast (client
   authority) is one phantom + a 0.6s floor / 1.5s melee facing backoff — never
   a repeat storm.
+
+---
+
+## 2026-08-03 (round 49 — TAINT: "why are we not using the runtime entirely?" — the user is right; direct protected Lua calls removed)
+- Live 14:36: "AddOn 'RaijiNLab' tainted the call of the secure function 'bl'"
+  + AscensionResources.Core:1049 nil x34 (server UI crashing as a symptom of
+  our taint). Root cause: the addon STILL called PROTECTED FrameScript APIs
+  directly from Lua, despite Actions.lua's rule that ALL protected calls go
+  through the runtime.
+- REMOVED (all routed through the runtime natives or fail-open):
+  * IsCurrentSpell(6603/5019/any sid)  -> runtime IsAttacking ("1|0xGUID") /
+    CurrentSpell (list-walk). Sites: Conditions.lua auto_repeat + legacy
+    _melee_active/_shoot_active; Executor.lua snapshot, cast_had_effect,
+    cast_confirmed, auto-attack already-check (4 sites).
+  * IsAutoRepeatSpell(75)              -> runtime AutoRepeatSpell (current
+    auto-repeat spell id: 75/5019/6603).
+  * GetPlayerFacing()                  -> runtime PlayerFacing / ObjectFacing.
+    Sites: World.lua _live_player_facing fallback (removed -> nil fail-open),
+    Brain.lua disengage+reposition, RaijinQuest compat shim.
+  * raw FrameScript TraceLine          -> RaijinLab:TraceLine (native). Site:
+    Drawing.lua GroundCircle.
+- All runtime natives already existed (IsAttacking, AutoRepeatSpell,
+  CurrentSpell, PlayerFacing at Dispatch.cpp; TraceLine native) — no runtime
+  change needed, addon-only.
+- VERIFY: tools/_verify_round47.py PROOF 6 scans ALL 147 deployed .lua files
+  for the banned patterns (comments stripped) — zero direct protected calls.
+- The 14:36 session itself was CLEAN on the cast side (15 casts, 14 landed,
+  0 refusals; the 15th is the 6603 engage = no land event). The taint was the
+  UI-error source, and it is now structurally gone.
+- /reload after deploy. Watch: no 'tainted the call of the secure function'
+  errors, no AscensionResources crashes, casts unchanged (all landed).

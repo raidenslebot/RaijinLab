@@ -456,13 +456,28 @@ Conditions.register("auto_repeat", {
     },
     eval = function(ctx, args)
         local mode = string.lower(tostring(args.mode or "melee"))
-        local _IsCurrentSpell    = _G.IsCurrentSpell
-        local _IsAutoRepeatSpell = _G.IsAutoRepeatSpell
-        local function melee()  return _IsCurrentSpell    and _IsCurrentSpell(6603)    == 1 end
+        -- ROUND 49 (TAINT): IsCurrentSpell / IsAutoRepeatSpell are PROTECTED
+        -- FrameScript APIs — calling them from addon Lua taints the client
+        -- ("RaijiNLab tainted the call of the secure function 'bl'" + other
+        -- addons crashing). All auto-state reads go through the RUNTIME's
+        -- native current-spells walk (pure client memory, never protected):
+        --   IsAttacking      -> "1|0xGUID" while melee auto-attacking
+        --   AutoRepeatSpell  -> current auto-repeat spell id (75 auto-shot /
+        --                       5019 wand), 0/none otherwise
+        local function rt_state(name)
+            if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+                and RaijinLab:HasRuntime()) then return nil end
+            local ok, r = pcall(RaijinLab.RuntimeCall, RaijinLab, name)
+            if ok then return r end
+            return nil
+        end
+        local function melee()
+            local r = rt_state("IsAttacking")
+            return type(r) == "string" and r:match("^1") ~= nil
+        end
         local function shoot()
-            if _IsAutoRepeatSpell and _IsAutoRepeatSpell(75) == 1 then return true end
-            if _IsCurrentSpell    and _IsCurrentSpell(5019)   == 1 then return true end
-            return false
+            local r = tonumber(rt_state("AutoRepeatSpell")) or 0
+            return r == 75 or r == 5019
         end
         if mode == "melee"  then return melee() end
         if mode == "ranged" then return shoot() end
@@ -1714,16 +1729,24 @@ _legacy("target_is_alive", {
     end,
 })
 
--- Old auto-attack family
+-- Old auto-attack family (ROUND 49: runtime-native only — the Lua
+-- IsCurrentSpell/IsAutoRepeatSpell are PROTECTED and taint the client).
+local function _rt_auto_state()
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime()) then return 0, 0 end
+    local ok1, atk = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsAttacking")
+    local ok2, ar  = pcall(RaijinLab.RuntimeCall, RaijinLab, "AutoRepeatSpell")
+    local melee = (ok1 and type(atk) == "string" and atk:match("^1")) and 1 or 0
+    local shoot = (ok2 and tonumber(ar)) or 0
+    return melee, shoot
+end
 local function _melee_active()
-    local f = _G.IsCurrentSpell
-    return f and f(6603) == 1 or false
+    local m, _ = _rt_auto_state()
+    return m == 1
 end
 local function _shoot_active()
-    local ar, cs = _G.IsAutoRepeatSpell, _G.IsCurrentSpell
-    if ar and ar(75)   == 1 then return true end
-    if cs and cs(5019) == 1 then return true end
-    return false
+    local _, s = _rt_auto_state()
+    return s == 75 or s == 5019
 end
 _legacy("auto_attacking",     { name = "Auto-Attacking (legacy)",         eval = function() return _melee_active() end })
 _legacy("not_auto_attacking", { name = "Not Auto-Attacking (legacy)",     eval = function() return not _melee_active() end })

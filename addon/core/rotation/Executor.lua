@@ -1532,10 +1532,9 @@ local function cast_snapshot(sid)
         local ok, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "CurrentSpell")
         if ok and tonumber(cur) == tonumber(sid) then snap.current = true end
     end
-    if not snap.current and IsCurrentSpell then
-        local ok, cur = pcall(IsCurrentSpell, sid)
-        if ok then snap.current = not not cur end
-    end
+    -- ROUND 49 (TAINT): Lua IsCurrentSpell is PROTECTED — never called from
+    -- addon Lua (it both NO-OPs from insecure code and taints the client).
+    -- The runtime CurrentSpell list-walk above is the ONLY current-spell read.
     if GetSpellCooldown then
         local s, d = GetSpellCooldown(sid)
         if (not s or s == 0) and name then s, d = GetSpellCooldown(name) end
@@ -1576,10 +1575,11 @@ local function cast_had_effect(before, after, sid)
     if after.gcd_dur and after.gcd_dur > 0 and after.gcd_start > (before.gcd_start or 0) + 0.01 then
         return true, "gcd"
     end
-    -- Combat swing / attack toggle as weak signal for melee
-    if IsCurrentSpell then
-        local ok, cur = pcall(IsCurrentSpell, sid)
-        if ok and cur then return true, "current" end
+    -- Combat swing / attack toggle as weak signal for melee.
+    -- ROUND 49 (TAINT): Lua IsCurrentSpell is PROTECTED — runtime list-walk only.
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        local ok, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "CurrentSpell")
+        if ok and tonumber(cur) == tonumber(sid) then return true, "current" end
     end
     return false, nil
 end
@@ -2199,10 +2199,9 @@ function Executor.attempt_action(action, ctx)
                 end
             end
         end
-        if not already and IsCurrentSpell then
-            local okc, cur = pcall(IsCurrentSpell, 6603)
-            if okc and cur then already = true end
-        end
+        -- ROUND 49 (TAINT): the Lua IsCurrentSpell(6603) fallback below was
+        -- REMOVED — it is PROTECTED (no-ops from insecure code AND taints the
+        -- client). The runtime IsAttacking check above is authoritative.
         -- 2026-08-03 (AUTO-ATTACK STUCK-CAST FIX — user: "auto attack casts
         -- are not working"): the old `_aa_target` memo was a PERMANENT latch.
         -- After the first Act.Attack for a target it returned
@@ -3225,10 +3224,9 @@ local function cast_confirmed(sid, before_cd)
         local ok, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "CurrentSpell")
         if ok and tonumber(cur) == tonumber(sid) then return true, "current" end
     end
-    if IsCurrentSpell then
-        local ok, cur = pcall(IsCurrentSpell, sid)
-        if ok and cur then return true, "current" end
-    end
+    -- ROUND 49 (TAINT): the Lua IsCurrentSpell fallback was REMOVED — it is
+    -- PROTECTED (no-ops from insecure code + taints the client). The runtime
+    -- CurrentSpell list-walk above is the only current-spell read.
     if GetSpellCooldown then
         local name = spell_name(sid)
         local s, d = GetSpellCooldown(sid)

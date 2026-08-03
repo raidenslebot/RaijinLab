@@ -282,20 +282,9 @@ local function _live_player_facing()
         end
     end
     -- CRITICAL (2026-08-01): Lua GetPlayerFacing() NO-OPs from insecure addon
-    -- code — the handler's player lookup fails and it returns 0.0 (facing EAST)
-    -- as the "no player" sentinel. Treating 0.0 as a real facing made every
-    -- facing check compare against EAST → "facing" spam while the user was
-    -- clearly facing the target. Only use Lua when the runtime is ABSENT, and
-    -- even then reject the 0.0 no-op sentinel (a real facing of exactly 0 is
-    -- vanishingly rare and always self-corrects next tick).
-    local runtime_loaded = RaijinLab and RaijinLab.HasRuntime
-        and pcall(RaijinLab.HasRuntime, RaijinLab)
-    if not runtime_loaded and GetPlayerFacing then
-        local f = GetPlayerFacing()
-        if type(f) == "number" and f ~= 0 and f == f and f > -0.01 and f < 6.30 then
-            return f
-        end
-    end
+    -- code AND is PROTECTED — ROUND 49 (TAINT): it is NEVER called from addon
+    -- Lua anymore. Without the runtime the facing is UNDETERMINED (nil) — fail
+    -- open; the runtime ObjectFacing below is the only fallback.
     if RaijinLab and RaijinLab.ObjectFacing then
         return RaijinLab:ObjectFacing("player")
     end

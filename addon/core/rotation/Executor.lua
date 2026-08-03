@@ -946,11 +946,8 @@ local function spell_in_range_vs_target(sid, name, ctx)
     local minR, maxR = spell_range_info(sid)
     local edge, aoe, center, pr, tr, precise = live_range_model(ctx)
 
-    local client_r = nil
-    if IsSpellInRange and name and name ~= "" and UnitExists and UnitExists("target") then
-        local ok, r = pcall(IsSpellInRange, name, "target")
-        if ok then client_r = r end
-    end
+    local client_r = nil  -- ROUND 51: no protected IsSpellInRange (hardware-gated, taints).
+    -- The precise runtime range model below is the sole authority.
 
     local is_aoe = is_self_aoe_spell(sid, name)
     if not is_aoe then
@@ -1258,20 +1255,15 @@ local function live_castable(sid, name, opts)
     elseif policy == "forbid" then
         if UnitExists and UnitExists("target") then return false, "has_target" end
     end
-    -- IsUsableSpell greys targeted spells when client has no "target" unit even
-    -- if we will CastSpell(guid). With aura_search_hit.guid, only trust nomana.
-    -- On Ascension, IsUsableSpell may return nil for custom spell IDs — treat
-    -- nil as "unknown, assume usable" (fail-open, server is final authority).
-    if not opts.skip_usable and IsUsableSpell then
-        local usable, nomana = IsUsableSpell(name)
-        if usable == nil and sid then usable, nomana = IsUsableSpell(sid) end
-        -- nil=unknown → assume usable; only fail on explicit false or nomana
-        if usable == false then
-            if nomana then return false, "no_resource" end
-            if policy == "require" and not search_guid then
-                return false, "unusable"
-            end
-            -- search_guid / optional / corpse: ignore grey-from-no-target.
+    -- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): IsUsableSpell is hardware-gated
+    -- (taints from addon Lua) — replaced by World.resource_ok (runtime natives
+    -- only, fail-open on unknown). The client is the final authority for a
+    -- resource refusal the gate cannot foresee (bounded by the refuse floor).
+    if not opts.skip_usable then
+        local W = RaijinLab and RaijinLab.World
+        if W and W.resource_ok then
+            local rok, rwhy = W.resource_ok(sid)
+            if not rok then return false, rwhy or "no_resource" end
         end
     end
     -- Hard CD + GCD gate (lag-padded). Never wire when server still has GCD.
@@ -1349,29 +1341,21 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Runtime ValidateCast DISABLED: calling through bridge 8 spells x
-            -- 30 ticks = 240/sec corrupts Lua stack → AV_READ crash. Use safe
-            -- Lua-level APIs (IsUsableSpell, IsSpellInRange) which are proven
-            -- stable. Cooldowns already handled by GetSpellCooldown above.
+            -- ROUND 51: NO protected Lua APIs here (IsUsableSpell and
+            -- IsSpellInRange are hardware-gated and taint). Cooldowns are read
+            -- via GetSpellCooldown (not gated) above; the authoritative range
+            -- model is the runtime live_range_model at the wire path; resource
+            -- state is World.resource_ok (runtime natives only).
             if not gcd_lock then
                 local usable = true
-                if IsUsableSpell and name and name ~= "" then
-                    local u, nomana = IsUsableSpell(name)
-                    if u == nil and id then u, nomana = IsUsableSpell(id) end
-                    if nomana then usable = false end
+                local W = RaijinLab and RaijinLab.World
+                if W and W.resource_ok then
+                    local rok = W.resource_ok(id)
+                    if rok == false then usable = false end
                 end
                 ctx.spell_usable[id] = usable
                 ctx.spell_usable[tostring(id)] = usable
                 local inRange = true
-                if IsSpellInRange and name and name ~= "" then
-                    -- Ascension: IsSpellInRange returns 0/nil for custom spells
-                    -- even IN range, and 0 whenever the hardware-event flag is
-                    -- 0 (flag writes are BANNED — they crash the VM). Treat
-                    -- 0/nil as UNKNOWN: inRange stays true (never block). The
-                    -- authoritative range check is the precise runtime model
-                    -- (live_range_model via ObjectPosition) at the wire path.
-                    IsSpellInRange(name, "target")
-                end
                 ctx.spell_in_range[id] = inRange
                 ctx.spell_in_range[tostring(id)] = inRange
             elseif ctx.spell_usable[id] == nil then

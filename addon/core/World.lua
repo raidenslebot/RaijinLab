@@ -264,6 +264,64 @@ end
 World.CAST_FACE_HALF_ARC = math.pi / 2   -- half-angle radians
 World.CAST_FACE_FULL_ARC = math.pi       -- full cone (documentation / Trinity M_PI)
 
+-- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): the client's IsUsableSpell is
+-- hardware-gated — calling it from addon Lua taints the client ("tainted the
+-- call of the secure function", live 14:36/14:57), AND it misses rune costs
+-- on custom spells. This gate uses ONLY runtime natives and FAILS OPEN on
+-- unknown:
+--   RuneState ("blood:frost:unholy") for rune-costing spells
+--   UnitPower/UnitMaxPower for mana-costing spells
+-- Returns true (castable) or false, reason (blocked).
+World._RUNE_SPELL_TYPE = {
+    [45462] = 0, [45513] = 0, [49917] = 0, [49918] = 0, [49919] = 0,
+    [49920] = 0, [49921] = 0,                             -- Plague Strike -> blood
+    [45902] = 0, [46501] = 0,                              -- Blood Strike -> blood
+    [45477] = 1, [49896] = 1, [49903] = 1, [49904] = 1, [49909] = 1, [49910] = 1,  -- Icy Touch -> frost
+}
+-- Mana-costing spells the rotation may use.
+World._MANA_SPELLS = {
+    [139] = true,     -- Renew
+    [2061] = true,    -- Flash Heal
+    [26573] = true,   -- Consecration
+    [2050] = true,    -- Lesser Heal
+    [2060] = true,    -- Greater Heal
+}
+function World.resource_ok(sid)
+    sid = tonumber(sid) or 0
+    if sid <= 0 then return true end
+    local hasRt = RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime()
+    if not hasRt then return true end  -- fail-open without runtime
+    local rtype = World._RUNE_SPELL_TYPE[sid] or World._RUNE_SPELL_TYPE[tostring(sid)]
+    if rtype ~= nil then
+        local ok, rp = pcall(RaijinLab.RuntimeCall, RaijinLab, "RuneState")
+        if not ok or type(rp) ~= "string" then return true end
+        local rb, rf, ru = rp:match("^(%d+):(%d+):(%d+)$")
+        if not rb then return true end
+        local ready = { tonumber(rb) or 0, tonumber(rf) or 0, tonumber(ru) or 0 }
+        local total = ready[1] + ready[2] + ready[3]
+        -- FAIL-OPEN (round 51): only block with POSITIVE evidence — some runes
+        -- ready but not this spell's type. All-zero (regenerating / unreadable)
+        -- does NOT block; the client is the final referee and a genuine refusal
+        -- is bounded by the 0.6s resource floor. Blocking on all-zero was the
+        -- 14:57 all-no_rune lockup (only Consecration + Auto Attack fired).
+        if total > 0 and (ready[rtype + 1] or 0) < 1 then
+            return false, "no_rune"
+        end
+        return true
+    end
+    if World._MANA_SPELLS[sid] or World._MANA_SPELLS[tostring(sid)] then
+        local okc, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "UnitPower", 0, 0)
+        local okm, max = pcall(RaijinLab.RuntimeCall, RaijinLab, "UnitMaxPower", 0, 0)
+        cur, max = tonumber(cur) or -1, tonumber(max) or -1
+        if okc and okm and max > 0 and cur == 0 then
+            return false, "no_mana"
+        end
+        return true
+    end
+    return true
+end
+
 local function _live_player_facing()
     -- Prefer runtime live facing (player+0x7AC). ObjectFacing@0x7A4 is stale
     -- on this client and FaceDirection writes only the stale field.
@@ -2518,23 +2576,11 @@ function World.build_context(opts)
         ctx.known_spells[id] = known
         ctx.known_spells[tostring(id)] = known
 
-        -- Pure IsUsableSpell only (resource / stance / form). Do NOT fold known or
-        -- cooldown into this flag - Conditions.spell_usable require_known / require_off_cd
-        -- gates read known_spells and cooldowns independently.
+        -- ROUND 51: runtime-only resource flag (no protected IsUsableSpell).
         local usable = true
-        if IsUsableSpell then
-            local name = GetSpellInfo and GetSpellInfo(rid)
-            local can = false
-            if name then
-                local u, nomana = IsUsableSpell(name)
-                can = not not u
-                if nomana then can = false end
-            else
-                local u, nomana = IsUsableSpell(rid)
-                can = not not u
-                if nomana then can = false end
-            end
-            usable = can
+        if World.resource_ok then
+            local rok = World.resource_ok(rid)
+            if rok == false then usable = false end
         end
         ctx.spell_usable[id] = usable
         ctx.spell_usable[tostring(id)] = usable
@@ -2563,13 +2609,8 @@ function World.build_context(opts)
                 targeted = false
                 inr = true -- refined after enemy scan / Executor live check
             else
-                local client_r = nil
-                if IsSpellInRange then
-                    if sname then client_r = IsSpellInRange(sname, "target")
-                    else client_r = IsSpellInRange(rid, "target") end
-                    if client_r ~= nil then targeted = true end
-                    if client_r == 0 then inr = false end
-                end
+                local client_r = nil  -- ROUND 51: no protected IsSpellInRange (taints).
+                -- Runtime ObjectPosition range model below is the sole authority.
                 if client_r ~= 0 and client_r ~= 1 then
                     if maxR > 0 then
                         targeted = true

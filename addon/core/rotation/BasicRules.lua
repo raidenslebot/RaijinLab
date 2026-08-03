@@ -14,19 +14,6 @@
 
 local BasicRules = {}
 
--- ROUND 50 (rune gate): spell id -> rune type index (0=blood, 1=frost,
--- 2=unholy) for the standard DK rune-costing spells in this rotation family.
--- The client's IsUsableSpell misses RUNE costs on Ascension custom spells
--- (live 14:47: Blood Strike wired with no blood rune -> client "Not enough
--- runes" red error), so the engine gates these on the runtime's native
--- ready-rune counts BEFORE wiring.
-local _SPELL_RUNE_TYPE = {
-    [45462] = 0, [45513] = 0, [49917] = 0, [49918] = 0, [49919] = 0,
-    [49920] = 0, [49921] = 0,                             -- Plague Strike -> blood
-    [45902] = 0, [46501] = 0,                              -- Blood Strike -> blood
-    [45477] = 1, [49896] = 1, [49903] = 1, [49904] = 1, [49909] = 1, [49910] = 1,  -- Icy Touch -> frost
-}
-
 local function num(v, d)
     v = tonumber(v)
     if v == nil then return d end
@@ -188,57 +175,31 @@ local function slot_has_aura_search(slot)
 end
 
 local function check_resources(ctx, sid, name, slot)
-    -- ROUND 50 (rune gate, FIRST so every path is covered incl. aura_search
-    -- multi-dot): for a known rune-costing spell, if the runtime reports zero
-    -- ready runes of the required type, block BEFORE wiring — the client's
-    -- IsUsableSpell misses rune costs on custom spells and would otherwise
-    -- refuse with a red "Not enough runes" error.
-    local rtype = _SPELL_RUNE_TYPE[sid] or _SPELL_RUNE_TYPE[tostring(sid)]
-    if rtype ~= nil and RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-        local okr, rp = pcall(RaijinLab.RuntimeCall, RaijinLab, "RuneState")
-        if okr and type(rp) == "string" then
-            local rb, rf, ru = rp:match("^(%d+):(%d+):(%d+)$")
-            local ready = { tonumber(rb) or 0, tonumber(rf) or 0, tonumber(ru) or 0 }
-            if (ready[rtype + 1] or 0) < 1 then
-                return false, "no_rune"
-            end
-        end
+    -- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): the client's IsUsableSpell is
+    -- hardware-gated — calling it from addon Lua taints the client ("tainted
+    -- the call of the secure function", live 14:36/14:57) — and it misses rune
+    -- costs on custom spells. World.resource_ok uses ONLY runtime natives
+    -- (RuneState for rune spells, UnitPower for mana spells) and FAILS OPEN on
+    -- unknown. Genuine refusals the gate cannot foresee are bounded by the
+    -- client-refusal floor (0.6s) — never a storm.
+    local W = RaijinLab and RaijinLab.World
+    if W and W.resource_ok then
+        local rok, rwhy = W.resource_ok(sid)
+        if not rok then return false, rwhy or "no_resource" end
     end
-    -- IsUsableSpell greys unit-targeted spells when the client has NO current
-    -- target — even when we will CastSpell(id, guid). BasicRules runs BEFORE
-    -- aura_search, so aura_search_hit is still nil. Blocking on "unusable"
-    -- here made multi-dot dead until the player manually selected something.
-    -- Ground self-AoE (Consecration) and optional-policy slots also grey with
-    -- no target on some Ascension ranks — never treat that as unusable.
+    -- Ground self-AoE (Consecration) and optional-policy slots used to grey
+    -- on IsUsableSpell with no target — no longer relevant (no IsUsableSpell).
     local policy = policy_of(slot, ctx)
     if slot_has_aura_search(slot) or policy == "optional" or policy == "forbid"
         or is_ground_self_aoe(sid, name) then
-        -- Only hard-fail on real resource starve (nomana), never on grey bar.
-        if IsUsableSpell then
-            local usable, nomana = IsUsableSpell(name)
-            if usable == nil and sid then usable, nomana = IsUsableSpell(sid) end
-            if nomana then return false, "no_resource" end
-        end
         return true
     end
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
-    -- Runtime C++ IsSpellUsableRt is authoritative — if available, skip the
-    -- Lua spell_usable table entirely. The runtime reads client memory directly.
     local hasRt = RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()
-    if not hasRt then
+    if not hasRt and not search then
         local u = ctx and ctx.spell_usable
         if type(u) == "table" and (u[sid] == false or u[tostring(sid)] == false) then
-            if not search then
-                return false, "unusable"
-            end
-        end
-    end
-    if not search and IsUsableSpell then
-        local usable, nomana = IsUsableSpell(name)
-        if usable == nil and sid then usable, nomana = IsUsableSpell(sid) end
-        if not usable then
-            if nomana then return false, "no_resource" end
-            -- Without a definitive nomana, leave soft (policy layers decide).
+            return false, "unusable"
         end
     end
     return true

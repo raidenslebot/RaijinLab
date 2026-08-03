@@ -2233,8 +2233,10 @@ out of range and spell not ready yet... it should be more precise and
 accurate... the runtime is the key."
 
 ### LIVE-PROVEN (13:50 log, 1.10.105-aa)
-- The CLIENT genuinely refuses MELEE on facing: efused Blood Strike
-  facing:You are facing the wrong way! and efused Blood Strike
+- The CLIENT genuinely refuses MELEE on facing: 
+efused Blood Strike
+  facing:You are facing the wrong way! and 
+efused Blood Strike
   facing:Target needs to be in front of you. (at edge=0.1-2yd) — four
   refusals in ~20s. Round 45's "wire and let the client decide" exposed these.
 - RANGED spells are NEVER refused: Icy Touch (30yd) landed every cast,
@@ -2278,7 +2280,8 @@ User: "pretty much nothing improved." The pasted 13:57 session (1.10.106-aa):
   "out of range", no "not ready"). The rotation was turned OFF after 10s.
 
 ### "Spell is not ready yet" — REAL BUG FOUND + FIXED (Engine.lua)
-Engine.spell_ready's cooldown gate fired when em <= 0.04 + lag, where lag
+Engine.spell_ready's cooldown gate fired when 
+em <= 0.04 + lag, where lag
 scaled with GetNetStats up to 0.24s — i.e. it cast UP TO 0.24s BEFORE the
 local cooldown bar cleared. The client judges readiness from its OWN local
 state → a cast while the bar still shows cooldown → "Spell is not ready yet".
@@ -2507,3 +2510,58 @@ Two real addon bugs + one runtime addition fixed:
 ### LIVE CHECK (after re-inject 1.10.107-aa + /reload): NO phantom_grace lines;
   NO "Not enough runes" (rune gate pre-wires); melee only refusals = genuine
   not-facing (one + 1.5s backoff). Casts unchanged.
+
+## 2026-08-03 (round 51 — 1.10.108-aa: RUNTIME-ONLY RESOURCE GATE + no_rune lockup + last taint)
+The 14:57 session showed TWO structural violations of the user directives:
+  (A) "nothing is casting other than auto attack consecration" — the round-50
+      rune gate FAILED CLOSED: RuneState read 0:0:0 (runes regenerating /
+      unknown) and the gate blocked EVERY rune spell -> `wait no_rune x18`,
+      even with NO target. Only Consecration (not in the rune table) + Auto
+      Attack fired.
+  (B) taint STILL present — `bl()` x1 (live 14:36/14:57): IsUsableSpell is a
+      HARDWARE-GATED FrameScript API; calling it from addon Lua taints even as
+      a no-op. It survived round 49 in BasicRules.check_resources, Executor
+      (2 sites), and World (1 site). IsSpellInRange (also gated) survived in
+      Executor + World.
+
+### 1) RUNE GATE FAILS OPEN (the 14:57 lockup fix)
+- World.resource_ok(sid) is now the SINGLE runtime-only resource gate:
+  - Rune spells (PS/BS -> blood, IT -> frost): read RuneState ("blood:frost:
+    unholy"). BLOCK ONLY with POSITIVE evidence — some runes ready but not
+    this spell's type (total > 0 AND required-type count == 0). All-zero
+    (0:0:0 — regenerating / unreadable) = UNKNOWN = ALLOW. The client is the
+    final referee; a genuine refusal is bounded by the existing 0.6s resource
+    floor — never a storm, never a lockup.
+  - Mana spells (Renew/Flash Heal/Consecration/Lesser/Greater Heal): runtime
+    UnitPower(0)/UnitMaxPower(0) (GuidArg 0 = local player). Block only if
+    max > 0 and cur == 0; fail-open otherwise.
+  - Unknown spell: allow.
+- RUNTIME resilience: RuneStatePacked treats a GetRuneType FAILURE as type 3
+  (counts for all types) so it never falsely reports a required type as 0.
+  Version bumped 1.10.107-aa -> 1.10.108-aa; rebuilt (230400 bytes).
+
+### 2) IsUsableSpell / IsSpellInRange FULLY REMOVED (the last taint)
+- ALL 5 IsUsableSpell call sites + 2 IsSpellInRange call sites eliminated:
+  - BasicRules.check_resources (both blocks) -> World.resource_ok.
+  - Executor pre-wire gate (~1265) -> World.resource_ok.
+  - Executor fill_live_spell_state (~1358) -> World.resource_ok (and the dead
+    IsSpellInRange call removed — the runtime range model is authoritative).
+  - Executor spell_in_range_vs_target (~950) -> runtime range model only.
+  - World spell_usable fill (~2525) -> World.resource_ok.
+  - World range snapshot (~2613) -> runtime ObjectPosition model only.
+- Cooldown reads (GetSpellCooldown) are NOT hardware-gated and stay Lua-side;
+  runtime ValidateCast stays DISABLED (240/sec bridge calls corrupt the Lua
+  stack — CRASH RULE).
+
+### VERIFY: tools/_verify_round47.py now 8 proofs, exit 0.
+- P6 scan now also bans direct IsUsableSpell/IsSpellInRange: 147 deployed
+  .lua files, zero protected calls.
+- P8 by construction + deployed source: World.resource_ok (RuneState/UnitPower,
+  fail-open) present; old fail-closed rune table gone from BasicRules; rune
+  gate fail-open assertions (all-zero ALLOWS, positive-evidence BLOCKS).
+
+### LIVE CHECK (after re-inject 1.10.108-aa + /reload): rotation casts normally
+  again (no all-no_rune lockup); ZERO red notifications (no protected call can
+  taint — structurally impossible now); rune spells fire as soon as their rune
+  is ready; a genuine no-rune attempt (gate can't foresee) is ONE refusal +
+  the 0.6s resource floor, never a storm.

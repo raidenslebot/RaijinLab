@@ -926,7 +926,7 @@ Conditions.register("cooldown", {
 Conditions.register("spell_usable", {
     name = "Spell Usable",
     category = "Spell",
-    description = "Combined gates: known_spells, cooldowns, IsUsableSpell (resource/stance only), and spell_in_range. require_* defaults true; set false to skip a gate. spell_id 0 = slot spell.",
+    description = "Combined gates: known_spells, cooldowns, runtime resource gate (World.resource_ok), and spell_in_range. require_* defaults true; set false to skip a gate. spell_id 0 = slot spell.",
     params = {
         { key = "spell_id",       type = "number", default = 0, label = "Spell ID (0=slot)" },
         { key = "require_range",  type = "bool", default = true, label = "Require in range" },

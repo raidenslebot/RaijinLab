@@ -342,7 +342,10 @@ def prove_no_taint_calls():
     Round 49: RaijiNLab tainted the secure function 'bl' (live 14:36) — the
     direct Lua IsCurrentSpell/IsAutoRepeatSpell/GetPlayerFacing/raw TraceLine
     calls were all routed through the runtime (IsAttacking, AutoRepeatSpell,
-    CurrentSpell, PlayerFacing, RaijinLab:TraceLine)."""
+    CurrentSpell, PlayerFacing, RaijinLab:TraceLine).
+    Round 51: IsUsableSpell and IsSpellInRange are ALSO hardware-gated (taint
+    even as no-ops — live 14:57 'bl()' x1) and were replaced by the runtime
+    resource gate (RuneState / UnitPower) + the runtime range model."""
     import re as _re
     root = r"C:\Ascension\Launcher\resources\ascension-live\Interface\AddOns\RaijinLab"
     banned = [
@@ -353,6 +356,8 @@ def prove_no_taint_calls():
         (r"GetPlayerFacing\s*and\s*GetPlayerFacing\s*\(", "GetPlayerFacing()"),
         (r"=\s*GetPlayerFacing\s*\(", "= GetPlayerFacing()"),
         (r"(?<![:\w.])TraceLine\s*\(", "raw TraceLine("),  # not RaijinLab:/RL:/dot
+        (r"(?<![:\w.])IsUsableSpell\s*\(", "raw IsUsableSpell("),  # round 51
+        (r"(?<![:\w.])IsSpellInRange\s*\(", "raw IsSpellInRange("),  # round 51
     ]
     fails = []
     n = 0
@@ -398,11 +403,48 @@ def new_fail_hit(fail_t, cast_t, fail_name, msg, spell_name):
 
 
 def rune_gate_allows(rune_state, rune_type):
-    """NEW: a known rune-costing spell requires >=1 ready rune of its type.
+    """ROUND 51 FAIL-OPEN: a known rune-costing spell requires >=1 ready rune
+    of its type ONLY when the state is readable AND some rune is ready.
+    All-zero (0:0:0 — runes regenerating / unreadable) is UNKNOWN and ALLOWS
+    the cast (client is the final referee; a genuine refusal is bounded by the
+    0.6s resource floor). The round-50 fail-closed gate caused the 14:57
+    all-no_rune lockup (nothing cast except Consecration + Auto Attack).
     rune_state = 'blood:frost:unholy'. rune_type 0=blood,1=frost,2=unholy."""
     rb, rf, ru = rune_state.split(":")
     counts = [int(rb), int(rf), int(ru)]
+    if sum(counts) <= 0:
+        return True  # all-zero -> unknown -> fail-open (allow)
     return counts[rune_type] >= 1
+
+
+def prove_round51():
+    """ROUND 51: runtime-only resource gate (fail-open) deployed.
+    IsUsableSpell/IsSpellInRange are hardware-gated (taint even as no-ops —
+    live 14:57 'bl()' x1) — replaced by World.resource_ok (runtime natives
+    RuneState / UnitPower only, fail-open on unknown)."""
+    fails = []
+    wl = _deployed(r"core\World.lua") or ""
+    br = _deployed(r"core\rotation\BasicRules.lua") or ""
+    ex = _deployed(r"core\rotation\Executor.lua") or ""
+    if "function World.resource_ok" not in wl:
+        fails.append("deployed World.lua: World.resource_ok missing")
+    if "_RUNE_SPELL_TYPE" not in wl:
+        fails.append("deployed World.lua: rune type table missing")
+    if "_MANA_SPELLS" not in wl:
+        fails.append("deployed World.lua: mana spell table missing")
+    if 'rp:match("^(%d+):(%d+):(%d+)$")' not in wl:
+        fails.append("deployed World.lua: RuneState parse missing")
+    if "total > 0" not in wl:
+        fails.append("deployed World.lua: fail-open (total>0) guard missing")
+    if "UnitPower" not in wl:
+        fails.append("deployed World.lua: UnitPower mana read missing")
+    if "_SPELL_RUNE_TYPE" in br:
+        fails.append("deployed BasicRules.lua: old fail-closed rune table still present")
+    if "W.resource_ok" not in br and "W and W.resource_ok" not in br:
+        fails.append("deployed BasicRules.lua: resource_ok gate missing")
+    if ex and "W.resource_ok" not in ex:
+        fails.append("deployed Executor.lua: resource_ok gate missing")
+    return fails
 
 
 def prove_round50():
@@ -423,24 +465,31 @@ def prove_round50():
     # 5) NEW: stale fail (before cast) never fails.
     if new_fail_hit(t - 0.5, t, "Icy Touch", "", "Icy Touch"):
         fails.append("NEW: stale fail caught")
-    # 6) Rune gate: BS (blood) blocked with no blood rune; IT (frost) allowed.
+    # 6) Rune gate (ROUND 51 FAIL-OPEN): positive evidence blocks, all-zero allows.
     if rune_gate_allows("0:1:0", 0):
-        fails.append("rune gate: Blood Strike allowed with no blood rune")
+        fails.append("rune gate: Blood Strike allowed with no blood rune (1 frost ready)")
     if not rune_gate_allows("1:1:0", 0):
         fails.append("rune gate: Blood Strike blocked with a blood rune")
     if not rune_gate_allows("0:1:0", 1):
         fails.append("rune gate: Icy Touch blocked with a frost rune")
-    if rune_gate_allows("0:0:0", 1):
-        fails.append("rune gate: Icy Touch allowed with no frost rune")
+    if not rune_gate_allows("0:0:0", 1):
+        fails.append("rune gate: all-zero state must FAIL OPEN (14:57 lockup) — Icy Touch")
+    if not rune_gate_allows("0:0:0", 0):
+        fails.append("rune gate: all-zero state must FAIL OPEN (14:57 lockup) — Blood Strike")
     # 7) Deployed-source checks.
     ex = _deployed(r"core\rotation\Executor.lua") or ""
     br = _deployed(r"core\rotation\BasicRules.lua") or ""
+    wl = _deployed(r"core\World.lua") or ""
     if "accepted = true," not in ex:
         fails.append("deployed Executor: tick pending missing accepted=true")
     if "msg:find(string.lower(tostring(p.name))" not in ex:
         fails.append("deployed Executor: fail_hit not tightened")
-    if "_SPELL_RUNE_TYPE" not in br or "RuneState" not in br:
-        fails.append("deployed BasicRules: rune gate missing")
+    # Round 51: rune table moved to World.resource_ok (fail-open); BasicRules
+    # must route through it, not hold its own fail-closed table.
+    if "RuneState" not in wl and "_RUNE_SPELL_TYPE" not in wl:
+        fails.append("deployed World.lua: rune gate missing")
+    if "W.resource_ok" not in br:
+        fails.append("deployed BasicRules: resource_ok gate missing")
     return fails
 
 
@@ -576,7 +625,7 @@ def main():
 
     print()
     print("=" * 72)
-    print("PROOF 6: NO DIRECT PROTECTED FRAMESCRIPT CALLS (round 49 — taint)")
+    print("PROOF 6: NO DIRECT PROTECTED FRAMESCRIPT CALLS (round 49 + 51)")
     print("=" * 72)
     fails, n_scanned = prove_no_taint_calls()
     if fails:
@@ -586,7 +635,8 @@ def main():
         sys.exit(1)
     print(f"PASS: {n_scanned} deployed addon .lua files scanned — zero direct "
           f"calls to IsCurrentSpell / IsAutoRepeatSpell / GetPlayerFacing / raw "
-          f"TraceLine (all routed through the runtime natives).")
+          f"TraceLine / IsUsableSpell / IsSpellInRange (all routed through the "
+          f"runtime natives).")
 
     print()
     print("=" * 72)
@@ -603,8 +653,23 @@ def main():
     print("      their rune (prevents 'Not enough runes'); deployed source has the fixes.")
 
     print()
-    print("RESULT: all proofs hold. Rounds 46-50 verified (log evidence, gate "
-          "construction, denial-sleep, taint-free source, phantom + rune gates).")
+    print("=" * 72)
+    print("PROOF 8: RUNTIME-ONLY RESOURCE GATE (round 51 — fail-open + no taint)")
+    print("=" * 72)
+    fails = prove_round51()
+    if fails:
+        print("ASSERT FAILS:")
+        for f in fails:
+            print("  -", f)
+        sys.exit(1)
+    print("PASS: World.resource_ok (RuneState / UnitPower, fail-open) is deployed;")
+    print("      the old fail-closed rune table is gone from BasicRules; IsUsableSpell")
+    print("      / IsSpellInRange direct calls are eliminated (PROOF 6 scan passes).")
+
+    print()
+    print("RESULT: all proofs hold. Rounds 46-51 verified (log evidence, gate "
+          "construction, denial-sleep, taint-free source, phantom fix, rune gate "
+          "fail-open + runtime-only resource gate).")
     return 0
 
 

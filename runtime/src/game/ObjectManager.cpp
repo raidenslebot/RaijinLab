@@ -3074,7 +3074,13 @@ void RuneStatePacked(char* buf, size_t cap) {
             gf(rawL, -10002, "GetRuneType");
             pn(rawL, (double)i);
             if (pc(rawL, 1, 1, 0) == 0) { type = (int)tn(rawL, -1); st(rawL, top); }
-            else { st(rawL, top); continue; }
+            else {
+                // ROUND 51 (resilience): GetRuneType unavailable/failed — treat
+                // a ready rune as type 3 (counts for every type) so the addon's
+                // rune gate NEVER falsely blocks on an unknown-type read.
+                st(rawL, top);
+                type = 3;
+            }
             gf(rawL, -10002, "GetRuneCooldown");
             pn(rawL, (double)i);
             if (pc(rawL, 1, 3, 0) == 0) {

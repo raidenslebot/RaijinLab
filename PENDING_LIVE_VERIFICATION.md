@@ -1991,3 +1991,60 @@ before). Runtime unchanged (1.10.103-facing0).
    spell's range, the in-front target is cast (fall-through now works).
 2. No regressions: closest-first preference preserved (candidate #1 still wins
    when it IS castable).
+
+---
+
+## 2026-08-03 (round 43 — 1.10.104-aa): "auto attack casts are not working" + "you are generating ui errors"
+
+User: "auto attack casts are not working and you are generating ui errors, but
+everything else is working as intended so far for now."
+
+### ROOT CAUSE 1 — Auto Attack NEVER re-engages (permanent latch, addon)
+`Executor.attempt_action`'s Auto Attack branch set `_aa_target = tgt_g` after
+the first `Act.Attack` and returned `"already_attacking"` for that target
+FOREVER — the memo was never cleared. Live proof: 13:01:17 `FIRE #1 Auto
+Attack edge=33.9` (out of melee), then `wait already_attacking x312` at
+edge=0-5yd — the player closed to melee and the engage was NEVER retried.
+FIX: removed the `_aa_target` latch entirely; the runtime `IsAttacking`
+(AttackTargetGuid, player+0xA20/0xA24) is the sole "already attacking" signal
+and the 0.35s `_recent` floor is the only throttle. Added an addon-side
+melee-range gate (center > 6yd → wait `oor`, matching the runtime gate) so the
+slot doesn't stage a pointless engage every 0.35s while far.
+
+### ROOT CAUSE 2 — the runtime 6603 engage was DISABLED (round 23, runtime)
+`AttackTargetFor` returned true WITHOUT casting 6603 since round 23 ("every
+session that cast 6603 broke"). That evidence was CONFOUNDED: it was gathered
+during the broken holder-pointer cast era (rounds 18-35) — the cast path
+itself was failing regardless of 6603, and the one clean session (18:11) ran
+the raw-GUID invocation. Since the round-36 raw-GUID fix every targeted cast
+lands (al=1); casting 6603 through the SAME `SafeNativeCast(6603, guid, 0)`
+(registerTarget=0 = 1.10.86-proven, zero selection touch) is the identical
+machinery. The client only auto-attacks on melee spell land, so a rotation
+with no melee ability off-CD NEVER started auto-attack. FIX: re-enabled the
+engage behind the existing melee-range gate (center <= 6) + idempotency
+checks. If the raw-GUID path breaks with 6603, revert this block (git).
+
+### ROOT CAUSE 3 — 0xB450EDDC resolver AV on EVERY cast (the "ui errors")
+The crash shield logged `0x512B07 SHIELD: recovered resolver AV esi=0xB450EDDC`
+on ALL 833 AVs in the session — one per cast, including guid=0 Consecration.
+The cast-feedback GUID-resolver (0x512B00 reads [esi]/[esi+4]) is dispatched
+~6-15ms after every cast with a pointer to ANOTHER uncommitted BSS static slot
+at 0xB450EDDC (the 0xD3C00E14 commit fixed the first slot; this second one was
+still reserved-but-uncommitted). Each AV is recovered (zero-GUID substitution),
+but 833 recovered AVs inside the client's Lua/cast-feedback path per session is
+an undetermined state and the UI-error suspect. FIX: `SafeNativeCast` now
+commits the 0xB450E000 page once (VirtualAlloc) — the resolver reads valid
+zero-filled memory, byte-identical outcome to the shield's substitution, with
+NO AV and NO shield involvement. Never writes a GUID there (the zero behavior
+is the proven-clean one).
+
+### Live watchlist (1.10.104-aa)
+1. VER reads `1.10.104-aa`.
+2. Auto Attack engages in melee: close to a target at edge 0-5yd with the
+   rotation NOT landing a melee spell → 6603 wires (log `Attack engage
+   id=6603 ... ok`) and the character auto-attacks; the slot stops at
+   `already_attacking` ONLY while the client's AttackTargetGuid actually
+   matches (real swings).
+3. NO `0x512B07 SHIELD` lines at all (previously 833/session) — the resolver
+   reads committed memory.
+4. No UI-error regression: casts still land (al=1), no new refusals.

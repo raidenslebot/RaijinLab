@@ -256,6 +256,28 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
         }
+        // 2026-08-03 (ROUND 43 — 0xB450EDDC resolver AV, the "ui errors"
+        // suspect): the cast-feedback GUID-resolver (0x512B00, reads the
+        // 8-byte GUID struct at [esi]/[esi+4]) is dispatched ~6-15ms after
+        // EVERY cast with a pointer to ANOTHER uncommitted static slot at
+        // 0xB450EDDC — the crash shield logged esi=0xB450EDDC on ALL 833 AVs
+        // in the 12:59 session (one per cast, including guid=0 Consecration).
+        // Each AV is recovered by substituting a zero-GUID, but 833 recovered
+        // AVs inside the client's Lua/cast-feedback path per session is an
+        // undetermined state (user rule: nothing undetermined) and the UI-error
+        // suspect. Commit the page so the resolver reads VALID zero-filled
+        // memory — byte-identical outcome to the shield's zero-GUID
+        // substitution (ObjectPtr(0,0,8)=0 -> walk skips), with NO AV and NO
+        // shield involvement. Same pattern as the 0xD3C00E14 commit above
+        // (proven round 17:26). Never write a GUID here: the shield's zero
+        // behavior is the proven-clean one.
+        {
+            static volatile LONG s_slotB450Committed = 0;
+            if (InterlockedCompareExchange(&s_slotB450Committed, 1, 0) == 0) {
+                LPVOID pageB = (LPVOID)(0xB450EDDCu & ~0xFFFu);
+                VirtualAlloc(pageB, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
+            }
+        }
         // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
         // charmed"): the round-18 [player+0xd0]+0x18 write was a corruption
         // source because it used PlayerPtr(), whose MainThread snapshot stores
@@ -1934,32 +1956,28 @@ bool AttackTargetFor(uint64_t targetGuid) {
             }
         }
     }
-    // 2026-08-02 (ROUND 23 — AUTO-ATTACK ENGAGE DISABLED): every session since
-    // round 18 ran the Spell_C(6603) engage as its FIRST cast, and every one of
-    // those sessions broke — while the ONLY clean session (18:11, 1.10.81) had
-    // NO 6603 casts at all. The 19:34 log (1.10.86, direct-GUID engage, no
-    // [0xd0] write) shows the engage firing repeatedly and failing nrc=0, then
-    // EVERY unit-targeted cast refusing al=0 ("Invalid target") while
-    // Consecration (guid=0) lands — i.e. the client's SYNC target resolution
-    // broke the instant the engage ran. Spell_C's cast machinery allocates a
-    // HEAP cast record (0x805010) and the client's sync path reads
-    // [player+0xd0]+0x18; once the engage's record machinery has run, that
-    // pointer is no longer the static walk slot (0xD3C00DFC) our slot write
-    // feeds, so every later targeted cast fails sync resolution. The engage
-    // itself is what we DON'T need: WoW auto-attacks natively the moment any
-    // melee ability lands (18:11 proved the rotation's melee spells engage
-    // without a 6603 cast), and the melee-range gate above already refuses
-    // nonsense engages. DISABLED = detection-only + fail-open: never cast 6603,
-    // never touch [0xd0], never touch selection; return true so the rotation
-    // cycles (auto-attack is handled by the client on melee spell land).
-    // Logged once so this is never a silent fallback.
-    static volatile LONG s_engageNote = 0;
-    if (InterlockedCompareExchange(&s_engageNote, 1, 0) == 0) {
-        RL::Log::Warn("Attack engage DISABLED (round 23): no 6603 cast — client "
-                      "auto-attacks on melee spell land; restores the 18:11-proven "
-                      "sync cast resolution (no heap cast-record flip).");
+    // 2026-08-03 (ROUND 43 — AUTO-ATTACK ENGAGE RE-ENABLED). The round-23
+    // disable ("every session that cast 6603 broke") was observed during the
+    // broken holder-pointer cast era (rounds 18-35): the cast path itself was
+    // failing regardless of 6603, and the only "clean" session (18:11) ran
+    // the raw-GUID invocation — the correlation with 6603 was CONFOUNDED.
+    // Since the round-36 raw-GUID invocation (fn(spellId, 0, lo, hi, 0))
+    // every targeted cast lands (al=1), and casting 6603 through the SAME
+    // SafeNativeCast path is the identical machinery (registerTarget=0 = the
+    // 1.10.86-proven config: ZERO selection touch, no [0xd0] flip). The
+    // user's live report "auto attack casts are not working" requires the
+    // engage: the client only auto-attacks on melee spell land, so a rotation
+    // with no melee ability off-CD (or a target out of melee) NEVER starts
+    // auto-attack. The melee-range gate above (center <= 6) refuses the
+    // nonsense 30yd engage; the idempotency checks above never re-cast while
+    // already attacking the same target. If the raw-GUID cast path breaks
+    // with 6603, revert this block (git) — but it is the same proven call.
+    int nrc = SafeNativeCast(6603, targetGuid, 0);
+    if (nrc > 0) {
+        RL::Log::Warn("Attack engage id=6603 tgt=0x%llX ok",
+                      (unsigned long long)targetGuid);
     }
-    return true;
+    return nrc > 0;
 }
 
 bool AttackTarget() {

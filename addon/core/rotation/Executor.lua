@@ -2109,19 +2109,31 @@ function Executor.attempt_action(action, ctx)
             local okc, cur = pcall(IsCurrentSpell, 6603)
             if okc and cur then already = true end
         end
-        -- Engage ONCE per target: after a successful Act.Attack for a target,
-        -- do not call it again for the same target (prevents the addon from
-        -- re-firing auto-attack every 0.35s — the runtime is also idempotent,
-        -- but this keeps the FIRE log and bookkeeping clean too).
-        local tgt_g = (UnitGUID and UnitGUID("target")) or ""
-        if Executor._aa_target and Executor._aa_target == tgt_g then
-            return false, "already_attacking"
-        end
+        -- 2026-08-03 (AUTO-ATTACK STUCK-CAST FIX — user: "auto attack casts
+        -- are not working"): the old `_aa_target` memo was a PERMANENT latch.
+        -- After the first Act.Attack for a target it returned
+        -- "already_attacking" forever — even at melee range while NOT
+        -- attacking (live: fired once at edge=33.9yd, then "wait
+        -- already_attacking x312" at edge=0-5yd — the player closed to melee
+        -- and auto attack NEVER re-engaged). The runtime IsAttacking check
+        -- above IS the authoritative "already attacking" signal; whenever it
+        -- is false the engage MUST be retried. The latch is removed; the
+        -- 0.35s _recent floor below is the only throttle.
         if already then return false, "already_attacking" end
+        -- 2026-08-03 (MELEE-RANGE GATE): the runtime AttackTargetFor refuses
+        -- engages beyond ~6yd center (it is a staged no-op while far), so
+        -- gating here at the SAME threshold makes the slot wait cleanly
+        -- instead of staging a pointless engage + FIRE log every 0.35s while
+        -- the player closes. Measured center from the live context; an
+        -- unknown/undetermined center is left to the runtime authority (the
+        -- engage attempt falls through — never a false pre-block).
+        local _aa_center = ctx and tonumber(ctx.target_distance_center)
+        if _aa_center and _aa_center > 0 and _aa_center < 900 and _aa_center > 6.0 then
+            return false, "oor"
+        end
         if Act.Attack then
             pcall(Act.Attack)
             Executor._last_cast = { sid = 6603, name = "Auto Attack", via = "Attack", t = now(), evidence = "attack" }
-            Executor._aa_target = tgt_g
             -- Short re-engage floor only (not 0.75 — felt like rotation delay).
             Executor._recent = Executor._recent or {}
             Executor._recent[sid] = now() + 0.35

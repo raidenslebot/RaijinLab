@@ -854,3 +854,59 @@ closed), `live_range_model pr/tr or 1.5` (now fail closed), the +1yd
    `UNPLACEABLE` all name real gaps to fix, not things to paper over.
 6. Commits: every round is committed to the repo (round 10-17 = 78ce247,
    round 18 = ee3b675).
+
+---
+
+## 2026-08-02 (19th round, 19:01 session) — CHARMED SPAM + AURA SEARCH FREEZE → 1.10.84-ccface
+
+The 19:01 session exposed three defects. ALSO: the repo was never pushed —
+51 commits sat local-only (GitHub showed nothing). Pushed `c0dba11..f68335f`
+this round; every commit now goes to origin.
+
+### Defect A — charmed refusal spammed at ~100 Hz
+The player was charmed; every cast refused "Can't attack while charmed".
+`apply_pending_refuse`'s catch-all "Other refuses" path never floored the
+spell (`_recent[sid]` never set) → Plague Strike re-fired every ~10ms for the
+whole session. FIX:
+1. New CHARMED/CC refusal branch (matches charmed / can't attack / mind
+   control / feared / stunned / can't do that): floors the spell AND sets
+   `Executor._player_cc_until`.
+2. The "Other refuses" path NOW ALWAYS floors the refused spell (0.6s) — an
+   unrecognized refusal can never hammer the client again.
+3. Player-CC gate in the tick: while charmed (`UnitIsCharmed("player")` or a
+   recent charmed refusal) the rotation enters a visible `wait_cc` state and
+   casts NOTHING until the charm clears — no 100 Hz spam, no starving lower
+   priority slots (the spam starved Icy Touch/aura search).
+
+### Defect B — "aura search did not cast at all" + "wait facing:X" freeze
+`OM::IsFacing` returned a CONFIDENT `false` whenever either the player's or
+the target's position was unmeasured (0,0). The addon's facing gates then
+blocked every cast to a not-yet-placed unit ("wait facing:Blood Strike"
+forever). FIX (fail-open):
+- `OM::IsFacing` is now TRI-STATE: 1 = facing, 0 = measured not-facing,
+  -1 = UNDETERMINED (unmeasurable position/facing).
+- Dispatch `ObjectIsFacing` pushes `nil` for undetermined.
+- The addon's two facing gates (candidate + target-relative) now block ONLY
+  on `facing == false` — undetermined ALLOWS (client is the final authority;
+  a refused cast is one phantom, a false freeze is forever). Matches the
+  `is_facing_guid` contract: "Multi-dot MUST cast when nil. Only skip when
+  false."
+
+### Defect C — remaining ranged tolerance in the aura-search range gate
+`live_castable`'s aura-search range check still had `tol = melee and 0.5 or
+1.5` (`center > band + tol`). Removed: `center > band` → oor (perfect range;
+a 20yd spell never casts at 21.5yd).
+
+### Live watchlist (1.10.84-ccface)
+1. VER reads `1.10.84-ccface`.
+2. If the player gets charmed/feared/stunned the rotation shows `wait wait_cc`
+   (quiet 5s heartbeat) and casts NOTHING — NO "Can't attack while charmed"
+   spam. It resumes the instant the charm clears.
+3. Aura search casts on found targets even when there is no current target —
+   no `wait facing` freeze (undetermined facing allows; only a measured
+   not-facing blocks, and even that is a 1-tick fail-open skip).
+4. Icy Touch never casts beyond `min(condition range, real Spell.dbc range)`
+   — no tolerance slack.
+5. NO spam of ANY refusal reason (every refusal path now floors the spell).
+6. Repo is pushed: `66fb023` (round 19) on origin/main. GitHub shows the
+   changes.

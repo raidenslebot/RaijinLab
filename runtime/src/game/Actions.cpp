@@ -280,44 +280,44 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // VerifiedPlayerPtr is correct) and charm=0 (the player is NOT charmed —
         // the round-22 charm was contaminated by the then-active 6603 engage).
         //
-        // The round-22 write itself was unsafe because it wrote through
-        // [player+0xd0] WITHOUT verifying the record. ROUND 24 adds a record
-        // SIGNATURE check before writing: the client builds its cast records
-        // with the CASTER GUID at [rec+0x10]/[rec+0x14] (0x80CDD4:
-        // mov eax,[edi+8]; mov [esi+0x10],[eax]; mov [esi+0x14],[eax+4]) and
-        // the player's GUID lives at [[player+0x8]]. If [rec+0x10/0x14] ==
-        // player GUID, rec IS the player's cast record -> writing the victim
-        // GUID into [rec+0x18/+0x1c] (the sync path's primary slot) and
-        // [rec+0x28/+0x2c] (its zero-fallback slot) is exactly the semantic the
-        // client uses. If the signature does NOT match, the write is SKIPPED
-        // (never write through an unverified record — round 20's rule).
-        // Native-hook context only (held==0); never from the Lua VM.
+        // ROUND 24's caster-GUID signature check was TOO STRICT: the live diag
+        // proved [player+0xd0] is an EMPTY heap record (r8=0 r10=0 r18=0 r28=0
+        // s20=0 — no caster GUID to match), so every write was skipped and every
+        // cast still refused "Invalid target" al=0.
+        // ROUND 25 relaxes the check to what the EMPTY record actually is:
+        //   - rec must be a valid readable pointer;
+        //   - [rec] (vtable slot) must NOT be in .text (0x400000..0x9DE400) —
+        //     a live CGObject always has its vtable there, an empty cast record
+        //     has 0;
+        //   - the sync slots [rec+0x18/+0x1c] must be EMPTY — we never overwrite
+        //     an existing GUID the client already placed there.
+        // When all hold, rec is an unused/pre-allocated cast record and seeding
+        // the sync target GUID slots ([rec+0x18/+0x1c] primary, [rec+0x28/+0x2c]
+        // the client's zero-fallback at 0x80CD5B) is exactly the semantic the
+        // client uses for its own casts. Otherwise the write is SKIPPED (never
+        // write through an unverified record — round 20's rule). The round-22
+        // charmed corruption was the engage's 6603 write (charm=0 now with the
+        // engage disabled); if this write ever corrupts, the post-write CastDiag
+        // shows charm=1 immediately. Native-hook context only (held==0).
         if (held == 0) {
             uintptr_t vplayer = OM::VerifiedPlayerPtr();
             if (vplayer) {
                 uintptr_t recPtr = Mem::Read<uintptr_t>(vplayer + 0xD0);
                 if (recPtr && recPtr >= 0x10000u) {
-                    uint32_t rec10 = Mem::Read<uint32_t>(recPtr + 0x10);
-                    uint32_t rec14 = Mem::Read<uint32_t>(recPtr + 0x14);
-                    uint32_t pguidLo = 0, pguidHi = 0;
-                    uintptr_t pgp = Mem::Read<uintptr_t>(vplayer + 0x8);
-                    if (pgp && pgp >= 0x10000u) {
-                        pguidLo = Mem::Read<uint32_t>(pgp);
-                        pguidHi = Mem::Read<uint32_t>(pgp + 4);
-                    }
-                    if (rec10 == pguidLo && rec14 == pguidHi) {
-                        // rec is the player's cast record (caster GUID match) —
-                        // safe to seed the sync target GUID slots.
+                    uint32_t recVT = Mem::Read<uint32_t>(recPtr + 0x0);
+                    uint32_t r18 = Mem::Read<uint32_t>(recPtr + 0x18);
+                    uint32_t r1c = Mem::Read<uint32_t>(recPtr + 0x1C);
+                    bool liveObj = (recVT >= 0x400000u && recVT < 0x9DE400u);
+                    if (!liveObj && r18 == 0 && r1c == 0) {
                         Mem::Write<uint32_t>(recPtr + 0x18, lo);
                         Mem::Write<uint32_t>(recPtr + 0x1C, hi);
                         Mem::Write<uint32_t>(recPtr + 0x28, lo);
                         Mem::Write<uint32_t>(recPtr + 0x2C, hi);
                     } else {
-                        // Signature mismatch — NEVER write through this record.
-                        RL::Log::Warn("CastDiag rec-MISMATCH id=%d rec10=%08X%08X "
-                                      "pg=%08X%08X skip-sync-write",
-                                      spellId, (unsigned)rec14, (unsigned)rec10,
-                                      (unsigned)pguidHi, (unsigned)pguidLo);
+                        RL::Log::Warn("CastDiag rec-UNSAFE id=%d vt=%08X "
+                                      "r18=%08X%08X skip-sync-write",
+                                      spellId, (unsigned)recVT,
+                                      (unsigned)r1c, (unsigned)r18);
                     }
                 }
             }
@@ -344,10 +344,11 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 if (mlo || mhi) castPlayer = OM::ObjectPtr3Guid(mlo, mhi, 0x10);
                 uintptr_t camPlayer = OM::CameraPlayerPtrEx();
                 uintptr_t recPtr = 0;
-                uint32_t r8 = 0, rc = 0, r10 = 0, r14 = 0, r18 = 0, r1c = 0, r28 = 0, r2c = 0, spellAt20 = 0;
+                uint32_t rv = 0, r8 = 0, rc = 0, r10 = 0, r14 = 0, r18 = 0, r1c = 0, r28 = 0, r2c = 0, spellAt20 = 0;
                 if (castPlayer) {
                     recPtr = Mem::Read<uintptr_t>(castPlayer + 0xD0);
                     if (recPtr && recPtr >= 0x10000u) {
+                        rv = Mem::Read<uint32_t>(recPtr + 0x0);
                         r8 = Mem::Read<uint32_t>(recPtr + 0x8);
                         rc = Mem::Read<uint32_t>(recPtr + 0xC);
                         r10 = Mem::Read<uint32_t>(recPtr + 0x10);
@@ -366,12 +367,13 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 }
                 RL::Log::Warn("CastDiag id=%d guid=%08X%08X mgr=0x%lX mguid=%08X%08X "
                               "castP=0x%lX camP=0x%lX rec=0x%lX static=%d "
-                              "r8=%08X%08X r10=%08X%08X r18=%08X%08X r28=%08X%08X "
+                              "vt=%08X r8=%08X%08X r10=%08X%08X r18=%08X%08X r28=%08X%08X "
                               "s20=%u flags=%08X charm=%d",
                               spellId, (unsigned)hi, (unsigned)lo,
                               (unsigned long)mgr, (unsigned)mhi, (unsigned)mlo,
                               (unsigned long)castPlayer, (unsigned long)camPlayer,
                               (unsigned long)recPtr, (recPtr == 0xD3C00DFCu),
+                              (unsigned)rv,
                               (unsigned)rc, (unsigned)r8, (unsigned)r14, (unsigned)r10,
                               (unsigned)r1c, (unsigned)r18, (unsigned)r2c, (unsigned)r28,
                               spellAt20,

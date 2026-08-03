@@ -1153,3 +1153,52 @@ The client builds its cast records with the CASTER GUID at `[rec+0x10]/
 5. NO "Can't attack while charmed"; rotation cycles; Consecration still lands.
 6. If `CastDiag rec-MISMATCH` appears, the record signature didn't match —
    that names the next thing to fix.
+
+---
+
+## 2026-08-02 (24th round, 20:38 session) — the record is EMPTY → 1.10.90-emptyrec
+
+1.10.89 live (20:38): the record-signature check was TOO STRICT — the live diag
+proved `[player+0xd0]` is an **EMPTY heap record**:
+
+```
+CastDiag rec-MISMATCH id=45513 rec10=0 pg=0xDB53 skip-sync-write
+CastDiag id=45513 ... castP=0x6D64FDA8 camP=0x6D64FDA8 rec=0x6D651718 static=0
+r8=0 r10=0 r18=0 r28=0 s20=0 flags=0 charm=0
+```
+
+- castP==camP (resolution correct), charm=0 (no corruption, no false charmed —
+  the engage removal held).
+- rec=[player+0xd0]=0x6D651718 is a HEAP record and it is **COMPLETELY EMPTY**
+  (all slots 0 — no caster GUID at +0x10 to match, so the caster-GUID signature
+  check skipped every write).
+- Every targeted cast still refused "Invalid target" al=0; the rotation spammed
+  attempts; the user's manually-selected target stayed until an aura-search
+  cast failed and dropped it. Root cause is unchanged: the sync resolution
+  (0x80CD4A) needs the victim GUID at [rec+0x18] and it is empty.
+
+### FIX (1.10.90-emptyrec) — write the EMPTY record's sync slots
+Relaxed the safety check to match what the empty record IS:
+- rec is a valid readable pointer;
+- `[rec]` (vtable slot) is NOT in .text (0x400000..0x9DE400) — a live CGObject
+  always has its vtable there; an empty cast record has 0. This is the strong
+  guard against writing through a live object.
+- the sync slots `[rec+0x18/+0x1c]` are EMPTY — never overwrite a GUID the
+  client already placed.
+When all hold, seed the sync target slots [rec+0x18/+0x1c] (primary) and
+[rec+0x28/+0x2c] (the client's zero-fallback at 0x80CD5B) with the victim GUID.
+The round-22 charmed corruption was the engage's 6603 write — with the engage
+disabled and charm=0 confirmed, this write should be clean; the post-write
+CastDiag (now logs the vtable slot `vt=`) shows charm=1 immediately if it ever
+corrupts.
+
+### Live watchlist (1.10.90-emptyrec)
+1. VER reads `1.10.90-emptyrec`.
+2. **Unit-targeted casts LAND (`al=1`)** — the empty record now carries the
+   victim GUID, so 0x80CD4A resolves it.
+3. **Target NEVER dropped** — not by manual selection, not by aura search
+   (the drop was the failed cast).
+4. NO false charmed (charm stays 0 in CastDiag); no XPerl flood.
+5. Rotation cycles: FIRE → landed instead of FIRE → phantom_grace → retry.
+6. If `CastDiag rec-UNSAFE` appears, [rec] had a .text vtable (live object) —
+   that names the next thing to fix.

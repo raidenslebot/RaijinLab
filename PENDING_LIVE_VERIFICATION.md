@@ -1527,3 +1527,56 @@ SafeNativeCast rc=0x4C658800 al=0
 6. `gate=0 entry=1 busyV=0 busyP=0 d4139c=0` but still al=0 → the failure is
    in the POST-canCast checks (0x50f4d0(2) at 0x80D077, or the 0x80D087+
    target checks) — next probe target.
+
+---
+
+## 2026-08-02 (32nd round, 22:40 session) — the probe EXONERATES every prior gate; RE finds the 0x50f4d0 MASK GATE → 1.10.98-maskgate
+
+1.10.97 live (22:40) — the definitive probe data:
+```
+CastProbe id=45477 mode=6 ... entry=1 a0=0000B1A5 a10=00050000 a28=02000000
+           fam=2 gate=0 d4139c=00000000 a4=00000000 obj1250=00000000
+           busyV=0 busyP=0 a30V=000D0100 f60V=00000000 a30P=0C0D0500 ...
+SafeNativeCast rc=0x4C2F9400 al=0
+CastProbe id=45513 mode=2 ... a0=0000B1C9 a10=00050010 a28=02000000 fam=79 ...
+           d4139c=00000000 ... busyV=0 busyP=0 ... rc=0x4C2F9400 al=0
+```
+- `entry=1`, `gate=0`, **`d4139c=00000000`** (canCast gate CLEAR → canCast
+  passes), **`busyV=0`/`busyP=0`** (both busy gates pass), `a30V` bit 0x400
+  clear. EVERY previously-suspected gate is EXONERATED — yet al=0.
+- The "Invalid target" spam at 22:40:58 was just the target DYING (rotation
+  went `target_dead` right after) — the real bug is the SILENT refusal on the
+  LIVE target (rc=0x4C2F9400, no error UI).
+- `a28=02000000` → bit 0x40000 CLEAR → the sync path is SKIPPED; the victim
+  goes into the new cast record via [guidPtr+8]. edi stays the player object.
+
+### THE GATE (RE, disasm-verified)
+- `0x50F4D0(arg)`: `if [0xBEAF4C]==0 → return 1; return ([0xBEAF44] &
+  (1<<arg)) ? 1 : 0`. Spell_C calls `0x50f4d0(2)` at 0x80D077 **only when
+  [entry+0x238]!=0** — unit-targeted spells have it non-zero; ground/self
+  casts like Consecration have it 0 and SKIP the gate (why Consecration
+  always lands while every unit-targeted spell is silently refused).
+- `0x50f4d0(2)==0` → jump 0x80D249 (SILENT fail; rc = 0x805100's return,
+  matches the observed 0x4C2F9400).
+- `[0xBEAF4C]` = client "input/action locked" flag; `[0xBEAF44]` = allowed-
+  action bitmask. The client's OWN action handlers (0x525Bxx: movement /
+  target actions) do the same check and — crucially — TEMPORARILY set their
+  mask bit, act, then CLEAR it (`and [0xBEAF44], 0xFFFFFFDF`). They also
+  refuse when locked && bit clear (same silent pattern).
+
+### FIX (1.10.98-maskgate)
+Replicate the client's own handler pattern for Spell_C: temporarily set
+`[0xBEAF44] |= 4` (bit 2 = the arg-2 gate) for the synchronous duration of
+Spell_C, restore after. Page committed first (idempotent, same BSS tail as
+0xD3F604). Transient 0xBD07B0 selection (round 32) stays.
+
+### Live watchlist (1.10.98-maskgate)
+1. VER reads `1.10.98-maskgate`.
+2. `al=1` → **THE MASK GATE WAS IT — casts land** (this is the client's own
+   set-bit pattern, highest-confidence fix yet).
+3. Probe now also shows `e238` ([entry+0x238], gate-enable) and `beaf44`/
+   `beaf4c` (the gate inputs). Expect `e238!=0` + `beaf4c!=0` + `beaf44&4==0`
+   for unit spells and `e238==0` for Consecration — that pattern CONFIRMS
+   the gate.
+4. If still al=0 with `beaf44&4==1` (we set it) → the fail moved past
+   0x50f4d0 → next is the 0x80D334+ cast-build region.

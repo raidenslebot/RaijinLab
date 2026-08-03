@@ -70,6 +70,17 @@ static void EnsureBlockedCounterCommitted() {
     }
 }
 
+// 2026-08-02 (ROUND 33): the 0x50f4d0 mask-gate globals [0xBEAF44]/[0xBEAF4C]
+// live in the SAME uncommitted .data BSS tail as 0xD3F604 — commit the page
+// once (idempotent) so the bit-2 allow-write is real.
+static void EnsureBeafPageCommitted() {
+    static volatile LONG s_committed = 0;
+    if (InterlockedCompareExchange(&s_committed, 1, 0) == 0) {
+        LPVOID page = (LPVOID)(0x00BEAF44u & ~0xFFFu);
+        VirtualAlloc(page, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
+    }
+}
+
 // Forward declarations of OUTER-namespace helpers (defined at 0x.../below).
 // Kept outside the anonymous namespace: ReadClientTargetGuid (line ~783) and
 // ArmSelectionRestore (line ~942) are defined in RL::Game::Actions, so
@@ -452,7 +463,9 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 // skew the canCast [0xD4139C] gate we are measuring).
                 int entryFound = 0;
                 uint32_t attr0 = 0, attr10 = 0, attr28 = 0, fam = 0;
-                uint32_t gate = 0;
+                uint32_t e238 = 0;  // [entry+0x238]: 0 => the 0x50f4d0 mask
+                uint32_t gate = 0;  // gate is SKIPPED (ground/self casts like
+                                    // Consecration); non-zero => it RUNS.
                 {
                     uint8_t fb = 0; uint32_t a28 = 0; uint32_t eptr = 0;
                     int sr = SpellTableEntryRead(spellId, &fb, &a28, &eptr);
@@ -462,9 +475,15 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                         attr10 = Mem::Read<uint32_t>(eptr + 0x10);
                         attr28 = a28;
                         fam    = Mem::Read<uint32_t>(eptr + 0x11C);
+                        e238   = Mem::Read<uint32_t>(eptr + 0x238);
                         gate   = (attr10 & 0x40u) != 0;
                     }
                 }
+                // 0x50f4d0(2) mask-gate inputs (0x80D077, silent al=0 via
+                // 0x80D249 when it returns 0): [0xBEAF4C] = input/action
+                // locked, [0xBEAF44] = allowed-action mask (bit 2 = spell).
+                uint32_t beaf44 = Mem::Read<uint32_t>(0x00BEAF44);
+                uint32_t beaf4c = Mem::Read<uint32_t>(0x00BEAF4C);
                 uint32_t bd078c = Mem::Read<uint32_t>(0xBD078C);
                 uint32_t bd124c = 0, bd1250 = 0;
                 if (bd078c >= 0x10000u) {
@@ -504,7 +523,8 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 RL::Log::Warn("CastProbe id=%d mode=%d desc40=%08X r8=0x%lX r1=0x%lX "
                               "entry=%d a0=%08X a10=%08X a28=%08X fam=%X gate=%d "
                               "d4139c=%08X a4=%08X obj1250=%08X busyV=%d busyP=%d "
-                              "a30V=%08X f60V=%08X a30P=%08X f60P=%08X",
+                              "a30V=%08X f60V=%08X a30P=%08X f60P=%08X "
+                              "e238=%08X beaf44=%08X beaf4c=%08X",
                               spellId, mode, (unsigned)desc40,
                               (unsigned long)r8, (unsigned long)r1,
                               entryFound, (unsigned)attr0, (unsigned)attr10,
@@ -512,29 +532,36 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                               (unsigned)d4139c, (unsigned)d413a4,
                               (unsigned)bd1250, busyV, busyP,
                               (unsigned)a30V, (unsigned)f60V,
-                              (unsigned)a30P, (unsigned)f60P);
+                              (unsigned)a30P, (unsigned)f60P,
+                              (unsigned)e238, (unsigned)beaf44,
+                              (unsigned)beaf4c);
             }
         }
-        // ROUND 32 — TRANSIENT SELECTION (0xBD07B0) for acquire-off casts.
-        // Round-13 matrix PROVED register(0x524BF0)+Spell_C(GUID) = casts
-        // land; rounds 28-31 (no register) = al=0. 0x524BF0's only observable
-        // difference vs our desc+0x40 write is the client selection pair
-        // 0xBD07B0/0xBD07B4 — which the game's cast commit state ALSO uses
-        // (kPendingCastLo/Hi). The user requires acquire-off to NEVER change
-        // the visible target — so instead of the real register (which fires
-        // selection events), write the victim into the selection pair for the
-        // SYNCHRONOUS duration of Spell_C and restore the user's previous
-        // selection immediately after. No frame update runs inside this
-        // native call, so the unitframe never renders the intermediate value
-        // and no UNIT_TARGET event fires. Desc+0x40 is written above (feeds
-        // the sync resolution); this write feeds selection/commit paths.
+        // ROUND 33 — MASK GATE (0x50F4D0) + TRANSIENT SELECTION.
+        // Spell_C calls 0x50f4d0(2) at 0x80D077 — but ONLY when
+        // [entry+0x238]!=0, which unit-targeted spells have (ground/self
+        // casts like Consecration skip it — that is why they land while
+        // EVERY unit-targeted spell is silently refused). 0x50f4d0(2)
+        // returns 0 (SILENT al=0 via the 0x80D249 epilogue; rc = 0x805100's
+        // return, e.g. 0x4C2F9400) whenever [0xBEAF4C]!=0 (input/action
+        // locked) AND [0xBEAF44]&4==0 (bit 2 not allowed). The client's own
+        // action handlers (0x525Bxx) temporarily set their mask bit, act,
+        // then clear it (`and [0xBEAF44], 0xFFFFFFDF`) — we replicate that
+        // for bit 2 around Spell_C. The transient 0xBD07B0 selection write
+        // (round 32, commit 'pending' pair) stays for acquire-off.
         uint32_t selLo = Mem::Read<uint32_t>(0x00BD07B0);
         uint32_t selHi = Mem::Read<uint32_t>(0x00BD07B4);
-        bool wroteSel = false;
+        uint32_t maskLo = Mem::Read<uint32_t>(0x00BEAF44);
+        bool wroteSel = false, wroteMask = false;
         if (registerTarget == 0 && (selLo != lo || selHi != hi)) {
             Mem::Write<uint32_t>(0x00BD07B0, lo);
             Mem::Write<uint32_t>(0x00BD07B4, hi);
             wroteSel = true;
+        }
+        if ((maskLo & 4u) == 0) {
+            EnsureBeafPageCommitted();
+            Mem::Write<uint32_t>(0x00BEAF44, maskLo | 4u);
+            wroteMask = true;
         }
         int rc = fn(spellId, 0, guidPtr, 0, 0);
         if (wroteSel) {
@@ -542,6 +569,10 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             // frame rendered between the write and this restore).
             Mem::Write<uint32_t>(0x00BD07B0, selLo);
             Mem::Write<uint32_t>(0x00BD07B4, selHi);
+        }
+        if (wroteMask) {
+            // Clear the temporarily-allowed bit — the client's own pattern.
+            Mem::Write<uint32_t>(0x00BEAF44, maskLo);
         }
         if (descPtr) {
             // Restore the player's UNIT_FIELD_TARGET (invisible field) after

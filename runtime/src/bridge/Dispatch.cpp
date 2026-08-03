@@ -34,7 +34,7 @@ namespace {
 // from inside the Lua VM when the cache was stale → VM corruption (crash.fatal
 // eip=0x512B07 right after a clean CastQueue DRAIN + GatherMate2/XPerl UI-error
 // cascade). Only the native frame hook resolves via the camera now.
-const char* kVersion = "1.10.97-selprobe";
+const char* kVersion = "1.10.98-maskgate";
 
 // ---- Crash forensics: ring buffer of the last bridge calls ----------------
 // The CrashHandler in main.cpp dumps this on ANY access violation so the

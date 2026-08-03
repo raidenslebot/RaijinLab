@@ -427,6 +427,32 @@ SelfTest.CHECKS = {
         end,
     },
     {
+        name = "facing_field_is_live",
+        why = "the runtime read the orientation at +0x7AC, which live RE proved "
+           .. "is NOT the facing field (it read -0.8296 while the client said "
+           .. "1.8380); the real value is +0x7A8. Reading the wrong one made "
+           .. "every verdict undetermined, so the facing gate could never fire "
+           .. "and face-checked casts wired into 'You are facing the wrong way!'",
+        run = function(call)
+            if not GetPlayerFacing then return nil, "no GetPlayerFacing here" end
+            local truth = GetPlayerFacing()
+            if type(truth) ~= "number" then return nil, "client gave no facing" end
+            local f = call("PlayerFacing")
+            if type(f) ~= "number" then return false, "PlayerFacing not wired" end
+            if f >= 1e8 then
+                return false, "UNDETERMINED (1e9) - the facing cache is not being "
+                    .. "populated, so the facing gate cannot fire at all"
+            end
+            local d = math.abs(f - truth)
+            if d > 3.14159 then d = math.abs(d - 6.28318) end
+            if d > 0.05 then
+                return false, string.format("runtime %.4f vs client %.4f (off %.4f rad)",
+                    f, truth, d)
+            end
+            return true, string.format("%.4f matches the client (%.4f)", f, truth)
+        end,
+    },
+    {
         name = "castreq_ground_truth",
         why = "SpellCastReq drives every data-driven basic check; its layout "
            .. "was cracked against stock spells - verify two anchors in vivo",

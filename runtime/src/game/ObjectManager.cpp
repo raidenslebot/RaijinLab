@@ -1168,15 +1168,29 @@ void RefreshLiveFacingCache() {
     // (round 41) so a 0.0 read is UNDETERMINED (falls through to the object
     // paths; if all fail, the cache stays 1e9 → ObjectIsFacing → nil →
     // fail-open). A verdict is CONFIDENT only from a real non-zero read.
+    // 0.0 IS A REAL FACING (due north) - 2026-08-03.
+    //
+    // The zero-rejection added in round 46 was compensating for reading the
+    // WRONG FIELD. Live RE against GetPlayerFacing (truth=1.8380) proved the
+    // orientation lives at +0x7A8: 0x7A4 read -0.0000 and 0x7AC read -0.8296,
+    // i.e. the runtime was reading garbage one float past the real value. That
+    // garbage was rejected by the range test, producing a permanent 1e9
+    // (undetermined) verdict - so the addon's facing gate could never fire and
+    // every face-checked cast wired into the client's own refusal; and whenever
+    // the garbage happened to land inside [-0.01, 6.30] it was accepted as a
+    // CONFIDENT WRONG facing, which is "You are facing the wrong way!".
+    //
+    // With the correct field, zero means the player faces north. Rejecting it
+    // would discard a legitimate reading and reintroduce undetermined verdicts.
     if (cam) {
         float v = Mem::Read<float>(cam + 0x11C);
-        if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
+        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
     }
     // Path 1 — client's exact path object field, only when no camera facing.
     if (f >= 1e8f && (clo || chi)) obj = CallObjectPtr3(clo, chi, 1);
     if (f >= 1e8f && obj) {
-        float v = Mem::Read<float>(obj + 0x7AC);
-        if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
+        float v = Mem::Read<float>(obj + 0x7A8);
+        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
     }
     // Path 3 — GetActive player object (mask 0x10 = player).
     if (f >= 1e8f) {
@@ -1184,8 +1198,8 @@ void RefreshLiveFacingCache() {
         if (active) {
             uintptr_t pobj = CallObjectPtr3((uint32_t)active, (uint32_t)(active >> 32), 0x10);
             if (pobj) {
-                float v = Mem::Read<float>(pobj + 0x7AC);
-                if (!(v != v) && !(v > -0.0001f && v < 0.0001f) && v >= -0.01f && v <= 6.30f) f = v;
+                float v = Mem::Read<float>(pobj + 0x7A8);
+                if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
             }
         }
     }
@@ -1199,7 +1213,7 @@ void RefreshLiveFacingCache() {
         float localFallback = 1e9f;
         uintptr_t lp = RL::Game::OM::LocalPtr();
         if (lp) {
-            float v = RL::Game::Mem::Read<float>(lp + 0x7AC);
+            float v = RL::Game::Mem::Read<float>(lp + 0x7A8);
             if (!(v != v) && v >= -0.01f && v <= 6.30f) localFallback = v;
         }
         RL::Log::Warn("FacingLive: cam=0x%lX guid=%08X%08X obj=0x%lX face=%.4f active=0x%llX local=%.4f",
@@ -1219,9 +1233,8 @@ float FacingLiveLocal() {
     // blocked engaged players / wired spells the client refused). The pure
     // read contract: only a real non-zero value is a facing; everything else
     // is 1e9 = undetermined.
-    if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f
-        && !(g_liveFacingCache > -0.0001f && g_liveFacingCache < 0.0001f))
-        return g_liveFacingCache;
+    if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f)
+        return g_liveFacingCache;   // 0.0 = due north, a real reading
     return 1e9f; // undetermined — never resolve from the VM (0x512B07 rule)
 }
 
@@ -1568,7 +1581,11 @@ static inline bool LooksLikeFacingEarly(float f) {
     // |f| below epsilon as UNDETERMINED so IsFacing returns -1 and the addon
     // lets the client decide. A player genuinely facing exactly 0.0 is
     // vanishingly rare and self-corrects the instant a real read lands.
-    if (f > -0.0001f && f < 0.0001f) return false;
+    // 2026-08-03: zero-sentinel REMOVED. It existed because the runtime read
+    // +0x7AC, which live RE proved is NOT the orientation field (it read
+    // -0.8296 while GetPlayerFacing returned 1.8380; the real value is +0x7A8).
+    // On the correct field 0.0 means facing due north - a legitimate reading,
+    // and discarding it is what kept the verdict permanently undetermined.
     return true;
 }
 static float AngleDiffRad(float from, float to) {
@@ -2630,7 +2647,11 @@ static inline bool LooksLikeFacing(float f) {
     // 2026-08-02 (00:11): same 0.0 sentinel fix as LooksLikeFacingEarly — a
     // zero facing read is a failed read, never a real orientation. Keeping it
     // prevented Facing(player) from ever returning the broken 0 as 'valid'.
-    if (f > -0.0001f && f < 0.0001f) return false;
+    // 2026-08-03: zero-sentinel REMOVED. It existed because the runtime read
+    // +0x7AC, which live RE proved is NOT the orientation field (it read
+    // -0.8296 while GetPlayerFacing returned 1.8380; the real value is +0x7A8).
+    // On the correct field 0.0 means facing due north - a legitimate reading,
+    // and discarding it is what kept the verdict permanently undetermined.
     return true;
 }
 
@@ -2648,7 +2669,7 @@ float Facing(uint64_t guid) {
         if (live < 1e8f) return live;
         uintptr_t p = LocalPtr();
         if (p) {
-            float f = Mem::Read<float>(p + 0x7AC);
+            float f = Mem::Read<float>(p + 0x7A8);
             if (LooksLikeFacing(f)) return f;
         }
         if (const Object* o = SnapByGuid(guid)) {

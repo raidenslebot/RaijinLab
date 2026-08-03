@@ -838,7 +838,7 @@ constexpr uintptr_t kTurnByDelta        = 0x005FB4B0;  // __thiscall(ctrl, token
 constexpr uintptr_t kCtrlFacingValid    = 0x4C;        // ctrl+0x4C != 0 => ctrl+0x50 is the cached (stale) facing
 constexpr uintptr_t kCtrlFacing         = 0x50;
 constexpr uintptr_t kVtblGetFacing      = 0x14C;       // player vtable[0x14C] = GetFacing() -> float (st0)
-constexpr uintptr_t kPlayerFacingLive   = 0x7AC;       // CMovement+0x24: the LIVE local-player facing (rad)
+constexpr uintptr_t kPlayerFacingLive   = 0x7A8;       // CMovement+0x24: the LIVE local-player facing (rad)
 
 using fnApply = int(__thiscall*)(void* ecx, void* p, int a);
 using fnTurnByDelta = void(__thiscall*)(void* ctrl, int token, float deltaRad);
@@ -1584,7 +1584,7 @@ bool FaceDirection(float radians) {
     // VirtualQuery-guarded writes — no __try dependency (SEH broken under stealth).
     uintptr_t p = OM::LocalPtr();
     if (p) {
-        Mem::Write<float>(p + 0x7AC, radians);
+        Mem::Write<float>(p + 0x7A8, radians);
         Mem::Write<float>(p + 0x7A4, radians);
     }
     OM::FaceDirection(radians);

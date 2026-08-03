@@ -5020,6 +5020,10 @@ local function good(name, a, b, c, d, e, f)
     -- visible mock auras present, plus one hidden aura UnitBuff never lists -
     -- the check must tolerate extras and fail only on a MISSING visible aura.
     if name == "UnitAuras" then return "3|1459:2:60000|172:1:30000|9999:1:0|src=d" end
+    -- PlayerFacing must agree with the client's own facing. The runtime read
+    -- +0x7AC, which live RE proved is not the orientation field, so this
+    -- returned 1e9 (undetermined) forever and the facing gate could not fire.
+    if name == "PlayerFacing" then return 1.8380 end
     if name == "SpellCastReq" then
         if a == 6603 then
             return "sid=6603|found=1|attr=0x10|targets=0x0|facing=0|castidx=1"
@@ -5037,6 +5041,7 @@ local function good(name, a, b, c, d, e, f)
 end
 
 -- the client aura API the aura_walk check compares against
+function GetPlayerFacing() return 1.8380 end
 function UnitBuff(unit, i)
     if i == 1 then return "MockBuff", "", "", 2, nil, 60, 0, "player", nil, nil, 1459 end
 end
@@ -5077,6 +5082,13 @@ dc("stale resident DLL detected", m["runtime_version"].ok == false)
 -- MUTATIONS for the aura walk: (a) a walk that cannot validate (src=n) is a
 -- failure of the direct path; (b) a walk MISSING a client-visible aura is the
 -- layout indictment. Both must fail; hidden extras alone must not.
+-- The facing field: an undetermined read (the +0x7AC symptom) and a read that
+-- disagrees with the client must both FAIL - that check is the only thing that
+-- would have caught the wrong offset.
+m = rows_by_name(SelfTest.evaluate(with({ PlayerFacing = 1e9 }), opts))
+dc("facing undetermined -> FAIL", m.facing_field_is_live.ok == false)
+m = rows_by_name(SelfTest.evaluate(with({ PlayerFacing = -0.8296 }), opts))
+dc("facing disagreeing with the client -> FAIL", m.facing_field_is_live.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "0|src=n" }), opts))
 dc("aura walk not validating -> FAIL", m.aura_walk_vs_client.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "1|1459:2:60000|src=d" }), opts))

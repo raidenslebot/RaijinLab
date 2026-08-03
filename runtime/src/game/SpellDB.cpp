@@ -81,8 +81,11 @@ static uint32_t RangeEntry(const uint8_t* decoded, uint32_t* outRi) {
     uint32_t minR = Mem::Read<uint32_t>(kRangeStoreMin);
     uint32_t maxR = Mem::Read<uint32_t>(kRangeStoreMax);
     uint32_t ri = Mem::Read<uint32_t>((uintptr_t)(decoded + 0xB8));
-    if (ri < minR || ri > maxR)
-        ri = Mem::Read<uint32_t>((uintptr_t)(decoded + 0x214));
+    // NO +0x214 FALLBACK: layout crack (2026-08-03) proved +0x214 is the
+    // SpellIconID (Fireball -> 185, its icon). Falling back to it treated an
+    // ICON as a range index - fabricated data that "worked" whenever the icon
+    // number happened to be a valid index. An out-of-table +0xB8 means the
+    // record is not a castable spell's; report unknown, do not invent.
     if (outRi) *outRi = ri;
     uint32_t base = Mem::Read<uint32_t>(kRangeStoreBase);
     if (!base || base < 0x10000u || ri < minR || ri > maxR) return 0;
@@ -144,6 +147,142 @@ std::string SpellMeleeInfo(int spellId) {
     snprintf(buf, sizeof(buf), "found=1|melee=%d|ri=%u|id=%u|flags=0x%08X|min=%.2f|max=%.2f",
              melee, ri, id, flags, minH, maxH);
     return std::string(buf);
+}
+
+// ---- CastReq: the full static gate snapshot -------------------------------
+//
+// Field offsets follow the cracked layout in SpellDB.h. Each is a plain word
+// of the decoded record; nothing here guesses - every offset was pinned by a
+// stock spell whose dbc value is public ground truth.
+namespace rec {
+    constexpr size_t Category        = 0x004;
+    constexpr size_t Dispel          = 0x008;
+    constexpr size_t Mechanic        = 0x00C;
+    constexpr size_t Attr0           = 0x010;  // 0x40=passive, 0x4=on-next-swing
+    constexpr size_t Attr1           = 0x014;
+    constexpr size_t Attr2           = 0x018;
+    constexpr size_t Attr3           = 0x01C;
+    constexpr size_t Attr4           = 0x020;
+    constexpr size_t StancesLo       = 0x030;  // 64-bit shapeshift mask
+    constexpr size_t StancesHi       = 0x034;
+    constexpr size_t StancesNotLo    = 0x038;
+    constexpr size_t StancesNotHi    = 0x03C;
+    constexpr size_t Targets         = 0x040;  // TARGET_FLAG_* (0x40 = dest location)
+    constexpr size_t FacingFlags     = 0x04C;  // 1 = client enforces front arc
+    constexpr size_t CasterAuraState = 0x050;  // reactive requirement (caster)
+    constexpr size_t TargetAuraState = 0x054;  // reactive requirement (target)
+    constexpr size_t CasterAuraSpell = 0x060;  // required aura on caster
+    constexpr size_t TargetAuraSpell = 0x064;  // required aura on target
+    constexpr size_t ExCasterAura    = 0x068;  // forbidden aura on caster
+    constexpr size_t ExTargetAura    = 0x06C;  // forbidden aura on target
+    constexpr size_t CastTimeIdx     = 0x070;  // 1 = instant
+    constexpr size_t RecoveryMs      = 0x074;
+    constexpr size_t CatRecoveryMs   = 0x078;
+    constexpr size_t InterruptFlags  = 0x07C;
+    constexpr size_t DurationIdx     = 0x0A0;
+    constexpr size_t PowerType       = 0x0A4;  // 0 mana 1 rage 3 energy 5 rune 6 RP
+    constexpr size_t ManaCost        = 0x0A8;  // rage/RP stored x10
+    constexpr size_t ManaCostPerLvl  = 0x0AC;
+    constexpr size_t RangeIdx        = 0x0B8;
+    constexpr size_t Speed           = 0x0BC;  // float, projectile
+    constexpr size_t EquipItemClass  = 0x110;  // -1 none, 2 weapon
+    constexpr size_t EquipSubclass   = 0x114;  // mask (Backstab 0x8000 = dagger)
+    constexpr size_t Effect0         = 0x11C;
+    constexpr size_t ImplicitA0      = 0x158;  // 6=enemy 1=caster 25=any 21=ally...
+    constexpr size_t ImplicitA1      = 0x15C;
+    constexpr size_t NamePtr         = 0x220;
+    constexpr size_t GcdCategory     = 0x234;  // StartRecoveryCategory (0 = no GCD)
+    constexpr size_t GcdMs           = 0x238;  // StartRecoveryTime (exact GCD!)
+    constexpr size_t FamilyName      = 0x240;
+    constexpr size_t DmgClass        = 0x250;
+    constexpr size_t PreventionType  = 0x254;  // 1 silence blocks, 2 pacify blocks
+    constexpr size_t SchoolMask      = 0x284;
+    constexpr size_t RuneCostId      = 0x288;  // SpellRuneCost.dbc row (241 = Icy Touch)
+}
+
+static uint32_t W(const uint8_t* r, size_t off) {
+    return Mem::Read<uint32_t>((uintptr_t)(r + off));
+}
+
+std::string CastReq(int spellId) {
+    // Per-sid cache: records are immutable for the session, and the rotation
+    // asks for the same handful of spells 20-30x a second. A tiny open-address
+    // table keeps the steady-state cost at one probe, zero decodes.
+    static constexpr size_t kCacheN = 512;
+    struct Slot { int sid = 0; std::string pack; };
+    static Slot s_cache[kCacheN];
+    size_t h = ((uint32_t)spellId * 2654435761u) % kCacheN;
+    if (s_cache[h].sid == spellId && !s_cache[h].pack.empty())
+        return s_cache[h].pack;
+
+    char buf[1024];
+    uint8_t recb[kRecBytes] = {};
+    int rc = DecodeRecord((uint32_t)spellId, recb);
+    if (rc <= 0) {
+        snprintf(buf, sizeof(buf), "sid=%d|found=%d", spellId, rc);
+        return std::string(buf);   // not cached: the table may still be loading
+    }
+    uint32_t ri = 0;
+    uint32_t re = RangeEntry(recb, &ri);
+    float minH = 0.f, maxH = 0.f;
+    if (re) {
+        minH = Mem::Read<float>((uintptr_t)(re + 0x04));
+        maxH = Mem::Read<float>((uintptr_t)(re + 0x0C));
+        if (maxH < 0.0f || maxH > 500.0f) maxH = Mem::Read<float>((uintptr_t)(re + 0x10));
+    }
+    float speed = 0.f;
+    { uint32_t sw = W(recb, rec::Speed); memcpy(&speed, &sw, 4); }
+    snprintf(buf, sizeof(buf),
+        "sid=%d|found=1|attr=0x%08X|attr1=0x%08X|attr2=0x%08X"
+        "|stances=0x%08X|stancesnot=0x%08X|targets=0x%X|facing=%u"
+        "|casterstate=%u|targetstate=%u|casteraura=%u|targetaura=%u"
+        "|excaster=%u|extarget=%u"
+        "|castidx=%u|cd=%u|catcd=%u|category=%u|interrupt=0x%X"
+        "|power=%u|cost=%u|costlvl=%u|ri=%u|rmin=%.2f|rmax=%.2f|speed=%.1f"
+        "|equipclass=%d|equipmask=0x%X|eff0=%u|ta0=%u|ta1=%u"
+        "|gcdcat=%u|gcd=%u|family=%u|dmgclass=%u|prevent=%u"
+        "|school=0x%X|rune=%u|mech=%u|dispel=%u|duridx=%u",
+        spellId,
+        W(recb, rec::Attr0), W(recb, rec::Attr1), W(recb, rec::Attr2),
+        W(recb, rec::StancesLo), W(recb, rec::StancesNotLo),
+        W(recb, rec::Targets), W(recb, rec::FacingFlags),
+        W(recb, rec::CasterAuraState), W(recb, rec::TargetAuraState),
+        W(recb, rec::CasterAuraSpell), W(recb, rec::TargetAuraSpell),
+        W(recb, rec::ExCasterAura), W(recb, rec::ExTargetAura),
+        W(recb, rec::CastTimeIdx), W(recb, rec::RecoveryMs),
+        W(recb, rec::CatRecoveryMs), W(recb, rec::Category),
+        W(recb, rec::InterruptFlags),
+        W(recb, rec::PowerType), W(recb, rec::ManaCost),
+        W(recb, rec::ManaCostPerLvl), ri, minH, maxH, speed,
+        (int)W(recb, rec::EquipItemClass), W(recb, rec::EquipSubclass),
+        W(recb, rec::Effect0), W(recb, rec::ImplicitA0), W(recb, rec::ImplicitA1),
+        W(recb, rec::GcdCategory), W(recb, rec::GcdMs),
+        W(recb, rec::FamilyName), W(recb, rec::DmgClass),
+        W(recb, rec::PreventionType),
+        W(recb, rec::SchoolMask), W(recb, rec::RuneCostId),
+        W(recb, rec::Mechanic), W(recb, rec::Dispel), W(recb, rec::DurationIdx));
+    std::string out(buf);
+    s_cache[h].sid = spellId;
+    s_cache[h].pack = out;
+    return out;
+}
+
+std::string SpellName(int spellId) {
+    uint8_t recb[kRecBytes] = {};
+    if (DecodeRecord((uint32_t)spellId, recb) <= 0) return "";
+    uint32_t p = Mem::Read<uint32_t>((uintptr_t)(recb + rec::NamePtr));
+    if (!p || p < 0x10000u) return "";
+    char name[128] = {};
+    size_t n = Mem::ReadBytes((uintptr_t)p, (uint8_t*)name, sizeof(name) - 1);
+    if (n == 0) return "";
+    name[sizeof(name) - 1] = '\0';
+    // stop at first non-printable byte: string pointers can dangle mid-load
+    for (size_t i = 0; i < sizeof(name) - 1; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == 0) break;
+        if (c < 0x20) { name[i] = '\0'; break; }
+    }
+    return std::string(name);
 }
 
 } // namespace RL::Game::SpellDB

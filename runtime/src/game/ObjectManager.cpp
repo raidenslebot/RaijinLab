@@ -2024,6 +2024,118 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     return s_cacheOut;
 }
 
+// ---- DIRECT AURA WALK (2026-08-03) ----------------------------------------
+//
+// THE TRUTH IS IN THE UNIT. The note store below (NoteUnitAura et al.) is a
+// SHADOW COPY fed by the addon from combat-log events and throttled token
+// scans - missed events, duration drift ("never shorten on seed"), invisible
+// dispels, three nursing call sites each with its own lag-regression history.
+// That shape can never be consistent, and "aura search is extremely
+// inconsistent" was the live symptom.
+//
+// The client stores every unit's auras in the CGUnit object itself (12340
+// layout): count at unit+0xDD0; when that reads -1 the list is dynamic with
+// count at unit+0xC54 and table pointer at unit+0xC58, otherwise the table is
+// embedded at unit+0xC50. Entries are 0x18 bytes: casterGuid(+0x0),
+// spellId(+0x8), flags(+0xC), level(+0xD), stacks(+0xE), duration(+0x10) and
+// expiry(+0x14) in client ms.
+//
+// VERIFY-THEN-TRUST: these offsets are stock 12340; Ascension may have moved
+// them. AuraProbe exposes the raw walk for live inspection and the addon
+// selftest cross-checks a walked unit against the client's own UnitAura()
+// list. AuraWalk itself is defensive: counts and pointers are sanity-gated,
+// every read VirtualQuery-guarded, and a walk that fails validation returns
+// -1 so callers can fall back to the note store EXPLICITLY - unknown stays
+// unknown, it never silently becomes "no auras".
+namespace aura_off {
+    constexpr uintptr_t CountStatic = 0xDD0;
+    constexpr uintptr_t CountDyn    = 0xC54;
+    constexpr uintptr_t TableStatic = 0xC50;
+    constexpr uintptr_t TableDyn    = 0xC58;
+    constexpr uintptr_t EntrySize   = 0x18;
+    constexpr uintptr_t E_Caster    = 0x00;
+    constexpr uintptr_t E_SpellId   = 0x08;
+    constexpr uintptr_t E_Flags     = 0x0C;
+    constexpr uintptr_t E_Stacks    = 0x0E;
+    constexpr uintptr_t E_Duration  = 0x10;
+    constexpr uintptr_t E_Expiry    = 0x14;
+    constexpr uint32_t  MaxCount    = 160;   // client hard cap is 56*2ish; generous
+}
+
+// Visit every aura on the unit at `ptr`. Returns the aura count (0 is a real
+// answer: "no auras"), or -1 when the layout does not validate (unknown).
+// `fn(spellId, stacks, durationMs, expiryMs, flags)` return false to stop.
+template <typename Fn>
+static int AuraWalk(uintptr_t ptr, Fn fn) {
+    if (!ptr || !AcceptObjPtr(ptr)) return -1;
+    uint32_t cnt = Mem::Read<uint32_t>(ptr + aura_off::CountStatic);
+    uintptr_t table;
+    if (cnt == 0xFFFFFFFFu) {
+        cnt = Mem::Read<uint32_t>(ptr + aura_off::CountDyn);
+        table = Mem::Read<uintptr_t>(ptr + aura_off::TableDyn);
+        if (!table || table < 0x10000u) return -1;
+    } else {
+        table = ptr + aura_off::TableStatic;
+    }
+    if (cnt > aura_off::MaxCount) return -1;   // implausible: layout mismatch
+    int seen = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        uintptr_t e = table + (uintptr_t)i * aura_off::EntrySize;
+        uint32_t sid = Mem::Read<uint32_t>(e + aura_off::E_SpellId);
+        if (!sid) continue;                    // empty slot mid-table is normal
+        if (sid > 2000000u) return -1;         // garbage: not a spell id
+        uint8_t stacks = Mem::Read<uint8_t>(e + aura_off::E_Stacks);
+        uint8_t flags  = Mem::Read<uint8_t>(e + aura_off::E_Flags);
+        int32_t durMs  = Mem::Read<int32_t>(e + aura_off::E_Duration);
+        int32_t expMs  = Mem::Read<int32_t>(e + aura_off::E_Expiry);
+        ++seen;
+        if (!fn((int)sid, (int)(stacks ? stacks : 1), durMs, expMs, (int)flags))
+            break;
+    }
+    return seen;
+}
+
+// Diagnostic: raw layout values so a human (or the selftest) can see exactly
+// what the walk is reading before anything trusts it.
+std::string AuraProbe(uint64_t guid) {
+    uintptr_t p = SnapPtr(guid);
+    if (!p) p = SafeObjectPtr(guid);
+    if (!p || !AcceptObjPtr(p)) return "noptr";
+    uint32_t c1 = Mem::Read<uint32_t>(p + aura_off::CountStatic);
+    uint32_t c2 = Mem::Read<uint32_t>(p + aura_off::CountDyn);
+    uintptr_t t2 = Mem::Read<uintptr_t>(p + aura_off::TableDyn);
+    char buf[512];
+    size_t off = (size_t)snprintf(buf, sizeof(buf),
+        "ptr=0x%08X|c_static=%d|c_dyn=%u|t_dyn=0x%08X|first=",
+        (unsigned)p, (int)c1, c2, (unsigned)t2);
+    int shown = 0;
+    AuraWalk(p, [&](int sid, int stacks, int durMs, int expMs, int flags) {
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+            "%d(x%d,f0x%X,%d/%dms) ", sid, stacks, flags, durMs, expMs);
+        return ++shown < 8 && off + 48 < sizeof(buf);
+    });
+    return std::string(buf, off < sizeof(buf) ? off : sizeof(buf));
+}
+
+// Direct read for one aura on one unit. 1 = present, 0 = absent, -1 = unknown
+// (walk failed validation; caller decides the fallback, never this function).
+int UnitAuraDirect(uint64_t guid, int spellId, int* outStacks) {
+    if (outStacks) *outStacks = 0;
+    uintptr_t p = SnapPtr(guid);
+    if (!p) p = SafeObjectPtr(guid);
+    int found = 0;
+    int n = AuraWalk(p, [&](int sid, int stacks, int, int, int) {
+        if (sid == spellId) {
+            found = 1;
+            if (outStacks) *outStacks = stacks;
+            return false;
+        }
+        return true;
+    });
+    if (n < 0) return -1;
+    return found;
+}
+
 void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
     if (!guid || spellId <= 0) return;
     if (stacks < 1) stacks = 1;
@@ -2075,6 +2187,10 @@ void ClearUnitAura(uint64_t guid, int spellId) {
 bool HasUnitAura(uint64_t guid, int spellId, int* outStacks) {
     if (outStacks) *outStacks = 0;
     if (!guid || spellId <= 0) return false;
+    // DIRECT-FIRST (2026-08-03): the unit's own aura array is the authority;
+    // the note store answers only when the walk cannot validate the layout.
+    int direct = UnitAuraDirect(guid, spellId, outStacks);
+    if (direct >= 0) return direct == 1;
     ULONGLONG now = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_auraMu);
     AuraPruneLocked(now);
@@ -2195,7 +2311,22 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                     face = (face_err <= kDefaultCastFaceArc) ? 1 : 0;
                 }
             }
-            bool has = hasAura(o.guid);
+            // DIRECT-FIRST (2026-08-03): read the aura off the unit itself -
+            // the same data the client renders - and use the note store ONLY
+            // when the walk reports unknown. The shadow copy stops being the
+            // authority the moment the truth is readable.
+            bool has;
+            int direct = -1;
+            {
+                int st = 0;
+                int f = 0;
+                direct = AuraWalk(o.ptr, [&](int sid, int stacks, int, int, int) {
+                    if (sid == spellId) { f = 1; st = stacks; return false; }
+                    return true;
+                });
+                if (direct >= 0) has = (f == 1);
+                else has = hasAura(o.guid);    // unknown -> explicit fallback
+            }
             if (wantMissing) { if (has) return; }
             else { if (!has) return; }
             cands.push_back({ o.guid, o.entry, cx, edge, face_err, face, o.health, o.maxHealth });
@@ -2901,7 +3032,11 @@ std::string SpellInfoPacked(int spellId) {
     return "maxRange=-1|castMs=-1|powerType=-1|school=-1";
 }
 
-// ---- Runtime aura table query (zero Lua — reads g_auras directly) ----------
+// ---- Runtime aura table query --------------------------------------------
+// DIRECT-FIRST (2026-08-03): the unit's own aura array is the source; the
+// g_auras note store answers only when the walk cannot validate the layout.
+// Direct results are tagged "|src=d", fallback "|src=n" - a consumer (and the
+// selftest) can always tell which authority produced the answer.
 std::string UnitAurasPacked(uint64_t guid) {
     if (!guid) return "0";
     static ULONGLONG s_lastTime = 0;
@@ -2910,6 +3045,34 @@ std::string UnitAurasPacked(uint64_t guid) {
     ULONGLONG now = GetTickCount64();
     if (s_lastGuid == guid && s_lastTime && (now - s_lastTime) < 80ull)
         return s_lastResult;
+
+    {
+        uintptr_t p = SnapPtr(guid);
+        if (!p) p = SafeObjectPtr(guid);
+        char item[48];
+        std::string out;
+        // Aura expiry is stored in the client's timeGetTime()-domain ms clock;
+        // GetTickCount() shares that domain to within scheduler jitter. The
+        // selftest cross-checks remaining vs UnitAura's expirationTime, so a
+        // domain mismatch shows up as a measured error, not a silent lie.
+        uint32_t now32 = (uint32_t)GetTickCount();
+        int n = AuraWalk(p, [&](int sid, int stacks, int durMs, int expMs, int) {
+            long long rem = (durMs == 0 && expMs == 0)
+                ? 0                              // permanent aura: present, no timer
+                : (long long)(int32_t)expMs - (long long)now32;
+            if (rem < 0) rem = 0;
+            snprintf(item, sizeof(item), "|%d:%d:%lld", sid, stacks, rem);
+            out += item;
+            return out.size() < 7000;
+        });
+        if (n >= 0) {
+            char head[16];
+            snprintf(head, sizeof(head), "%d", n);
+            std::string res = std::string(head) + out + "|src=d";
+            s_lastGuid = guid; s_lastTime = now; s_lastResult = res;
+            return res;
+        }
+    }
 
     std::lock_guard<std::mutex> lock(g_auraMu);
     // Collect matching auras from the runtime aura table
@@ -2933,6 +3096,7 @@ std::string UnitAurasPacked(uint64_t guid) {
         off += (size_t)snprintf(buf + off, sizeof(buf) - off,
                                 "|%d:%d:%lld", hits[i].spellId, hits[i].stacks, remMs);
     }
+    off += (size_t)snprintf(buf + off, sizeof(buf) - off, "|src=n");
     s_lastGuid = guid;
     s_lastTime = now;
     s_lastResult = std::string(buf, off);

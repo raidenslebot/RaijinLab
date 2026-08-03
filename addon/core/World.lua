@@ -2976,6 +2976,95 @@ function World.spell_max_range(sid)
     return maxR
 end
 
+-- THE FULL STATIC GATE SNAPSHOT for one spell, from the client's own record
+-- (runtime SpellCastReq, layout cracked 2026-08-03). This is what makes every
+-- basic check DATA-DRIVEN for all abilities including Ascension customs - no
+-- English name lists, no maxR>8 guessing.
+--
+-- Returns a table (cached forever - spell records are immutable in a session)
+-- or nil = HARD UNKNOWN (no runtime / record not decodable). Callers treat nil
+-- per the Know discipline: unknown never invents a yes for a hard gate and
+-- never invents a no for a soft one.
+--
+-- Fields: attr,attr1,attr2 (hex numbers), stances, stancesnot, targets,
+-- facing (client WILL enforce the front arc), casterstate, targetstate,
+-- casteraura, targetaura, excaster, extarget, castidx (1 = instant), cd,
+-- catcd, category, interrupt, power, cost, costlvl, ri, rmin, rmax, speed,
+-- equipclass (-1 none / 2 weapon), equipmask, eff0, ta0, ta1 (implicit
+-- targets: 1 self, 6 enemy, 18/22 self-area, 21 ally, 25 any),
+-- gcdcat (0 = OFF the GCD by data), gcd (exact GCD ms), family, dmgclass,
+-- prevent (1 silence blocks, 2 pacify blocks), school, rune (SpellRuneCost
+-- row), mech, dispel, duridx.
+local _spell_req_cache = {}
+function World.spell_req(sid)
+    sid = tonumber(sid) or 0
+    if sid <= 0 then return nil end
+    local c = _spell_req_cache[sid]
+    if c ~= nil then
+        if c == false then return nil end     -- known-undecodable, cached
+        return c
+    end
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then
+        return nil                             -- not cached: runtime may arrive
+    end
+    local ok, pack = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellCastReq", sid)
+    if not ok or type(pack) ~= "string" then return nil end
+    if not pack:find("found=1", 1, true) then
+        -- A record the client does not hold will not appear mid-session.
+        _spell_req_cache[sid] = false
+        return nil
+    end
+    local r = { sid = sid }
+    for k, v in pack:gmatch("|(%w+)=([%w%.%-x]+)") do
+        if v:sub(1, 2) == "0x" then
+            r[k] = tonumber(v:sub(3), 16)
+        else
+            r[k] = tonumber(v) or v
+        end
+    end
+    _spell_req_cache[sid] = r
+    return r
+end
+
+-- Data-driven classification helpers (replace the English name lists).
+-- Implicit-target ids (3.3.5): 1=UNIT_CASTER, 6=UNIT_TARGET_ENEMY,
+-- 18=DEST_CASTER, 21=UNIT_TARGET_ALLY, 22=SRC_CASTER, 25=UNIT_TARGET_ANY.
+-- TARGET_FLAG_DEST_LOCATION = 0x40 in the Targets mask.
+function World.spell_is_self_only(sid)
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local a0 = tonumber(r.ta0) or 0
+    return a0 == 1 and (tonumber(r.targets) or 0) == 0
+end
+
+function World.spell_is_self_area(sid)
+    -- Self-centered or ground AoE: no unit target, no facing, no unit range.
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local t = tonumber(r.targets) or 0
+    if t == 0x40 or t == 0x60 then return true end    -- dest-location (ground)
+    local a0 = tonumber(r.ta0) or 0
+    return a0 == 18 or a0 == 22
+end
+
+function World.spell_needs_facing(sid)
+    -- The client enforces the front arc exactly when FacingCasterFlags bit 1
+    -- is set. This is per-spell truth: Ascension relaxed it on some standard
+    -- spells (live: Corruption carries 0) and custom spells carry their own.
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local f = tonumber(r.facing) or 0
+    return f % 2 == 1
+end
+
+function World.spell_off_gcd(sid)
+    -- StartRecoveryCategory 0 = this cast never touches the GCD (Auto Attack,
+    -- on-next-swing). Data replaces the user having to mark off_gcd by hand.
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    return (tonumber(r.gcdcat) or 0) == 0 and (tonumber(r.gcd) or 0) == 0
+end
+
 -- Find nearby units matching aura present/missing.
 -- RUNTIME-FIRST: discovery, hostility, face, and aura notes all live in the
 -- inject DLL. Lua never uses mouseover/UnitExists/UnitCanAttack for multi-dot

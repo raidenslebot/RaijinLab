@@ -25,4 +25,24 @@ std::string SpellInfoLive(int spellId);
 // only for melee-range spells (range entry MaxRange <= 8).
 std::string SpellMeleeInfo(int spellId);
 
+// EVERY static gate input for one spell, from the client's own record.
+//
+// LAYOUT, cracked 2026-08-03 against 17 stock spells with textbook 3.3.5a
+// values (Fireball 13+1d9 base points, Backstab dagger mask 0x8000, Icy Touch
+// school 16 + runeCostID 241, melee GCD 1000 vs caster 1500, family names
+// mage=3/warrior=4/rogue=8/warlock=5/DK=15 all landing exactly):
+//   the decoded record is Spell.dbc columns 0..135 at word*4, then the four
+//   localized string blocks collapsed to 4 POINTERS (+0x220 name / +0x224
+//   rank / +0x228 desc / +0x22C tooltip), then columns 204..233 resuming at
+//   +0x230. That collapse is exactly the 64 dropped words: 4 fields x 17
+//   locale columns -> 4 pointers.
+//
+// One call, one packed line, cached per sid (records are immutable in a
+// session). This is what makes BasicRules data-driven for EVERY ability
+// including Ascension customs - no name lists, no English substrings.
+std::string CastReq(int spellId);
+
+// The spell's display name via the in-record string pointer (+0x220).
+std::string SpellName(int spellId);
+
 } // namespace RL::Game::SpellDB

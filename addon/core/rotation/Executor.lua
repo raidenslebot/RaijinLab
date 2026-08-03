@@ -422,6 +422,21 @@ local function apply_pending_refuse(reason, fail_name)
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         Executor._gcd_src = "refuse_facing"
+        -- FACING AUDIT (2026-08-03): if the wire that just got refused carried
+        -- a runtime verdict of "facing", the read lied - count it. This number
+        -- is the entire basis for ever trusting a pre-wire facing gate again
+        -- (round 47's distrust was earned; trust must be too).
+        local fw = Executor._face_wire
+        if fw and fw.sid == sid and (now() - (fw.t or 0)) < 3.0 then
+            if fw.verdict == true then
+                Executor._face_audit_lied = (Executor._face_audit_lied or 0) + 1
+                local DL = RaijinLab and RaijinLab.DevLog
+                if DL and DL.log then
+                    DL.log("rotation", "FACING READ LIED: wired %s verdict=facing, client refused (lied=%d)",
+                        tostring(sid), Executor._face_audit_lied)
+                end
+            end
+        end
         -- 2026-08-03 (ROUND 47): back off ALL melee wires for 1.5s after a
         -- REAL client facing refusal - the player must turn (the rotation NEVER
         -- turns); repeating the refusal every ~0.45s was the "spammed with
@@ -2724,6 +2739,29 @@ function Executor.attempt_action(action, ctx)
                 and Executor._facing_until and now() < Executor._facing_until then
                 last_why = "facing"
             end
+            -- DATA-DRIVEN FACING GATE (2026-08-03). The round-44/46/47 war was
+            -- fought without knowing WHICH spells the client face-checks; the
+            -- record's FacingCasterFlags settles that per spell (Icy Touch
+            -- carries 1 - the "ranged never needs facing" comment above was
+            -- wrong, which is WHY the errors kept appearing on ranged wires).
+            -- Gate rules, honouring every prior verdict in this file:
+            --   * only spells whose record says the client WILL face-check;
+            --   * only a CONFIDENT not-facing verdict skips the candidate
+            --     (undetermined wires - the client is the final referee, and
+            --     round 47 proved a hard pre-gate on a lying read stalls);
+            --   * the try-list moves to the next candidate, so a faced target
+            --     still gets its cast the same tick;
+            --   * every wire of a face-checked spell records the verdict, and
+            --     the FACING REFUSE branch audits it - a client refusal after
+            --     a verdict of "facing" is the read caught lying, counted in
+            --     Executor._face_audit_lied and visible in the metrics. The
+            --     gate earns trust by measurement, not by assertion.
+            if not last_why and search and cand and needs_enemy then
+                local nf = W and W.spell_needs_facing and W.spell_needs_facing(cast_sid)
+                if nf == true and cand.facing == false then
+                    last_why = "facing"
+                end
+            end
             -- WIRE (range was already validated in live_castable)
             -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
             -- ONLY the HEAD candidate (ctx.aura_search_hit.dist). But the try_list
@@ -2798,6 +2836,18 @@ function Executor.attempt_action(action, ctx)
             end
             if not last_why then
                 local reason, cdMs = nil, 0
+                -- FACING AUDIT (2026-08-03): remember the verdict this wire is
+                -- riding on. The FACING REFUSE branch compares; a refusal after
+                -- verdict=true increments _face_audit_lied.
+                do
+                    local nf = W and W.spell_needs_facing and W.spell_needs_facing(cast_sid)
+                    if nf == true then
+                        Executor._face_wire = {
+                            t = now(), sid = cast_sid,
+                            verdict = (cand and cand.facing == true) or false,
+                        }
+                    end
+                end
                 dlog("cast", "wire %s sid=%d cg=%s flags=%d try=%d",
                     tostring(name), cast_sid, tostring(cg), unit_cast_flags(), #try_list)
                 if Act.CastQueued then

@@ -5016,7 +5016,32 @@ local function good(name, a, b, c, d, e, f)
     end
     if name == "ObjectDynamicFlags" then return 0x20 end
     if name == "Interact" then return true end
+    -- 1.11.0-truth natives. UnitAuras models the DIRECT walk: both client-
+    -- visible mock auras present, plus one hidden aura UnitBuff never lists -
+    -- the check must tolerate extras and fail only on a MISSING visible aura.
+    if name == "UnitAuras" then return "3|1459:2:60000|172:1:30000|9999:1:0|src=d" end
+    if name == "SpellCastReq" then
+        if a == 6603 then
+            return "sid=6603|found=1|attr=0x10|targets=0x0|facing=0|castidx=1"
+                .. "|cd=0|catcd=0|power=0|cost=0|ri=1|rmin=0.00|rmax=0.00"
+                .. "|gcdcat=0|gcd=0|school=0x1|rune=0"
+        end
+        if a == 133 then
+            return "sid=133|found=1|attr=0x10000|targets=0x0|facing=1|castidx=16"
+                .. "|cd=0|catcd=0|power=0|cost=30|ri=35|rmin=0.00|rmax=35.00"
+                .. "|gcdcat=133|gcd=1500|school=0x4|rune=0"
+        end
+        return "sid=" .. tostring(a) .. "|found=0"
+    end
     return nil
+end
+
+-- the client aura API the aura_walk check compares against
+function UnitBuff(unit, i)
+    if i == 1 then return "MockBuff", "", "", 2, nil, 60, 0, "player", nil, nil, 1459 end
+end
+function UnitDebuff(unit, i)
+    if i == 1 then return "MockDebuff", "", "", 1, nil, 30, 0, "player", nil, nil, 172 end
 end
 
 RaijinLab.om.object_list.npcs = { {}, {}, {} }
@@ -5049,6 +5074,15 @@ local opts = { player_guid = "0x1", target_guid = "0x2" }
 local m = rows_by_name(SelfTest.evaluate(with({ GetRuntimeVersion = "1.0.0-old" }), opts))
 dc("stale resident DLL detected", m["runtime_version"].ok == false)
 
+-- MUTATIONS for the aura walk: (a) a walk that cannot validate (src=n) is a
+-- failure of the direct path; (b) a walk MISSING a client-visible aura is the
+-- layout indictment. Both must fail; hidden extras alone must not.
+m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "0|src=n" }), opts))
+dc("aura walk not validating -> FAIL", m.aura_walk_vs_client.ok == false)
+m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "1|1459:2:60000|src=d" }), opts))
+dc("aura walk missing a visible aura -> FAIL", m.aura_walk_vs_client.ok == false)
+m = rows_by_name(SelfTest.evaluate(with({ SpellCastReq = "sid=6603|found=0" }), opts))
+dc("castreq undecodable -> FAIL", m.castreq_ground_truth.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ GetDistanceBetweenPositions = 0 }), opts))
 dc("distance-stub-returns-0 detected", m["bridge_geometry"].ok == false)
 

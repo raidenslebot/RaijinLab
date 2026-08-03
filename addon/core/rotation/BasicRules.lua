@@ -35,7 +35,16 @@ local function spell_name(sid, fallback)
 end
 
 -- Ground / self-centered AoE never need a living unit target or face/LoS to it.
-local function is_ground_self_aoe(sid, name)
+--
+-- DATA FIRST, NAMES LAST (2026-08-03). The English name list below recognised
+-- ~15 stock spells on a server with thousands of CUSTOM abilities - every
+-- unlisted self-AoE was misclassified as unit-targeted and gated on a target
+-- it does not need. World.spell_is_self_area reads the client's own record
+-- (Targets dest-location flag / implicit-target ids), so classification now
+-- covers every spell the client can cast. The names remain ONLY as the
+-- no-runtime fallback, per the Know discipline: a definite data answer wins in
+-- both directions; names never override it.
+local function name_says_ground_aoe(sid, name)
     local n = string.lower(tostring(name or ""))
     if n == "" and sid and GetSpellInfo then
         local ok, sn = pcall(GetSpellInfo, sid)
@@ -53,7 +62,21 @@ local function is_ground_self_aoe(sid, name)
     return false
 end
 
+local function is_ground_self_aoe(sid, name)
+    local W = RaijinLab and RaijinLab.World
+    if W and W.spell_is_self_area then
+        local d = W.spell_is_self_area(sid)
+        if d ~= nil then return d end
+    end
+    return name_says_ground_aoe(sid, name)
+end
+
 local function is_self_aoe_spell(sid, name)
+    local W = RaijinLab and RaijinLab.World
+    if W and W.spell_is_self_area then
+        local d = W.spell_is_self_area(sid)
+        if d ~= nil then return d end
+    end
     local n = string.lower(tostring(name or ""))
     if n:find("whirlwind", 1, true) then return true end
     if n:find("thunder clap", 1, true) then return true end
@@ -61,7 +84,7 @@ local function is_self_aoe_spell(sid, name)
     if n:find("fan of knives", 1, true) then return true end
     if n:find("blood boil", 1, true) then return true end
     if n:find("howling blast", 1, true) then return true end
-    return is_ground_self_aoe(sid, name)
+    return name_says_ground_aoe(sid, name)
 end
 
 local function policy_of(slot, ctx)
@@ -138,6 +161,15 @@ local function check_gcd_cd(ctx, sid, slot)
         return true
     end
     local off = (slot and slot.off_gcd) or (ctx and ctx.slot_off_gcd)
+    -- DATA-DRIVEN off-GCD (2026-08-03): StartRecoveryCategory 0 in the
+    -- client's record means this cast never touches the GCD - the user no
+    -- longer has to know to mark on-next-swing abilities by hand.
+    if not off then
+        local W = RaijinLab and RaijinLab.World
+        if W and W.spell_off_gcd and W.spell_off_gcd(sid) == true then
+            off = true
+        end
+    end
     -- Pending same spell: wait.
     if ctx and ctx.pending_sid and tonumber(ctx.pending_sid) == sid then
         return false, "pending"
@@ -201,6 +233,96 @@ local function check_resources(ctx, sid, name, slot)
         if type(u) == "table" and (u[sid] == false or u[tostring(sid)] == false) then
             return false, "unusable"
         end
+    end
+    return true
+end
+
+-- Checklist gates that were MISSING entirely until 2026-08-03, all data-driven
+-- from World.spell_req (the client's own record). Each fails only on positive
+-- evidence; req==nil is unknown and passes (the client still referees), which
+-- keeps every one of these safe on a no-runtime session.
+
+-- Weapon requirement: EquippedItemClass 2 = a weapon of the given subclass
+-- mask must be in the main hand ("Must have a weapon equipped" refusals).
+local function check_equipment(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local cls = tonumber(req.equipclass) or -1
+    if cls ~= 2 then return true end          -- only weapon checks modelled
+    local get = (ctx and ctx.inventory_item_id) or GetInventoryItemID
+    if not get then return true end
+    local ok, itemId = pcall(get, "player", 16)   -- main hand
+    if not ok or not itemId then return false, "no_weapon" end
+    -- Subclass mask precision needs GetItemInfo's subclass id; a wrong-type
+    -- weapon is rare enough that presence is the load-bearing half. The mask
+    -- check upgrades here later without changing any caller.
+    return true
+end
+
+-- Shapeshift EXCLUSION mask ("You can't do that while shapeshifted").
+-- Only the NOT mask is enforced: Ascension marks caster spells with a stance
+-- bit whose semantics are unconfirmed (0x200000 observed on stock casters),
+-- so the positive mask is observed and logged but never gates until pinned.
+local function check_stance(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local notmask = tonumber(req.stancesnot) or 0
+    if notmask == 0 then return true end
+    local formfn = (ctx and ctx.shapeshift_form) or GetShapeshiftForm
+    if not formfn then return true end
+    local ok, form = pcall(formfn)
+    form = ok and tonumber(form) or 0
+    if form and form > 0 then
+        local bit = 2 ^ (form - 1)
+        if math.floor(notmask / bit) % 2 == 1 then
+            return false, "wrong_form"
+        end
+    end
+    return true
+end
+
+-- Required / forbidden auras on caster and target (casterAuraSpell family).
+-- Exact now that HasUnitAura reads the unit's own aura array directly.
+local function check_aura_requirements(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local function player_has(aid)
+        if ctx and ctx.player_aura_has then return ctx.player_aura_has[aid] end
+        if not (RaijinLab and RaijinLab.RuntimeCall) then return nil end
+        -- HasUnitAura returns a NUMBER (stack count, 0 = absent). 0 is truthy
+        -- in Lua - the exact footgun that made ObjectQuestGiverStatus lie -
+        -- so the comparison must be numeric, never `if has then`.
+        local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", 0, aid)
+        if not ok or type(stacks) ~= "number" then return nil end
+        return stacks > 0
+    end
+    local need = tonumber(req.casteraura) or 0
+    if need > 0 then
+        local h = player_has(need)
+        if h == false then return false, "need_aura" end
+    end
+    local forbid = tonumber(req.excaster) or 0
+    if forbid > 0 then
+        local h = player_has(forbid)
+        if h == true then return false, "excluded_aura" end
+    end
+    return true
+end
+
+-- Silence: a spell whose PreventionType is silence cannot be wired while the
+-- player is silenced (UNIT_FLAG_SILENCED). Positive evidence only.
+local function check_silence(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    if (tonumber(req.prevent) or 0) ~= 1 then return true end
+    local flags = ctx and ctx.player_unit_flags
+    if type(flags) ~= "number" then return true end
+    if math.floor(flags / 0x2000) % 2 == 1 then
+        return false, "silenced"
     end
     return true
 end
@@ -357,6 +479,18 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 
     ok, why = check_resources(ctx, sid, name, slot)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="resource", why=why}; return false, why end
+
+    ok, why = check_equipment(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="equip", why=why}; return false, why end
+
+    ok, why = check_stance(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="stance", why=why}; return false, why end
+
+    ok, why = check_aura_requirements(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="aura_req", why=why}; return false, why end
+
+    ok, why = check_silence(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="silence", why=why}; return false, why end
 
     ok, why = check_target_relationship(ctx, sid, slot, name)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="target_rel", why=why}; return false, why end

@@ -65,6 +65,10 @@ std::string NearbyHostilesPacked(float maxRange = 40.f, size_t maxN = 32);
 void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec);
 void ClearUnitAura(uint64_t guid, int spellId);
 bool HasUnitAura(uint64_t guid, int spellId, int* outStacks = nullptr);
+// Direct in-unit aura reads (2026-08-03). UnitAuraDirect: 1 present, 0 absent,
+// -1 layout-unknown (caller falls back EXPLICITLY, never silently).
+int UnitAuraDirect(uint64_t guid, int spellId, int* outStacks = nullptr);
+std::string AuraProbe(uint64_t guid);
 
 // Runtime-first multi-dot discovery (no mouseover / UnitExists / UnitCanAttack):
 // living attackable units in range matching aura missing (wantMissing) or present.
@@ -166,9 +170,9 @@ int ShapeshiftForm();
 const char* UnitRelationship(uint64_t guid);
 // Packed spell info string: "maxRange=F|castMs=N|powerType=N|school=N" from cached DB + Lua
 std::string SpellInfoPacked(int spellId);
-// Packed aura string: "n|spellId:stacks:durationMs:isDebuff|..."
-// Reads all auras (buff+debuff) from client via batched Lua UnitBuff/UnitDebuff pcall.
-// Cached per guid for 80ms. Returns empty "0" if no auras or unreadable.
+// Packed aura string: "n|spellId:stacks:remMs|...|src=d" (direct in-unit walk)
+// or "...|src=n" (note-store fallback when the walk cannot validate). Cached
+// per guid for 80ms.
 std::string UnitAurasPacked(uint64_t guid);
 // Proc / reactive event tracking (CLEU-fed). Record combat events for reactive conditions.
 void NoteProcEvent(const char* eventName);

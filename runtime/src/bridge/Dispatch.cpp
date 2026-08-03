@@ -1,5 +1,6 @@
 #include "Ipc.h"
 #include "Dispatch.h"
+#include <cstdlib>
 #include "lua/Lua.h"
 #include "game/ObjectManager.h"
 #include "game/Actions.h"
@@ -34,7 +35,7 @@ namespace {
 // from inside the Lua VM when the cache was stale → VM corruption (crash.fatal
 // eip=0x512B07 right after a clean CastQueue DRAIN + GatherMate2/XPerl UI-error
 // cascade). Only the native frame hook resolves via the camera now.
-const char* kVersion = "1.10.108-aa";
+const char* kVersion = "1.11.0-truth";
 
 // ---- Crash forensics: ring buffer of the last bridge calls ----------------
 // The CrashHandler in main.cpp dumps this on ANY access violation so the
@@ -749,6 +750,7 @@ static int Handle(lua_State* L, const char* name) {
     }
     if (!std::strcmp(name, "HasUnitAura")) {
         uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();   // 0 = the player, like every other unit native
         int spellId = (int)optnumber(L, 3, 0.0);
         int stacks = 0;
         bool has = g && spellId > 0 && OM::HasUnitAura(g, spellId, &stacks);
@@ -1032,9 +1034,19 @@ static int Handle(lua_State* L, const char* name) {
         !std::strcmp(name, "UnitMovementFlags") || !std::strcmp(name, "UnitCreatureTypeId") ||
         !std::strcmp(name, "UnitCreatureFamilyId") || !std::strcmp(name, "UnitCreatureField") ||
         !std::strcmp(name, "UnitCastingTarget") || !std::strcmp(name, "UnitTransport") ||
-        !std::strcmp(name, "GetAuraCount") || !std::strcmp(name, "GetNoClipModes") ||
+        !std::strcmp(name, "GetNoClipModes") ||
         !std::strcmp(name, "ReadMemory") || !std::strcmp(name, "GetMemoryOffset"))
         return PushNil(L);
+    // GetAuraCount was a nil-stub in that list for a whole era ("runtime stubs
+    // owed"): named, dispatchable, always nil. Now real - the direct walk's
+    // count, or nil when the layout does not validate (unknown stays unknown).
+    if (!std::strcmp(name, "GetAuraCount")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        auto s = OM::UnitAurasPacked(g);   // "n|...|src=d" (or src=n fallback)
+        if (s.empty()) return PushNil(L);
+        return PushNumber(L, (double)std::atoi(s.c_str()));
+    }
     if (!std::strcmp(name, "UnitBoundingRadius")) {
         uint64_t g = GuidArg(L, 2);
         if (!g) g = OM::LocalGuid();
@@ -1149,6 +1161,27 @@ static int Handle(lua_State* L, const char* name) {
     if (!std::strcmp(name, "SpellMeleeInfo") || !std::strcmp(name, "MeleeInfo")) {
         int spellId = (int)optnumber(L, 2, 0);
         auto s = SpellDB::SpellMeleeInfo(spellId);
+        return PushString(L, s.c_str());
+    }
+    // EVERY static gate input for a spell, from the client's own record
+    // (2026-08-03 layout crack). One call, cached runtime-side. "SpellCastReq"
+    if (!std::strcmp(name, "SpellCastReq") || !std::strcmp(name, "CastReq")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        auto s = SpellDB::CastReq(spellId);
+        return PushString(L, s.c_str());
+    }
+    // Spell display name via the in-record string pointer. "SpellNameLive"
+    if (!std::strcmp(name, "SpellNameLive")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        auto s = SpellDB::SpellName(spellId);
+        return PushString(L, s.c_str());
+    }
+    // Direct aura-walk diagnostic: raw counts/pointers/first entries, for the
+    // selftest to verify the layout before anything trusts it. "AuraProbe"
+    if (!std::strcmp(name, "AuraProbe")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        auto s = OM::AuraProbe(g);
         return PushString(L, s.c_str());
     }
     // Unit aura list from runtime aura table: "n|spellId:stacks:remMs|..."

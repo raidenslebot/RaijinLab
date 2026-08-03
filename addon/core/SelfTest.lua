@@ -19,7 +19,7 @@
 
 local SelfTest = {}
 
-SelfTest.EXPECT_VERSION = "1.10.108-aa"
+SelfTest.EXPECT_VERSION = "1.11.0-truth"
 
 local function approx(a, b, eps)
     if type(a) ~= "number" or type(b) ~= "number" then return false end
@@ -355,6 +355,103 @@ SelfTest.CHECKS = {
             if ok == nil then return false, "nil - not wired" end
             if type(ok) ~= "boolean" then return false, "non-boolean " .. type(ok) end
             return true, "reports " .. tostring(ok) .. " (a real outcome, not a constant)"
+        end,
+    },
+    {
+        name = "aura_walk_vs_client",
+        why = "the direct in-unit aura walk (1.11.0) replaces the combat-log "
+           .. "note store; its 12340 offsets are unverified on Ascension until "
+           .. "this check compares a real unit against the client's own UnitAura",
+        run = function(call, opts)
+            if not UnitBuff or not UnitDebuff then
+                return nil, "no client aura API in this environment"
+            end
+            -- The player always exists and almost always carries at least one
+            -- aura; the comparison is exact set membership, both directions.
+            local want = {}
+            local n = 0
+            for i = 1, 40 do
+                local name, _, _, count, _, _, _, _, _, _, sid =
+                    UnitBuff("player", i)
+                if not name then break end
+                if sid then want[sid] = count or 1; n = n + 1 end
+            end
+            for i = 1, 40 do
+                local name, _, _, count, _, _, _, _, _, _, sid =
+                    UnitDebuff("player", i)
+                if not name then break end
+                if sid then want[sid] = count or 1; n = n + 1 end
+            end
+            local pack = call("UnitAuras")
+            if type(pack) ~= "string" then return false, "UnitAuras nil" end
+            local src = pack:match("|src=(%w)")
+            if src ~= "d" then
+                -- The walk refused to validate: HONEST, but the direct path is
+                -- not live - that is a failure of the feature under test.
+                return false, "walk not validating (src=" .. tostring(src)
+                    .. ") pack=" .. pack:sub(1, 60)
+            end
+            local got = {}
+            for sid, stacks in pack:gmatch("|(%d+):(%d+):%-?%d+") do
+                got[tonumber(sid)] = tonumber(stacks)
+            end
+            local missing, extra = 0, 0
+            local detail = ""
+            for sid in pairs(want) do
+                if not got[sid] then
+                    missing = missing + 1
+                    if #detail < 80 then detail = detail .. " -" .. sid end
+                end
+            end
+            for sid in pairs(got) do
+                if not want[sid] then
+                    extra = extra + 1
+                    if #detail < 80 then detail = detail .. " +" .. sid end
+                end
+            end
+            if n == 0 then
+                -- No client-visible aura to compare against. The walk seeing
+                -- hidden auras is normal; nothing here can indict the layout.
+                return nil, "no visible auras on player to compare"
+            end
+            -- DIRECTIONAL: the unit's table holds HIDDEN auras UnitBuff never
+            -- lists, so `extra` is expected and only reported. `missing` is
+            -- the indictment: a client-visible aura the walk cannot see means
+            -- the offsets are wrong for this client.
+            if missing > 0 then
+                return false, string.format("walk MISSED %d visible aura(s):%s",
+                    missing, detail)
+            end
+            return true, string.format("%d visible aura(s) all present, +%d hidden, src=direct",
+                n, extra)
+        end,
+    },
+    {
+        name = "castreq_ground_truth",
+        why = "SpellCastReq drives every data-driven basic check; its layout "
+           .. "was cracked against stock spells - verify two anchors in vivo",
+        run = function(call)
+            -- 6603 Auto Attack: range index 1 (self), no GCD (gcd=0), phys school.
+            local aa = call("SpellCastReq", 6603)
+            if type(aa) ~= "string" or not aa:find("found=1", 1, true) then
+                return false, "6603 not decodable: " .. tostring(aa)
+            end
+            local gcd = tonumber(aa:match("|gcd=(%d+)") or "")
+            local school = tonumber(aa:match("|school=0x(%x+)") or "", 16)
+            if gcd ~= 0 then return false, "Auto Attack gcd=" .. tostring(gcd) .. " (want 0)" end
+            if school ~= 1 then return false, "Auto Attack school=" .. tostring(school) .. " (want 1)" end
+            -- 133 Fireball: fire school (0x4), on the standard 1.5s GCD, mana.
+            local fb = call("SpellCastReq", 133)
+            if type(fb) ~= "string" or not fb:find("found=1", 1, true) then
+                return false, "133 not decodable"
+            end
+            local fgcd = tonumber(fb:match("|gcd=(%d+)") or "")
+            local fsch = tonumber(fb:match("|school=0x(%x+)") or "", 16)
+            local fpow = tonumber(fb:match("|power=(%d+)") or "")
+            if fsch ~= 4 then return false, "Fireball school=" .. tostring(fsch) .. " (want 4=fire)" end
+            if fpow ~= 0 then return false, "Fireball power=" .. tostring(fpow) .. " (want 0=mana)" end
+            if not fgcd or fgcd < 1000 then return false, "Fireball gcd=" .. tostring(fgcd) end
+            return true, string.format("6603: gcd=0 school=phys; 133: gcd=%d school=fire", fgcd)
         end,
     },
 }

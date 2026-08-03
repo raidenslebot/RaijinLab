@@ -2084,3 +2084,34 @@ NOT yet injected — the user's next inject picks it up from build_x86.
 3. `0x512B07 SHIELD` appears at most a handful of times (one per unique
    address) instead of ~833/session.
 4. Casts still land (al=1); no UI-error regression.
+
+### ROUND 43c (addon-only) — THE 0x-PREFIX BUG (live root cause of BOTH complaints)
+Live evidence from the 13:16/13:19 sessions (1.10.104-aa) and the 13:23
+session (1.10.105-aa):
+- EVERY 6603 engage attempt was REFUSED by the client (al=0) — five in a row
+  across targets, including 200ms after a melee Plague Strike landed.
+- The runtime `IsAttacking` returns `1|0xGUID` (hex WITHOUT the `0x` prefix);
+  the addon compared `atk:lower() == tgt:lower()` where `tgt` =
+  `UnitGUID("target")` = `"0xF130..."` (WITH the `0x` prefix). The comparison
+  was ALWAYS false → `already` was never true → the addon fired 6603 every
+  0.35s → the client refused every time (its AttackTargetGuid IS set; the
+  client's own IsCurrentSpell(6603) internal 0x806030 returns "attacking"
+  iff player+0xA20/0xA24 != 0 — RE-verified in the disassembly).
+- This explains BOTH user complaints: the Auto Attack slot "cast" but never
+  landed ("auto attack casts are not working") and each refusal is a client
+  error ("you are generating ui errors").
+- FIX (Executor.lua): normalize the target GUID (strip `0x`) before comparing
+  with the runtime's hex. Now `already` is true when the client is attacking
+  the current target → NO redundant 6603 → no refusals. When NOT attacking
+  (AttackTargetGuid=0/mismatch), the slot fires 6603 (throttled 0.35s) and
+  the client accepts (it is genuinely not attacking). Deployed (197 files).
+  The user must `/reload` to pick up the addon change (runtime 1.10.105-aa is
+  already injected).
+
+### Live watchlist (43c)
+1. Auto Attack: when the client is attacking the current target the slot sits
+   at `already_attacking` (no FIRE spam, no refusals). When it is NOT
+   attacking and the target is in melee, 6603 is ACCEPTED (al=1, `Attack
+   engage id=6603 ... ok`) and the swing starts.
+2. NO refused 6603 (`SafeNativeCast rc=... id=6603 al=0`) while the client is
+   already auto-attacking the current target.

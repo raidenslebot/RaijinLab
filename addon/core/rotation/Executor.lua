@@ -2091,16 +2091,32 @@ function Executor.attempt_action(action, ctx)
         -- is also idempotent (never re-casts while the list says attacking).
         local already = false
         if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-            -- Authoritative: "1|0xGUID" = the GUID the player is attacking.
-            -- Only skip when it matches the CURRENT target (attacking a
-            -- leftover target must fall through so AttackTarget can re-aim).
+            -- Authoritative: "1|0xGUID" = the GUID the player is attacking
+            -- (the client's own IsCurrentSpell(6603) internal 0x806030 returns
+            -- "attacking" iff player+0xA20/0xA24 != 0 — RE-verified). Only skip
+            -- when it matches the CURRENT target (attacking a leftover target
+            -- must fall through so AttackTarget can re-aim).
             local okc, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsAttacking")
             if okc and type(cur) == "string" then
                 local flag, atk = cur:match("^([01])|0x([0-9a-fA-F]+)$")
                 if flag == "1" and atk then
                     local tgt = (UnitGUID and UnitGUID("target")) or ""
-                    if tgt ~= "" and atk:lower() == tgt:lower() then
-                        already = true
+                    if tgt ~= "" then
+                        -- 2026-08-03 (0x-PREFIX BUG — the "auto attack casts
+                        -- are not working" root cause, live-proven): the
+                        -- runtime returns "1|0xGUID" (hex WITHOUT the 0x
+                        -- prefix) but UnitGUID("target") returns "0xGUID"
+                        -- (WITH the 0x prefix). The old `atk:lower() ==
+                        -- tgt:lower()` was ALWAYS false → `already` was never
+                        -- true → the addon fired 6603 every 0.35s → the client
+                        -- refused EVERY cast ("already attacking", its
+                        -- AttackTargetGuid IS set) — live: every 6603 al=0 in
+                        -- the 13:16/13:19 sessions. Normalize the target GUID
+                        -- (strip 0x) before comparing.
+                        local tn = tgt:gsub("^0x", ""):lower()
+                        if atk:lower() == tn then
+                            already = true
+                        end
                     end
                 end
             end

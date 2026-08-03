@@ -270,29 +270,67 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         s_victimGuid = targetGuid;
         s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
         uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
-        // 2026-08-02 (ROUND 23 — the [0xd0]+0x18 write is REMOVED, PERMANENT):
-        // the "write the victim GUID into [player+0xd0]+0x18" approach has now
-        // corrupted UNIT_FLAG_CHARMED (0x40) TWICE — round 18 (through
-        // PlayerPtr/LocalPtr garbage) and round 22 (through the camera-verified
-        // player). The client reads [playerObj+0xD0]+0x18 for Spell_C's SYNC
-        // resolution, but writing through ANY of our player resolutions lands
-        // on live unit state (the client's real cast record pointer at
-        // [player+0xD0] is not what our resolved object exposes at that
-        // moment). It is unsafe on this client — do NOT reintroduce it without
-        // a live-verified [player+0xD0] layout. The 18:11-proven mechanism
-        // (static walk-slot write at 0xD3C00E14 + arg4 GUID holder + direct-
-        // GUID, registerTarget=0) is the ONLY config that cast cleanly.
+        // 2026-08-02 (ROUND 24 — SAFE SYNC-RECORD WRITE + signature check):
+        // the round-23 CastDiag proved the exact failure: [player+0xd0] is a
+        // HEAP record (0x371C8FD0, not the static slot 0xD3C00DFC), its
+        // +0x18/+0x1c target GUID is EMPTY (r18=0 r1c=0), and the client's sync
+        // resolution (0x80CD4A: edi=[edi+0xd0]; ObjectPtr([edi+0x18],
+        // [edi+0x1c],8)) resolves 0 -> "Invalid target" al=0. The diag ALSO
+        // proved castP==camP (the camera player IS the cast-path player, so
+        // VerifiedPlayerPtr is correct) and charm=0 (the player is NOT charmed —
+        // the round-22 charm was contaminated by the then-active 6603 engage).
         //
-        // 2026-08-02 (ROUND 23 — SYNC-TARGET DIAGNOSTIC): if a targeted cast
-        // STILL fails al=0, this names the exact resolution state so the next
-        // fix is data-driven (never guess again): the cast-wrapper player GUID
-        // ([ClntObjMgr+0xC0/0xC4] via 0x4d3790's TLS chain), the cast-path
-        // player object (ObjectPtr(guid, mask 0x10) — what the wrapper uses),
-        // the camera-resolved player (CameraPlayerPtr), whether they agree,
-        // the cast record pointer [castPlayer+0xD0], whether it is the static
-        // slot (0xD3C00DFC), what [recPtr+0x18] holds, and whether the player's
-        // UNIT_FIELD_FLAGS has CHARMED (0x40) set. Native-hook context only
-        // (held==0); throttled to ~1 line per 2s.
+        // The round-22 write itself was unsafe because it wrote through
+        // [player+0xd0] WITHOUT verifying the record. ROUND 24 adds a record
+        // SIGNATURE check before writing: the client builds its cast records
+        // with the CASTER GUID at [rec+0x10]/[rec+0x14] (0x80CDD4:
+        // mov eax,[edi+8]; mov [esi+0x10],[eax]; mov [esi+0x14],[eax+4]) and
+        // the player's GUID lives at [[player+0x8]]. If [rec+0x10/0x14] ==
+        // player GUID, rec IS the player's cast record -> writing the victim
+        // GUID into [rec+0x18/+0x1c] (the sync path's primary slot) and
+        // [rec+0x28/+0x2c] (its zero-fallback slot) is exactly the semantic the
+        // client uses. If the signature does NOT match, the write is SKIPPED
+        // (never write through an unverified record — round 20's rule).
+        // Native-hook context only (held==0); never from the Lua VM.
+        if (held == 0) {
+            uintptr_t vplayer = OM::VerifiedPlayerPtr();
+            if (vplayer) {
+                uintptr_t recPtr = Mem::Read<uintptr_t>(vplayer + 0xD0);
+                if (recPtr && recPtr >= 0x10000u) {
+                    uint32_t rec10 = Mem::Read<uint32_t>(recPtr + 0x10);
+                    uint32_t rec14 = Mem::Read<uint32_t>(recPtr + 0x14);
+                    uint32_t pguidLo = 0, pguidHi = 0;
+                    uintptr_t pgp = Mem::Read<uintptr_t>(vplayer + 0x8);
+                    if (pgp && pgp >= 0x10000u) {
+                        pguidLo = Mem::Read<uint32_t>(pgp);
+                        pguidHi = Mem::Read<uint32_t>(pgp + 4);
+                    }
+                    if (rec10 == pguidLo && rec14 == pguidHi) {
+                        // rec is the player's cast record (caster GUID match) —
+                        // safe to seed the sync target GUID slots.
+                        Mem::Write<uint32_t>(recPtr + 0x18, lo);
+                        Mem::Write<uint32_t>(recPtr + 0x1C, hi);
+                        Mem::Write<uint32_t>(recPtr + 0x28, lo);
+                        Mem::Write<uint32_t>(recPtr + 0x2C, hi);
+                    } else {
+                        // Signature mismatch — NEVER write through this record.
+                        RL::Log::Warn("CastDiag rec-MISMATCH id=%d rec10=%08X%08X "
+                                      "pg=%08X%08X skip-sync-write",
+                                      spellId, (unsigned)rec14, (unsigned)rec10,
+                                      (unsigned)pguidHi, (unsigned)pguidLo);
+                    }
+                }
+            }
+        }
+        // 2026-08-02 (ROUND 23/24 — SYNC-TARGET DIAGNOSTIC): names the exact
+        // resolution state on every targeted cast (native context, ~2s throttle):
+        // the cast-wrapper player GUID ([ClntObjMgr+0xC0/0xC4] via the 0x4d3790
+        // TLS chain), the cast-path player (ObjectPtr(guid, mask 0x10) — what
+        // the wrapper uses), the camera player, whether they agree, the record
+        // pointer [castPlayer+0xD0], its static-slot status, the record's
+        // signature fields (+8/+0xc target, +0x10/+0x14 caster), the sync GUID
+        // slots (+0x18/+0x1c, +0x28/+0x2c), and the player's UNIT_FIELD_FLAGS
+        // charmed bit. This makes any remaining failure attributable.
         if (held == 0) {
             static volatile LONG s_diagMs = 0;
             LONG nowD = (LONG)(RL::Game::State::GameTimeMs() & 0x7FFFFFFF);
@@ -306,12 +344,18 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 if (mlo || mhi) castPlayer = OM::ObjectPtr3Guid(mlo, mhi, 0x10);
                 uintptr_t camPlayer = OM::CameraPlayerPtrEx();
                 uintptr_t recPtr = 0;
-                uint32_t r18 = 0, r1c = 0, spellAt20 = 0;
+                uint32_t r8 = 0, rc = 0, r10 = 0, r14 = 0, r18 = 0, r1c = 0, r28 = 0, r2c = 0, spellAt20 = 0;
                 if (castPlayer) {
                     recPtr = Mem::Read<uintptr_t>(castPlayer + 0xD0);
                     if (recPtr && recPtr >= 0x10000u) {
+                        r8 = Mem::Read<uint32_t>(recPtr + 0x8);
+                        rc = Mem::Read<uint32_t>(recPtr + 0xC);
+                        r10 = Mem::Read<uint32_t>(recPtr + 0x10);
+                        r14 = Mem::Read<uint32_t>(recPtr + 0x14);
                         r18 = Mem::Read<uint32_t>(recPtr + 0x18);
                         r1c = Mem::Read<uint32_t>(recPtr + 0x1C);
+                        r28 = Mem::Read<uint32_t>(recPtr + 0x28);
+                        r2c = Mem::Read<uint32_t>(recPtr + 0x2C);
                         spellAt20 = Mem::Read<uint32_t>(recPtr + 0x20);
                     }
                 }
@@ -322,12 +366,15 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 }
                 RL::Log::Warn("CastDiag id=%d guid=%08X%08X mgr=0x%lX mguid=%08X%08X "
                               "castP=0x%lX camP=0x%lX rec=0x%lX static=%d "
-                              "r18=%08X r1c=%08X s20=%u flags=%08X charm=%d",
+                              "r8=%08X%08X r10=%08X%08X r18=%08X%08X r28=%08X%08X "
+                              "s20=%u flags=%08X charm=%d",
                               spellId, (unsigned)hi, (unsigned)lo,
                               (unsigned long)mgr, (unsigned)mhi, (unsigned)mlo,
                               (unsigned long)castPlayer, (unsigned long)camPlayer,
                               (unsigned long)recPtr, (recPtr == 0xD3C00DFCu),
-                              (unsigned)r18, (unsigned)r1c, spellAt20,
+                              (unsigned)rc, (unsigned)r8, (unsigned)r14, (unsigned)r10,
+                              (unsigned)r1c, (unsigned)r18, (unsigned)r2c, (unsigned)r28,
+                              spellAt20,
                               (unsigned)flags, (int)((flags & 0x40) != 0));
             }
         }

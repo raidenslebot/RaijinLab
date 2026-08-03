@@ -1098,3 +1098,58 @@ later targeted cast fails sync resolution.
 5. Auto-attack: client auto-attacks on melee spell land (no forced 6603).
 6. If a `CastDiag` line appears, it names the exact sync-resolution state —
    bring it here and the next fix is data-driven.
+
+---
+
+## 2026-08-02 (23rd round, 20:28 session) — CastDiag PROVES the sync failure → 1.10.89-syncrecord
+
+1.10.88 live (20:28) — no more "Can't attack while charmed" ✅ (the [0xd0]
+write + engage removal worked), but unit-targeted casts STILL refuse `al=0`
+("Invalid target") and the target gets dropped. The new CastDiag fired and
+named the exact failure:
+
+```
+CastDiag id=45513 guid=F1300005E500614A mgr=0x37745418 mguid=000000000000DB53
+castP=0x371C7660 camP=0x371C7660 rec=0x371C8FD0 static=0 r18=00000000 r1c=00000000 s20=0 flags=00000000 charm=0
+```
+
+- **`castP == camP == 0x371C7660`** — the camera player IS the cast-path
+  player; VerifiedPlayerPtr resolves the correct object.
+- **`charm=0`** — the player is NOT charmed. The round-22 "Can't attack while
+  charmed" was contaminated by the still-active 6603 engage, NOT the [0xd0]
+  write alone.
+- **`rec=0x371C8FD0`, `static=0`** — `[player+0xd0]` is a HEAP record, and
+  **`[rec+0x18]=0 [rec+0x1c]=0`** — the sync target GUID is EMPTY → the
+  client's sync resolution (0x80CD4A: `ObjectPtr([rec+0x18],[rec+0x1c],8)`)
+  resolves GUID 0 → "Invalid target" al=0.
+
+The target drop + XPerl UI-error flood (30k "bad argument #1 to 'lower'") are
+SYMPTOMS of the failed casts: a failed Spell_C drops the client's selection
+(0xBD07B0), and XPerl (unitframe) reads nil units. In 18:11 the casts
+succeeded, so nothing dropped. ONE root cause: the empty sync target GUID.
+
+### FIX (1.10.89-syncrecord) — SAFE sync-record write with a SIGNATURE check
+The client builds its cast records with the CASTER GUID at `[rec+0x10]/
+[rec+0x14]` (0x80CDD4) and the player's GUID lives at `[[player+0x8]]`
+(0x80CD26). So before writing:
+1. Resolve the player via `OM::VerifiedPlayerPtr()` (diag-proven correct).
+2. `rec = [player+0xd0]`; read the record's caster GUID `[rec+0x10/0x14]` and
+   the player GUID `[[player+0x8]]`.
+3. **Only if they MATCH** (rec is verifiably the player's cast record) write
+   the victim GUID into the sync slots `[rec+0x18/+0x1c]` (primary) and
+   `[rec+0x28/+0x2c]` (the client's zero-fallback slot at 0x80CD5B).
+   **On signature mismatch, SKIP the write** (never write through an
+   unverified record — round 20's rule).
+4. CastDiag extended to log the record signature (+8/+0xc, +0x10/+0x14), both
+   sync GUID slots post-write (+0x18/+0x1c, +0x28/+0x2c), and the player's
+   charmed flag — so if the write ever corrupts, the next line names it.
+
+### Live watchlist (1.10.89-syncrecord)
+1. VER reads `1.10.89-syncrecord`.
+2. **Unit-targeted casts LAND (`al=1`)** — the sync record now carries the
+   victim GUID, so 0x80CD4A resolves it.
+3. **Target is RETAINED** — no more drop (the drop was the failed cast).
+4. **XPerl/UI-error flood stops** — no more nil-unit reads from target churn.
+5. NO "Can't attack while charmed"; rotation cycles; Consecration still lands.
+6. If `CastDiag rec-MISMATCH` appears, the record signature didn't match —
+   that names the next thing to fix.

@@ -910,3 +910,42 @@ a 20yd spell never casts at 21.5yd).
 5. NO spam of ANY refusal reason (every refusal path now floors the spell).
 6. Repo is pushed: `66fb023` (round 19) on origin/main. GitHub shows the
    changes.
+
+---
+
+## 2026-08-02 (20th round, 19:25) — THE FALSE CHARM: OUR corruption → 1.10.85-nocorrupt
+
+The user was NOT charmed. "Can't attack while charmed" on every cast was a
+**bug WE introduced in round 18** and it poisoned every session since.
+
+### Root cause A — [player+0xd0]+0x18 write SET the charmed flag
+The round-18 "cast-GUID fix" wrote the victim GUID into `[player+0xd0]+0x18`.
+But the runtime's player resolution is UNRELIABLE on this client (FacingLive
+`local=1000000000.0000` garbage in every session), so `PlayerPtr()` can return
+a garbage pointer; `recPtr+0x18` then lands wherever garbage points — often a
+live **unit-flags field** — and the victim GUID's LOW DWORD (e.g. 0xE5004C5A)
+sets **UNIT_FLAG_CHARMED (0x40)**. The client then refused EVERY cast with
+"Can't attack while charmed" while the player was NOT charmed, and the unit
+data corruption flooded OTHER addons (XPerl_Player 21k "string expected, got
+nil" errors). FIX: the write is REMOVED. The arg4 GUID-holder + static
+0xD3C00E14 slot write remain — both write ZERO client state (the holder points
+into OUR memory; the slot is the walk's own proven GUID slot).
+
+### Root cause B — the blocked dialog reset silently failed
+0xD3F604 (the "addon blocked" cast counter) is in the SAME UNCOMMITTED .data
+BSS tail as 0xD3C00E14 (committed ends 0xB2EE00, virtual to 0xDD0508). Our
+`Mem::Write` reset was a silent NO-OP (VirtualQuery rejects uncommitted pages),
+so the counter climbed past 10 and fired the native blocked dialog (0x530840)
+on suite disable — for every round since 1.10.81. FIX: commit the 0xD3F604
+page once (idempotent VirtualAlloc) before every reset — the reset is now real.
+
+### Live watchlist (1.10.85-nocorrupt)
+1. VER reads `1.10.85-nocorrupt`.
+2. NO "Can't attack while charmed" — the player is not charmed; the flag is no
+   longer corrupted. Casts wire and land normally.
+3. NO "RaijinLab has been blocked" dialog on suite disable — the counter reset
+   actually works now.
+4. Other addons' unit-frame errors (XPerl flood) stop — the unit data is no
+   longer corrupted by our writes.
+5. Aura search casts on found targets; Icy Touch stays inside its real range.
+6. Repo is pushed: `dd04f40` (round 20) on origin/main.

@@ -787,3 +787,70 @@ of silently casting at a made-up distance.
    it here and I fix the decode, not hide it.
 4. Aura-search `face` field now matches the client's arc (AuraSearchPacked
    convention fix) — better facing ranking.
+
+---
+
+## 2026-08-02 (18th round, 18:36 session) — THE 1.10.82 REGRESSION → 1.10.83-castguid
+
+The 18:36 session REGRESSED vs 1.10.81: every targeted cast refused "Out of
+range" at edge=1.8, `0x512B07 SHIELD` fired 4x with a NEW `esi=0xF75FC697`
+(heap — never 0xD3C00E14), and the rotation locked in "wait cooldown x240"
+(8s). RE of Spell_C (0x80CCE0) + the target setter (0x524BF0) exposed TWO
+compounding defects in OUR cast path:
+
+### Root cause A — the client's "guidLo" arg is a POINTER, not a dword
+`0x80CDC1: mov ecx,[ebx+8]; mov eax,[ecx]; mov ecx,[ecx+4]` — Spell_C fills the
+NEW cast record's target GUID from `[guidPtr+8]`. We passed the raw `lo` dword
+(0xE5004C5A) → the client read a garbage GUID from `[lo+8]` into the record →
+the async cast-feedback walk resolved that garbage (esi=0xF75FC697) → AV + the
+cast record had a garbage target → client refused "Out of range" (generic
+resolve-failure) → phantom_grace → lockup.
+FIX: pass a valid GUID-holder (`[holder+8] = &victimGuid`); the record now gets
+the REAL victim GUID.
+
+### Root cause B — [player+0xd0] is NOT always the static slot
+`0x80CD4A: edi=[edi+0xd0]; ObjectPtr([edi+0x18],[edi+0x1c],8)` — Spell_C
+resolves the target from the caster's LIVE cast-record pointer [player+0xd0].
+That pointer is 0xD3C00DFC (static slot, +0x18 == 0xD3C00E14) ONLY while no
+selection machinery has run. Once the attack-engage `NativeSetTarget`
+(0x524BF0 — which ALSO reads [player+0xd0]+0x18 to decide registration) runs,
+the client flips it to a HEAP record → the static-slot write became useless and
+the walk read the heap record's garbage GUID.
+FIX: SafeNativeCast now ALSO writes the victim GUID into `[player+0xd0]+0x18/
++0x1C` (VirtualQuery-guarded) — covers BOTH the static and heap record cases.
+
+### Root cause C — attack engage wrote a ZERO record
+`AttackTargetFor(6603)` passed targetGuid=0 to SafeNativeCast → the slot/record
+got 0. FIX: pass the real target GUID.
+
+### Root cause D — phantom_kept kept the GCD floor
+A phantom (cast never landed) took the `phantom_kept` branch → waited the full
+1.5s wire-time GCD → after 3 refused casts the rotation sat in "wait cooldown"
+for 8+ seconds. FIX (user directive): phantom ALWAYS frees the GCD
+(`phantom_free`); the `_recent` micro-lock + real CD table still gate re-fire.
+
+### Root cause E — the range gate was EDGE-based, the client is CENTER-based
+`spell_in_range_vs_target` compared EDGE (center − pr − tr) to band — a 5yd
+melee could wire at center ~8yd. The client refuses on CENTER > maxR (proof:
+5yd melee refused at center=5.0). FIX: head gate now compares CENTER to band;
+the multi-candidate gate lost its +0.5/+1.5 tolerance (`cdist > cmaxR`).
+
+### Fallback audit (user directive: NO silent fallbacks, ever)
+Removed in this round: `slot_corpse_range or 30`, `collect_nearby_enemies or
+40`, `dist_within or 8`, `parse_nearby_hostiles center or 999`,
+`collect_units_from_tokens or 999`, `combat_reach → 1.5` (now nil → fail
+closed), `live_range_model pr/tr or 1.5` (now fail closed), the +1yd
+`max_range+1` slack, and the +0.5/+1.5 candidate tolerance.
+
+### Live watchlist (1.10.83-castguid)
+1. VER reads `1.10.83-castguid`.
+2. NO `0x512B07 SHIELD` — the cast record now gets the real victim GUID
+   (arg4 holder) AND [player+0xd0]+0x18 is written, so the walk resolves.
+3. Casts LAND — no "Out of range", no phantom_grace lockup, no "wait cooldown
+   xN" freezes; rotation cycles continuously.
+4. Icy Touch/aura_search casts on found targets (it was blocked by the same
+   cast refusals).
+5. NO fallback line in the log: `RANGE_UNKNOWN`/`RANGE_REQUIRED`/
+   `UNPLACEABLE` all name real gaps to fix, not things to paper over.
+6. Commits: every round is committed to the repo (round 10-17 = 78ce247,
+   round 18 = ee3b675).

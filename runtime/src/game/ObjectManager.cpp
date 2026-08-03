@@ -1084,6 +1084,18 @@ uintptr_t VerifiedPlayerPtr() {
     return CameraPlayerPtr();
 }
 
+// 2026-08-02 (ROUND 23 — SYNC-TARGET DIAGNOSTIC EXPORTS). The cast wrapper
+// 0x80DA40 resolves its player object as ObjectPtr(GetActivePlayerGUID, 0x10)
+// where GetActivePlayerGUID = [ClntObjMgr+0xC0/0xC4] via the TLS chain
+// (0x4d3790). These exported wrappers expose the client's exact resolution
+// pieces (all VEH-guarded / VirtualQuery-guarded) so SafeNativeCast's
+// CastDiag can compare cast-path player vs camera player vs the [0xd0] record
+// and the player's UNIT_FIELD_FLAGS — the data that finally proves which
+// player object Spell_C's sync resolution actually reads.
+uintptr_t ClntObjMgrTls() { return ClntObjMgrFromTls(); }
+uintptr_t ObjectPtr3Guid(uint32_t lo, uint32_t hi, int mask) { return CallObjectPtr3(lo, hi, mask); }
+uintptr_t CameraPlayerPtrEx() { return CameraPlayerPtr(); }
+
 // Live local-player facing via the client's exact resolution path (camera →
 // GUID → ObjectPtr → +0x7AC). 1e9 on fail. Primary source for PlayerFacing.
 //

@@ -1038,3 +1038,63 @@ direct-GUID path — `SafeNativeCast(6603, targetGuid, 0)`:
 4. Aura search casts on found targets; Icy Touch stays inside its real range.
 5. No "Can't attack while charmed", no blocked dialog, no XPerl flood.
 6. Repo is pushed: `657a690` (round 21) on origin/main.
+
+---
+
+## 2026-08-02 (22nd round, 20:09 session) — SYNC-TARGET WRITE CORRUPTED AGAIN → 1.10.88-castrestore
+
+1.10.87-synctarget live (20:09): `active=0x0` in every FacingLive line is a
+RED HERRING — the diag only calls SafeGetActive inside `if (f >= 1e8f)` (Path
+3), and Path 1 (camera) always succeeds with a valid facing first, so `active`
+just stays at its initialized 0. The camera path IS the working player
+resolution (obj=0x6CC39910, face readable).
+
+BUT the `[player+0xd0]+0x18` write (re-added in round 22 via the verified
+player) produced **"Can't attack while charmed"** again — the SAME corruption
+as round 18. Sequence: FIRE #1 Auto Attack (engage) → FIRE #5 Icy Touch →
+refused charmed → `wait_cc` forever. The write has now corrupted
+UNIT_FLAG_CHARMED **twice** through DIFFERENT player pointers (round 18:
+LocalPtr garbage; round 22: camera-verified). Conclusion: **writing through
+[player+0xd0] is fundamentally unsafe on this client** — the cast-record
+pointer our resolved object exposes at +0xD0 is not a safe record write target
+(whatever the client's own cast path uses, it is not reachable this way without
+corrupting unit state).
+
+### FIX (1.10.88-castrestore) — restore the ONLY proven-clean configuration
+Cross-session matrix (definitive):
+- **18:11 (1.10.81): NO [0xd0] write + NO 6603 engage → casts LAND.**
+- 19:34 (1.10.86): no [0xd0] write + direct-GUID 6603 engage → every targeted
+  cast `al=0` ("Invalid target"), Consecration (guid=0) lands.
+- 20:09 (1.10.87): [0xd0] write + 6603 engage → "Can't attack while charmed".
+
+The 6603 engage is the variable that broke the 18:11 config. Its Spell_C
+machinery allocates a HEAP cast record (0x805010) and the client's sync path
+(0x80CD4A) reads `[player+0xd0]+0x18` — once the engage has run, that pointer
+is no longer the static walk slot (0xD3C00DFC) our slot write feeds, so every
+later targeted cast fails sync resolution.
+
+1. **REMOVE the `[0xd0]+0x18` write** from SafeNativeCast (permanent — it has
+   corrupted charmed twice).
+2. **DISABLE the auto-attack engage** (`AttackTargetFor` no longer casts
+   6603; detection-only + fail-open, logged once). WoW auto-attacks natively
+   when any melee ability lands — 18:11 proved the melee spells engage without
+   a 6603 cast. This restores the EXACT 18:11-proven cast path: static walk-
+   slot write (0xD3C00E14) + arg4 GUID holder + direct-GUID registerTarget=0.
+3. **NEW `CastDiag` diagnostic** in SafeNativeCast (native context, throttled
+   ~2s) — if a targeted cast STILL fails, it logs the cast-wrapper player GUID
+   ([ClntObjMgr+0xC0/0xC4] via the 0x4d3790 TLS chain), the cast-path player
+   object (ObjectPtr(guid, mask 0x10) — what the wrapper uses), the camera
+   player, whether they agree, the `[player+0xd0]` record pointer, whether it
+   is the static slot, `[rec+0x18]` contents, and the player's UNIT_FIELD_FLAGS
+   charmed bit. Data-driven next step if this still fails.
+
+### Live watchlist (1.10.88-castrestore)
+1. VER reads `1.10.88-castrestore`.
+2. **NO "Can't attack while charmed"** (the [0xd0] write — the corruption — is
+   gone).
+3. **Unit-targeted casts LAND** (Icy Touch/Blood Strike/etc. `al=1`) — the
+   rotation fires, matching the 18:11 clean session.
+4. Rotation cycles continuously; no phantom_grace lockup; no wait_cc freeze.
+5. Auto-attack: client auto-attacks on melee spell land (no forced 6603).
+6. If a `CastDiag` line appears, it names the exact sync-resolution state —
+   bring it here and the next fix is data-driven.

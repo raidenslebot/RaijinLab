@@ -96,6 +96,13 @@ uintptr_t LocalPtr();
 // client — MainThread snapshots LocalPtr); use this for any [player+off]
 // write so an unverifiable pointer never corrupts client state.
 uintptr_t VerifiedPlayerPtr();
+// ROUND 23 (SYNC-TARGET DIAGNOSTIC) exports of the client's exact cast-path
+// resolution pieces: the ClntObjMgr from the TLS chain (the [slot+8] pointer
+// 0x4d3790/0x4D4DB0 read), ObjectPtr(lo,hi,mask) (0x4D4DB0), and the camera
+// player object (cam → GUID → ObjectPtr mask 1). All VEH/VirtualQuery-guarded.
+uintptr_t ClntObjMgrTls();
+uintptr_t ObjectPtr3Guid(uint32_t lo, uint32_t hi, int mask);
+uintptr_t CameraPlayerPtrEx();
 bool InWorld();
 
 // Field accessors (work without full snapshot)

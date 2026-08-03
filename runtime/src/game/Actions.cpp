@@ -270,23 +270,65 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         s_victimGuid = targetGuid;
         s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
         uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
-        // 2026-08-02 (ROUND 22 — SYNC TARGET RESOLUTION): Spell_C's SYNC path
-        // (0x80CD4A: edi=[edi+0xd0]; ObjectPtr([edi+0x18],[edi+0x1c],8))
-        // resolves the cast target from [player+0xd0]+0x18. On this client the
-        // [0xd0] record is NOT the static walk slot (0xD3C00E14), so the slot
-        // write alone leaves the sync resolution empty -> "Invalid target"
-        // al=0 for EVERY unit-targeted cast while guid=0 casts (Consecration)
-        // land. Write the victim GUID into the record's +0x18/+0x1c using a
-        // VERIFIED player object only, native-hook context only (held==0).
-        // Unverifiable player -> skip (no corruption).
+        // 2026-08-02 (ROUND 23 — the [0xd0]+0x18 write is REMOVED, PERMANENT):
+        // the "write the victim GUID into [player+0xd0]+0x18" approach has now
+        // corrupted UNIT_FLAG_CHARMED (0x40) TWICE — round 18 (through
+        // PlayerPtr/LocalPtr garbage) and round 22 (through the camera-verified
+        // player). The client reads [playerObj+0xD0]+0x18 for Spell_C's SYNC
+        // resolution, but writing through ANY of our player resolutions lands
+        // on live unit state (the client's real cast record pointer at
+        // [player+0xD0] is not what our resolved object exposes at that
+        // moment). It is unsafe on this client — do NOT reintroduce it without
+        // a live-verified [player+0xD0] layout. The 18:11-proven mechanism
+        // (static walk-slot write at 0xD3C00E14 + arg4 GUID holder + direct-
+        // GUID, registerTarget=0) is the ONLY config that cast cleanly.
+        //
+        // 2026-08-02 (ROUND 23 — SYNC-TARGET DIAGNOSTIC): if a targeted cast
+        // STILL fails al=0, this names the exact resolution state so the next
+        // fix is data-driven (never guess again): the cast-wrapper player GUID
+        // ([ClntObjMgr+0xC0/0xC4] via 0x4d3790's TLS chain), the cast-path
+        // player object (ObjectPtr(guid, mask 0x10) — what the wrapper uses),
+        // the camera-resolved player (CameraPlayerPtr), whether they agree,
+        // the cast record pointer [castPlayer+0xD0], whether it is the static
+        // slot (0xD3C00DFC), what [recPtr+0x18] holds, and whether the player's
+        // UNIT_FIELD_FLAGS has CHARMED (0x40) set. Native-hook context only
+        // (held==0); throttled to ~1 line per 2s.
         if (held == 0) {
-            uintptr_t vplayer = OM::VerifiedPlayerPtr();
-            if (vplayer) {
-                uintptr_t recPtr = Mem::Read<uintptr_t>(vplayer + 0xD0);
-                if (recPtr && recPtr >= 0x10000u) {
-                    Mem::Write<uint32_t>(recPtr + 0x18, lo);
-                    Mem::Write<uint32_t>(recPtr + 0x1C, hi);
+            static volatile LONG s_diagMs = 0;
+            LONG nowD = (LONG)(RL::Game::State::GameTimeMs() & 0x7FFFFFFF);
+            LONG lastD = s_diagMs;
+            if (targetGuid != 0 && (nowD - lastD > 2000 || lastD == 0)) {
+                s_diagMs = nowD;
+                uintptr_t mgr = OM::ClntObjMgrTls();
+                uint32_t mlo = 0, mhi = 0;
+                if (mgr) { mlo = Mem::Read<uint32_t>(mgr + 0xC0); mhi = Mem::Read<uint32_t>(mgr + 0xC4); }
+                uintptr_t castPlayer = 0;
+                if (mlo || mhi) castPlayer = OM::ObjectPtr3Guid(mlo, mhi, 0x10);
+                uintptr_t camPlayer = OM::CameraPlayerPtrEx();
+                uintptr_t recPtr = 0;
+                uint32_t r18 = 0, r1c = 0, spellAt20 = 0;
+                if (castPlayer) {
+                    recPtr = Mem::Read<uintptr_t>(castPlayer + 0xD0);
+                    if (recPtr && recPtr >= 0x10000u) {
+                        r18 = Mem::Read<uint32_t>(recPtr + 0x18);
+                        r1c = Mem::Read<uint32_t>(recPtr + 0x1C);
+                        spellAt20 = Mem::Read<uint32_t>(recPtr + 0x20);
+                    }
                 }
+                uint32_t flags = 0;
+                if (castPlayer) {
+                    uintptr_t desc = Mem::Read<uintptr_t>(castPlayer + Offsets::O().Descriptor);
+                    if (desc && desc >= 0x10000u) flags = Mem::Read<uint32_t>(desc + 0x44);
+                }
+                RL::Log::Warn("CastDiag id=%d guid=%08X%08X mgr=0x%lX mguid=%08X%08X "
+                              "castP=0x%lX camP=0x%lX rec=0x%lX static=%d "
+                              "r18=%08X r1c=%08X s20=%u flags=%08X charm=%d",
+                              spellId, (unsigned)hi, (unsigned)lo,
+                              (unsigned long)mgr, (unsigned)mhi, (unsigned)mlo,
+                              (unsigned long)castPlayer, (unsigned long)camPlayer,
+                              (unsigned long)recPtr, (recPtr == 0xD3C00DFCu),
+                              (unsigned)r18, (unsigned)r1c, spellAt20,
+                              (unsigned)flags, (int)((flags & 0x40) != 0));
             }
         }
         // 2026-08-02 (0x512B07 FINAL FIX v3): we are inside the [0xD4139C]==0
@@ -1670,45 +1712,32 @@ bool AttackTargetFor(uint64_t targetGuid) {
             }
         }
     }
-    // ENGAGE ONCE PER TARGET (2026-08-01): remember the engaged target and
-    // NEVER re-cast 6603 for it until selection changes to a different GUID.
-    // Re-casting 6603 while already attacking is what spams the client's
-    // "Another action is in progress" / blocked-action errors every 1.5s
-    // (live proof 02:26: Attack engage at :21.7 :23.2 :24.9 :26.4 :27.9).
-    static uint64_t s_engagedTarget = 0;
-    if (s_engagedTarget == targetGuid) {
-        return true; // we already engaged THIS target — no re-cast, ever
+    // 2026-08-02 (ROUND 23 — AUTO-ATTACK ENGAGE DISABLED): every session since
+    // round 18 ran the Spell_C(6603) engage as its FIRST cast, and every one of
+    // those sessions broke — while the ONLY clean session (18:11, 1.10.81) had
+    // NO 6603 casts at all. The 19:34 log (1.10.86, direct-GUID engage, no
+    // [0xd0] write) shows the engage firing repeatedly and failing nrc=0, then
+    // EVERY unit-targeted cast refusing al=0 ("Invalid target") while
+    // Consecration (guid=0) lands — i.e. the client's SYNC target resolution
+    // broke the instant the engage ran. Spell_C's cast machinery allocates a
+    // HEAP cast record (0x805010) and the client's sync path reads
+    // [player+0xd0]+0x18; once the engage's record machinery has run, that
+    // pointer is no longer the static walk slot (0xD3C00DFC) our slot write
+    // feeds, so every later targeted cast fails sync resolution. The engage
+    // itself is what we DON'T need: WoW auto-attacks natively the moment any
+    // melee ability lands (18:11 proved the rotation's melee spells engage
+    // without a 6603 cast), and the melee-range gate above already refuses
+    // nonsense engages. DISABLED = detection-only + fail-open: never cast 6603,
+    // never touch [0xd0], never touch selection; return true so the rotation
+    // cycles (auto-attack is handled by the client on melee spell land).
+    // Logged once so this is never a silent fallback.
+    static volatile LONG s_engageNote = 0;
+    if (InterlockedCompareExchange(&s_engageNote, 1, 0) == 0) {
+        RL::Log::Warn("Attack engage DISABLED (round 23): no 6603 cast — client "
+                      "auto-attacks on melee spell land; restores the 18:11-proven "
+                      "sync cast resolution (no heap cast-record flip).");
     }
-    // Action-state save/zero/restore lives inside SafeNativeCast (the client's
-    // own 0x48EC20 pattern).
-    // 2026-08-02 (0x512B07 safety): raw-GUID Spell_C(6603, guid!=0) crashes the
-    // cast-feedback the same way. SafeNativeCast registers the engage target
-    // via the client's real setter (0x524BF0) then casts Spell_C(6603, 0). No
-    // restore: auto-attack is supposed to keep the target selected.
-    // 2026-08-02 (19:40 TARGET-DROP FIX): NEVER register the engage target via
-    // 0x524BF0. The client's target setter flips the player's [0xd0] cast-record
-    // pointer from the static slot (0xD3C00DFC) to a HEAP record, which breaks
-    // Spell_C's synchronous target resolution (0x80CD4A reads [0xd0]+0x18) for
-    // EVERY subsequent cast -> al=0 refusals + the client dropping the user's
-    // selection (live 19:26: tgt=no the instant the attack engage ran, then
-    // every cast refused). The rotation's direct-GUID casts (proven clean at
-    // 18:11) pass registerTarget=0 and rely ONLY on the static-slot write +
-    // arg4 GUID holder — the auto-attack engage now does the SAME: cast 6603 AT
-    // the target GUID (slot + holder get it, the walk resolves it) with ZERO
-    // selection touch. No unitframe change, no record-pointer flip.
-    int nrc = SafeNativeCast(6603, targetGuid, 0);
-    if (nrc > 0) {
-        s_engagedTarget = targetGuid;
-        RL::Log::Warn("Attack engage id=6603 tgt=0x%llX ok",
-                      (unsigned long long)targetGuid);
-    } else {
-        // Cast failed (dead/unreachable target) — clear so a future tick can
-        // retry a fresh target without being stuck on the old record.
-        s_engagedTarget = 0;
-        RL::Log::Warn("Attack engage id=6603 tgt=0x%llX nrc=%d",
-                      (unsigned long long)targetGuid, nrc);
-    }
-    return nrc > 0;
+    return true;
 }
 
 bool AttackTarget() {

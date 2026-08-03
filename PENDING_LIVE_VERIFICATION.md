@@ -1701,3 +1701,70 @@ round-34 claim was false (live `minS=1`).
    pre-round-34 session; unit-targeted spells are the real test).
 4. Acquire-off: 0xBD07B0 is NEVER touched → aura-search must NOT drop the
    current target. No face-turning anywhere (detection-only).
+
+---
+
+## 2026-08-02 (35th round, 23:13 session) — 1.10.100 STILL al=0 → 1.10.101-rawguid
+
+The 23:13 live verdict for 1.10.100-minimal:
+```
+CastProbe id=45477 mode=6 desc40=00000000 r8=0x6D82A160 r1=0x6D82A160
+entry=1 a0=0000B1A5 a10=00050000 a28=02000000 fam=2 gate=0 d4139c=00000000
+busyV=0 busyP=0 ... beaf44=00000000 beaf4c=00000000 minS=00000001
+SafeNativeCast rc=0x4EF73B00 al=0 id=45477
+```
+- `entry=1` — CONFIRMS the round-34 revert worked: the real spell id (45477)
+  now reaches GetSpellEntry (all gates pass, incl. sync r8 resolving).
+- `rc=0x4EF73B00 al=0` — the fail went through the SHARED silent epilogue
+  **0x80d249** (`mov edi,esi; call 0x805100; ...; xor al,al`) — rc is
+  0x805100's return. So the refusal is a post-gate path inside 0x80CCE0.
+
+### FULL REAL-LOGIC DISASM (0x80CCE0 → 0x80DA40, tools/_disasm_cast.txt)
+The complete gate chain after the previously-probed gates (all exonerated):
+1. 0x80D34B `0x805f60(esi, &playerGuid, spellId)` — if 0 → skip gate C.
+2. 0x80D36D `0x809000(spellId, flag, 0,0,0)` — !=0 → 0x80d385 → 0x80d249 FAIL.
+   flag = (player->0x4cee50()==0) ? 1 : 0.
+3. 0x80D452 `0x8091d0(player, &spell, 1, record)` — ==0 → 0x80d249 FAIL.
+   Passes trivially iff `player->0x4cee50()==0`; else checks spell-requirement
+   slots (+0xC8/+0x278/+0xd0) + 0x800d60(player, spell), fail err 0x83.
+4. 0x80D46F `0x8093d0(player, &spell, 1, 1, record)` — ==0 → 0x80d249 FAIL.
+5. 0x80D6AD `0x809610(player, &spell, guidLo, guidHi, &out, 1, record)` —
+   if !=0 && [out]==0 → 0x80d249 FAIL.
+6. 0x80D6D1 `0x739650(player, record, &spell, itemId)` — ==0 → 0x80d249 FAIL
+   (errs 0x57/0x97/0xa8/0x2d; internally calls 0x809000 too).
+7. 0x80D727 `0x80c790(player, &spell, guidLo, guidHi, record, isTrade)` —
+   **!=0 → 0x80d8ef = SUCCESS** (the final cast commit; writes [0xD3F4E0],
+   pending [0xBD07B0/B4], [0xD3F4E4]).
+Plus a separate busy-gate check at 0x80D3E1 (`[spell+0x2c] bit 3` → reads
+`[player+0xd0]` record `[rec+0xd8] bit 18`; fail err 0x6b).
+
+### THE ROUND-36 DECISION (git diff 78ce247 HEAD proved it)
+The diff of Actions.cpp against `78ce247` — the 18:11/1.10.81 build, the ONLY
+session where casts landed — shows the cast invocation was:
+```
+int rc = fn(spellId, 0, lo, hi, 0);      // 18:11 — RAW GUID dwords
+int rc = fn(spellId, 0, guidPtr, 0, 0);  // rounds 18-35 — holder POINTER
+```
+The round-18 "arg3 is a POINTER" fix (1.10.83) is the ONE remaining difference
+from the proven config. The disasm shows the `[guidPtr+8]` pointer read at
+0x80CDC1 is guarded by `test ebx,ebx; je 0x80cdc6` where ebx = **itemId** — our
+casts always pass itemId=0, so 0x80CDC1 is NEVER taken; for itemId==0 the
+record target comes from `[edi+8]` (sync-resolved victim) at 0x80CDC6, and
+arg3/arg4 are forwarded as a RAW GUID pair to the post-gate checks (0x5d3520
+at 0x80D54E, and 0x80c790's commit at 0x80D727). Passing a pointer where the
+client expects a raw GUID dword is what trips a silent 0x80d249 gate.
+
+### FIX (1.10.101-rawguid)
+`fn(spellId, 0, lo, hi, 0)` — restore the exact 18:11 raw-GUID invocation.
+The holder (`s_guidHolder`) is removed. All else stays at the round-35
+minimal config (static slot, no side-writes, no register for acquire-off,
+crash-defenses + probes).
+
+### Live watchlist (1.10.101-rawguid)
+1. VER reads `1.10.101-rawguid`.
+2. **`al=1` → casts land** (Consecration + unit-targeted) — if the raw-GUID
+   revert is the fix, this is the FIRST working session since 18:11.
+3. If still al=0: the next step is a live probe of gates 0x4cee50 / 0x809000
+   / 0x8091d0 / 0x8093d0 / 0x809610 / 0x739650 (VEH-guarded, correct args)
+   to name the exact refusing gate, or switch to the 0x80DA80 sibling
+   (keybind path: 0x802cb0 → 0x802f80, no canCast/mask/sync gates).

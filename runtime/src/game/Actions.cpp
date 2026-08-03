@@ -94,12 +94,12 @@ using fnFSExec3 = void(__cdecl*)(const char* code, const char* name, int taintAr
 // ROUND 35 (REVERT of round-34's wrong "root cause"): the wrapper 0x80DA40
 // READS arg1 ([ebp+8] -> ecx at 0x80DA6C) and forwards it into real-logic
 // 0x80CCE0's arg2 ([ebp+0xc]) — which GetSpellEntry(0xad49d0, [ebp+0xc],
-// &out) uses as the SPELL ID. So fn(spellId, 0, guidPtr, 0, 0) is CORRECT.
+// &out) uses as the SPELL ID. So fn(spellId, 0, guidLo, guidHi, 0) is CORRECT.
 // Round 34's fn(0, spellId, ...) fed SPELL 0 to GetSpellEntry and, with
 // minSpell==1 (live minS=00000001), the lookup failed -> EVERY spell
 // (incl. Consecration) died at the first gate (live 23:03 log: all rc=0).
 using fnCastSpell = int(__cdecl*)(int spellId, int itemId,
-                                  uint32_t guidPtr, uint32_t guidHi, int isTrade);
+                                  uint32_t guidLo, uint32_t guidHi, int isTrade);
 // ObjectPtr(guidLo, guidHi, typeMask)
 using fnObjectPtr3 = uintptr_t(__cdecl*)(uint32_t lo, uint32_t hi, int typeMask);
 using fnGetActive = uint64_t(__cdecl*)();
@@ -283,20 +283,26 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // the client's NEW cast record via a pointer to OUR memory.
         // The static-slot write above stays (proven round-15, the walk's own
         // GUID slot).
-        // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX part 2): the
-        // client's "guidLo" argument to Spell_C (0x80CCE0) is a POINTER, not
-        // a raw dword: 0x80CDC1 does `mov ecx,[ebx+8]; mov eax,[ecx]; mov
-        // ecx,[ecx+4]` to fill the NEW cast record's target GUID from
-        // [guidPtr+8]. Passing the raw lo dword made the client read a
-        // garbage GUID from [lo+8] into the record -> async cast-feedback walk
-        // AV'd on that garbage (esi=0xF75FC697) and casts refused
-        // "Out of range". Hand the client a valid holder so the record always
-        // gets the real victim GUID.
-        static uint64_t s_victimGuid = 0;
-        static uint32_t s_guidHolder[4] = { 0, 0, 0, 0 };
-        s_victimGuid = targetGuid;
-        s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
-        uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
+        // 2026-08-02 (ROUND 36 — REVERT the round-18 "arg3 is a POINTER"
+        // fix back to the 18:11-proven raw-GUID call). The git diff against
+        // 78ce247 (the 18:11/1.10.81 build, the ONLY session where casts
+        // landed) shows the cast invocation was `fn(spellId, 0, lo, hi, 0)`
+        // — RAW GUID dwords, NO holder. The round-18 "fix" (1.10.83) changed
+        // it to a holder pointer based on 0x80CDC1 (`mov ecx,[ebx+8]; mov
+        // eax,[ecx]`) — but that pointer-read path is guarded by `test ebx,
+        // ebx; je 0x80cdc6` where ebx = itemId. Our casts ALWAYS pass
+        // itemId=0, so 0x80CDC1 is NEVER taken; the record target comes from
+        // [edi+8] (the sync-resolved victim) at 0x80CDC6. For itemId==0 the
+        // arg3/arg4 dwords are passed through as a raw GUID pair to the
+        // later checks (0x5d3520 / the 0x80c790 commit). Passing a pointer
+        // there is what breaks the cast. Restore lo/hi exactly.
+        //
+        // 2026-08-02 (18:36 REGRESSION — context for the round-18 mistake):
+        // the 18:36 session ran the SAME 1.10.81/82 DLL as 18:11 but the
+        // casts refused "Out of range" + the shield AV'd (esi=0xF75FC697).
+        // That was SESSION-STATE dependent (the DLL was identical), and the
+        // round-18 "holder" change misattributed it to the GUID argument.
+        // Reverting to the proven raw-GUID call is the decisive test.
         // 2026-08-02 (ROUND 26 — THE DEFINITIVE FIX: restore the static
         // cast-record pointer). The round-25 CastDiag PROVED the [player+0xd0]+
         // 0x18 write is UNCONDITIONALLY UNSAFE: [player+0xd0] is NOT a cast
@@ -544,21 +550,15 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                               (unsigned)slot0);
             }
         }
-        // ROUND 35 (REVERT to the 18:11-proven minimal cast path): the
-        // round-32 transient 0xBD07B0 write, the round-33 [0xBEAF44] mask
-        // write, and the round-28 UNIT_FIELD_TARGET seed are ALL removed.
-        // NONE were present in the 18:11 config — the ONLY session where
-        // casts landed — and each correlates with breakage (the user's
-        // persistent "aura search drops my target" tracks the 0xBD07B0
-        // touch) or no improvement (mask + desc40 both returned al=0).
-        //
-        // The call uses the CORRECT original signature: arg1=spellId (the
-        // wrapper 0x80DA40 forwards it into real-logic arg2 / GetSpellEntry),
-        // arg2=0 (item), arg3=guidHolder (record target GUID via [ptr+8]),
-        // arg4=0, arg5=0. Round 34's fn(0, spellId, ...) fed spell 0 into
-        // GetSpellEntry and, with minS=1, killed EVERY spell at the first
-        // gate — the 23:03 total-failure log proves that was the regression.
-        int rc = fn(spellId, 0, guidPtr, 0, 0);
+        // ROUND 36 (REVERT to the exact 18:11-proven invocation):
+        // fn(spellId, 0, lo, hi, 0) — RAW GUID dwords in arg3/arg4 (NOT a
+        // holder pointer). itemId=0 means the client never dereferences arg3
+        // (0x80CDC1 is guarded on itemId!=0); for itemId==0 the record
+        // target comes from the sync-resolved victim object and arg3/arg4
+        // are forwarded as a raw GUID pair to the post-gate checks. Round
+        // 18's holder-pointer change is the remaining difference from the
+        // 18:11 build that landed casts — reverting it is the decisive test.
+        int rc = fn(spellId, 0, lo, hi, 0);
         // 2026-08-02 (BLOCKED-ACTION DIALOG FIX): reset the "addon blocked"
         // cast counter after every cast so it never accumulates to 10 and
         // fires the native blocked dialog (0x530840). Pure memory write of the

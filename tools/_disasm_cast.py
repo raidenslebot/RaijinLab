@@ -17,7 +17,7 @@ TEXT_SIZE = 0x5DD400
 
 TARGETS = [
     (0x0080DA40, 0x140, 'Spell_C_CastSpell (entry)'),
-    (0x0080CCE0, 0x580, 'Spell_C real logic (full to ret)'),
+    (0x0080CCE0, 0xD60, 'Spell_C real logic (FULL: 0x80CCE0 -> 0x80DA40)'),
 ]
 # where to search within the real logic: 0xBD07B0 write, GUID param use
 GUID_LO = 0x00BD07B0

@@ -1819,3 +1819,60 @@ USER DIRECTIVE: reloads must be handled PERFECTLY — /reload is a normal action
    after the freeze clears (player GUID present → gate opens).
 3. Cast behavior unchanged in-world (the gate is transparent once a player
    exists — the raw-GUID al=0 question is still open and tracked separately).
+
+---
+
+## 2026-08-02 (37th round — 23:48 session) — RUNTIME CAST IS FIXED; remaining bugs are Lua → addon-only fix
+
+The 23:48 session was the BREAKTHROUGH: **the native cast path now works**.
+```
+SafeNativeCast rc=0x00000001 al=1 id=45477   (Icy Touch)
+SafeNativeCast rc=0x00000001 al=1 id=45513   (Plague Strike)
+SafeNativeCast rc=0x00000001 al=1 id=46501   (Blood Strike)
+SafeNativeCast rc=0x00000001 al=1 id=26573   (Consecration)
+addon: "landed Icy Touch poll" / "landed Consecration poll"
+```
+The round-36 raw-GUID revert (`fn(spellId, 0, lo, hi, 0)`) was THE fix for the
+3-day al=0 saga — every gate passes and the client accepts the cast. No crash
+on reload either (the 1.10.102 gate held). The runtime is done.
+
+### What remains (pure addon Lua — the addon log proves it)
+1. **Aura search not working / rotation stuck in `wait no_target`** — the
+   `aura_search` condition HARD-FAILED whenever `World.spell_max_range(id)`
+   returned nil (RANGE_UNKNOWN → return false → no search at all → "wait
+   no_target x58" after the target died). The runtime range decode was the
+   gate.
+2. **`wait facing:Blood Strike` at edge=0yd/2yd while standing on the mob** —
+   the runtime ObjectIsFacing (0x7AC) intermittently returns a confident
+   not-facing at point-blank; the gate trusted it and never wired melee.
+3. **`refused ... phantom_grace` then re-fire on melee** — instant melee casts
+   produce no SUCCESS/FAIL event within the ~0.14s grace, so the addon
+   declared phantom on casts the runtime HAD accepted (nrc=1), re-firing and
+   driving the "wait cooldown" spin.
+
+### FIX (this round — ADDON-ONLY, runtime 1.10.102 unchanged)
+1. `Executor.lua` facing gate: **precise point-blank exemption** — when the
+   candidate is within ≤2yd AND the spell is a melee-range cast (runtime
+   melee==1, max≤6), a confident-not-facing verdict does NOT block. WoW
+   auto-faces melee; you cannot be "behind" a target you are standing on.
+   Ranged/farther targets keep the strict runtime verdict (no blanket
+   exemption — that was the 18:11 regression).
+2. `Conditions.lua` aura_search: RANGE_UNKNOWN no longer kills the search.
+   Use the condition's explicit `range` param (user intent, not a silent
+   malformed fallback) as the search bound; clamp DOWN only when the spell
+   max IS known. Restores aura search when the decode is unavailable.
+3. `ChatHandler.lua`: new **`/raijin search [spellId]`** diagnostic — runs the
+   EXACT production path (spell_max_range → raw AuraSearch → Lua wrapper) and
+   prints each stage, so aura-search state is attributable in-game instead of
+   guessed.
+
+### Live watchlist (this Lua-only deploy)
+1. In-front-of-mob melee (Plague/Blood Strike) wires immediately even when the
+   runtime facing read says not-facing — no more `wait facing:Blood Strike` at
+   edge≤2yd.
+2. Aura-search slots with no current target actually find a mob (no target
+   death → instant re-target); run `/raijin search 45477` to see the exact
+   stage that was returning empty.
+3. After a phantom/refuse, the rotation recovers to the next castable slot
+   without spinning multiple `wait cooldown` ticks (the confirm loop is the
+   next issue to hammer if it persists).

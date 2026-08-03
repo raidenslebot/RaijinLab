@@ -1186,13 +1186,22 @@ Conditions.register("aura_search", {
         local spell_max = W.spell_max_range and W.spell_max_range(id)
         if not spell_max then
             if W.dlog then
-                W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — refusing to search",
-                    id)
+                W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — using configured "
+                    .. "range %d (spell_max decode unavailable)", id, search_range)
             end
-            ctx.aura_search_hit = nil
-            return false
+            -- 2026-08-02 (23:48): RANGE_UNKNOWN must NOT silently kill the
+            -- search. The hard-fail left the rotation stuck in "wait no_target"
+            -- for every aura-search slot whenever the runtime SpellMeleeInfo
+            -- max= decode was unavailable — "aura search not working at all".
+            -- The condition's own `range` param is explicit USER intent (not a
+            -- silent malformed fallback), so use it as the search bound; the
+            -- cast-side range gate + the client are still the final authority
+            -- on reachability (and the native path now reports nrc cleanly).
+            -- We only clamp DOWN when the spell's real max IS known.
+            -- Do NOT set ctx.aura_search_hit yet — fall through to search.
+        elseif search_range > spell_max then
+            search_range = spell_max
         end
-        if search_range > spell_max then search_range = spell_max end
         local list = W.find_aura_search_targets({
             kind = string.lower(tostring(args.kind or "debuff")),
             state = state,

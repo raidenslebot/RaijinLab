@@ -861,6 +861,64 @@ function RaijinLab:RunCommand(msg)
         end
         SendSystemMessage("|cff7ec8e3RaijinLab|r (full hex in dev log)")
         return true
+    elseif cmd == "search" or cmd == "as" then
+        -- LIVE AURA-SEARCH DIAGNOSTIC (2026-08-02). Aura search silently
+        -- returning nothing (rotation stuck in "wait no_target") is usually one
+        -- of: (1) World.spell_max_range(id) == nil → the aura_search condition
+        -- HARD-FAILS RANGE_UNKNOWN and never calls the runtime; (2) the
+        -- runtime AuraSearch returns an empty pack (OM snapshot empty / aura
+        -- notes not seeded); (3) the second-pass aura filter drops every hit.
+        -- This command runs the EXACT production path and reports each stage.
+        -- Usage: /raijin search <spellId> [missing|present] [range]
+        local W = RaijinLab and RaijinLab.World
+        if not W then
+            SendSystemMessage("|cff7ec8e3RaijinLab|r search: World unavailable")
+            return true
+        end
+        local sid = tonumber((args or ""):match("(%d+)")) or 45477
+        local state = tostring((args or ""):match("(%a+)")):lower()
+        if state ~= "missing" and state ~= "present" then state = "missing" end
+        local range = tonumber((args or ""):match("%s(%d+)%s*(%d*)")) or 0
+        -- Stage 1: spell max range (the gate that hard-fails aura search).
+        local maxR = W.spell_max_range and W.spell_max_range(sid)
+        SendSystemMessage("|cff7ec8e3RaijinLab|r search " .. sid ..
+            " state=" .. state .. " spell_max_range=" .. tostring(maxR or "NIL"))
+        if not maxR then
+            SendSystemMessage("  |cffff5555aura_search blocked: spell_max_range==nil " ..
+                "(RANGE_UNKNOWN) — the runtime SpellMeleeInfo max= decode failed")
+            return true
+        end
+        local sr = tonumber(range) or maxR
+        if sr > maxR then sr = maxR end
+        -- Stage 2: raw runtime AuraSearch pack.
+        local ok, packed = nil, nil
+        if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+            local state_n = (state == "missing") and 0 or 1
+            ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab,
+                "AuraSearch", sr, sid, state_n, 8)
+        end
+        SendSystemMessage("  range=" .. sr .. " raw AuraSearch ok=" .. tostring(ok) ..
+            " len=" .. tostring(packed and #packed or 0))
+        -- Stage 3: the production Lua wrapper (exactly what Conditions uses).
+        local nm = ""
+        if W.spell_name then
+            nm = tostring(W.spell_name(sid) or "")
+        elseif GetSpellInfo then
+            local okn = pcall(GetSpellInfo, sid)
+            if okn then nm = "" end -- GetSpellInfo returns multiple; use id
+        end
+        local list = W.find_aura_search_targets and W.find_aura_search_targets({
+            kind = "debuff", state = state, spell_id = sid,
+            name = nm,
+            range = sr, max_n = 8,
+        })
+        if not list or #list == 0 then
+            SendSystemMessage("  |cffff5555find_aura_search_targets returned 0 hits")
+        else
+            SendSystemMessage("  hits=" .. #list .. " head=" .. tostring(list[1] and list[1].guid) ..
+                " dist=" .. tostring(list[1] and list[1].dist))
+        end
+        return true
     elseif cmd == "selftest" or cmd == "st" then
         -- VERIFY THE RUNTIME FROM INSIDE THE GAME, IN ONE COMMAND.
         --

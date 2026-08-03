@@ -2627,7 +2627,35 @@ function Executor.attempt_action(action, ctx)
                 -- not cast at all" + "wait facing:X" — the runtime returned a
                 -- confident false for unmeasured (0,0) positions).
                 if facing == false then
-                    last_why = "facing"
+                    -- 2026-08-02 (23:48 POINT-BLANK EXEMPTION, PRECISE): the
+                    -- runtime facing read (0x7AC) intermittently returns a
+                    -- confident-not-facing even when the player is STANDING ON
+                    -- the target and auto-attacking — live "wait facing:Blood
+                    -- Strike" / "wait facing:Icy Touch" at edge=0yd/2yd while
+                    -- fighting a single mob (proven three+ sessions). WoW
+                    -- AUTO-FACES melee the instant you engage (StartAttack /
+                    -- melee swing), so a target within true melee point-blank
+                    -- distance is by definition front-facing — it is impossible
+                    -- to be "behind" something you are inside. The 18:11
+                    -- problem was the OLD exemption was too WIDE (center<5yd
+                    -- skipped facing for ranged casts that genuinely needed
+                    -- it). This is NARROW: only exempt when (a) the spell is a
+                    -- MELEE-range cast AND (b) the candidate is within ~2yd
+                    -- (the client's melee auto-face band). Ranged / farther
+                    -- targets keep the strict runtime verdict.
+                    local pb_exempt = false
+                    if cand and cand.dist and tonumber(cand.dist) and
+                       tonumber(cand.dist) <= 2.0 then
+                        local om, omax = runtime_spell_melee(sid)
+                        -- melee==1 and max range is the ~5yd melee band (never
+                        -- a 20+ yd ranged spell) → point-blank exempt.
+                        if om == 1 and omax and omax <= 6 then
+                            pb_exempt = true
+                        end
+                    end
+                    if not pb_exempt then
+                        last_why = "facing"
+                    end
                 end
             end
             -- WIRE (range was already validated in live_castable; facing gate above)

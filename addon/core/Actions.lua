@@ -253,11 +253,29 @@ function A.CastSpellByName(name, unitOrGuid)
     if id then
         return A.CastSpell(id, unitOrGuid)
     end
-    -- Last resort for an unresolvable custom name: runtime ExecSecure. The
-    -- runtime refuses this from the bridge (SetCurrentLuaState guard) so it
-    -- can only run on non-bridge paths.
-    if not A.ensure() then return false end
-    return not not rt("ExecSecure", string.format("CastSpellByName(%q)", tostring(name)))
+    -- NO ExecSecure FALLBACK (2026-08-03).
+    --
+    -- ExecSecure is FrameScript_Execute driven from the bridge, and the comment
+    -- 25 lines above already names it: "a nested-VM re-entry crash surface AND
+    -- the 'Tainted call to a secure function' source". It was kept as a last
+    -- resort, so the ONE path that taints the client was the path taken
+    -- whenever a name could not be resolved - producing "RaijinLab tainted the
+    -- call of the secure function" and the "blocked from an action only
+    -- available to the Blizzard UI" popup, after which protected calls start
+    -- answering nil to every addon in that execution path (which is what breaks
+    -- GatherMate2 and XPerl, not any error of theirs).
+    --
+    -- An unresolvable name is a MISSING SPELL ID, and the honest answer to that
+    -- is false. Refusing one cast is recoverable; tainting the client is not,
+    -- and the directive is explicit that a red notification must be
+    -- structurally impossible. Casting is by id, through the runtime, always.
+    local DL = RaijinLab and RaijinLab.DevLog
+    if DL and DL.log_every then
+        DL.log_every("cast_name", 5.0, "cast",
+            "cannot resolve %q to a spell id - refusing (native path only)",
+            tostring(name))
+    end
+    return false
 end
 
 function A.StopCasting()
@@ -299,8 +317,10 @@ end
 -- the cast victim). Stock TargetLastTarget is more reliable than TargetUnit(hex).
 function A.TargetLastTarget()
     if not A.ensure() then return false end
-    if rt("TargetLastTarget") then return true end
-    return not not rt("ExecSecure", "TargetLastTarget()")
+    -- Native only. The ExecSecure fallback that used to sit here is the
+    -- documented taint source (see A.CastByName); a failed retarget is
+    -- recoverable, a tainted client is not.
+    return not not rt("TargetLastTarget")
 end
 
 -- Snapshot + cast + restore selection when preserveSelection is true.
@@ -581,7 +601,20 @@ end
 function A.RunMacroText(text)
     if not text or text == "" then return false end
     if not A.ensure() then return false end
-    return not not rt("ExecSecure", string.format("RunMacroText(%q)", text))
+    -- ExecSecure REMOVED (2026-08-03). RunMacroText is protected, and driving
+    -- it through FrameScript_Execute from the bridge is the taint source that
+    -- pops "blocked from an action only available to the Blizzard UI" - after
+    -- which protected calls answer nil to every addon sharing that execution
+    -- path, which is what breaks GatherMate2 and XPerl. A macro slot that
+    -- cannot run natively returns false; it never taints the client.
+    local res = rt("RunMacroText", text)
+    if res == true or res == 1 then return true end
+    local DL = RaijinLab and RaijinLab.DevLog
+    if DL and DL.log_every then
+        DL.log_every("macro", 5.0, "cast",
+            "RunMacroText has no native path - refusing (native path only)")
+    end
+    return false
 end
 
 if RaijinLab then

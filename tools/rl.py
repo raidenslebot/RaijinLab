@@ -417,6 +417,35 @@ def gate_spellinfo(paths=None) -> list[str]:
                                   "; pcall shifts all by one" if shift else ""))
     return bad
 
+
+def gate_execsecure(paths=None) -> list[str]:
+    """No addon Lua may drive ExecSecure. It is THE taint source.
+
+    ExecSecure is FrameScript_Execute called from the bridge. Actions.lua has
+    documented it for months as "a nested-VM re-entry crash surface AND the
+    'Tainted call to a secure function' source" - and then kept three call
+    sites using it as a last resort, so the one path that taints the client was
+    the path taken whenever the native route failed.
+
+    The consequence is not local: once tainted, protected calls answer nil to
+    every addon sharing that execution path, which is why GatherMate2 and
+    XPerl_Player threw tens of thousands of errors that had nothing to do with
+    their own code. A refused action is recoverable; a tainted client is not,
+    and the project directive is explicit that a red notification must be
+    structurally impossible.
+    """
+    bad = []
+    for f in sorted((ROOT / "addon").rglob("*.lua")):
+        if "RaijinQuest" in f.as_posix():
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").split(chr(10))):
+            code = line.split("--")[0]
+            if "ExecSecure" in code:
+                bad.append("%s:%d: drives ExecSecure - the documented taint "
+                           "source; cast/target/macro must be native-only"
+                           % (f.relative_to(ROOT).as_posix(), i + 1))
+    return bad
+
 def gate_addresses(paths=None) -> list[str]:
     """Every hardcoded VA the runtime CALLS, checked against the real client.
 
@@ -606,7 +635,7 @@ def cmd_verify(a) -> int:
     for name, errs in (("ascii", gate_ascii()), ("lua-syntax", gate_lua()),
                        ("local-order", gate_localorder()), ("no-ctm", gate_ctm()),
                        ("keep-objects", gate_optional_filter()),
-                       ("magic-index", gate_magicindex()), ("spellinfo", gate_spellinfo()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
+                       ("magic-index", gate_magicindex()), ("execsecure", gate_execsecure()), ("spellinfo", gate_spellinfo()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
                        ("addresses", gate_addresses()),
                        ("multireturn", gate_multireturn()),
                        ("lua5.1", gate_lua51()),

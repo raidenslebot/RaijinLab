@@ -1049,6 +1049,17 @@ static int Handle(lua_State* L, const char* name) {
     // Returns the DISPLAY entry: non-zero means "something is equipped there".
     // It is deliberately NOT called ItemId - main hand read 121696 for a
     // transmogged 4562, and naming it an id would invite a wrong lookup.
+    // RunMacroText natively (2026-08-03). The addon used to reach this through
+    // ExecSecure - FrameScript_Execute driven from the bridge - which is the
+    // documented taint source ("Tainted call to a secure function" / "blocked
+    // from an action only available to the Blizzard UI"). Routing it through
+    // MainThread means it executes with no bridge closure on the Lua stack,
+    // which is the whole reason the queue-and-drain pattern exists for casts.
+    // Unimplemented for now, but it must ANSWER so the addon can refuse
+    // honestly instead of falling back to the taint path.
+    if (!std::strcmp(name, "RunMacroText")) {
+        return RL::Lua::PushBool(L, false);
+    }
     if (!std::strcmp(name, "EquippedSlotEntry") || !std::strcmp(name, "MainHandItemId")) {
         uint64_t g = OM::LocalGuid();
         if (!g) return PushNil(L);

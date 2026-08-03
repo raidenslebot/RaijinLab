@@ -478,11 +478,12 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 // locked, [0xBEAF44] = allowed-action mask (bit 2 = spell).
                 uint32_t beaf44 = Mem::Read<uint32_t>(0x00BEAF44);
                 uint32_t beaf4c = Mem::Read<uint32_t>(0x00BEAF4C);
-                // ROUND 34 root-cause confirmation: GetSpellEntry(0xad49d0,
-                // X, &out) succeeds for X=0 iff minSpell==0 AND slot 0 is
-                // valid. The real logic was called with X=0 (spell id in the
-                // ignored arg1), so minS==0 && slot0!=0 proves every cast ran
-                // on SPELL 0's data.
+                // GetSpellEntry(0xad49d0, X, &out) succeeds only when X >=
+                // minSpell (live minS=00000001). Round 34 fed X=0 -> lookup
+                // failed -> EVERY spell (incl. Consecration) died at the
+                // first gate (23:03 total-failure log). Round 35 restored
+                // the real spell id; these fields confirm the table bounds
+                // are sane on every cast.
                 uint32_t minS = Mem::Read<uint32_t>(0x00AD49D0 + 0x10);
                 uint32_t maxS = Mem::Read<uint32_t>(0x00AD49D0 + 0x0C);
                 uint32_t tbl  = Mem::Read<uint32_t>(0x00AD49D0 + 0x20);

@@ -424,28 +424,24 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             }
         }
         // ROUND 29 — CAST PROBE (native context, ~2s throttle): confirm the
-        // desc+0x40 write landed and name the failing gate.
+        // desc+0x40 write landed and whether the victim resolves.
+        // ROUND 30: the 0x4cfd20 (GetSpellEntry) call from this probe is
+        // REMOVED — it overflows the stack. The client writes a 0x2B8-byte
+        // spell struct (0x80CCE0: sub esp,0x2b8), but the probe gave it a
+        // 0x40-byte buffer; the overflow corrupted SafeNativeCast's locals
+        // (live: CastProbe id=1 after STAGE id=45513 — spellId became 1,
+        // guid became 0, and the cast fired spell 1 -> crash). The probe is
+        // now PURE MEMORY reads (VirtualQuery-guarded) — no game calls.
         if (held == 0) {
             static volatile LONG s_probeMs = 0;
             LONG nowP = (LONG)(RL::Game::State::GameTimeMs() & 0x7FFFFFFF);
             if (nowP - s_probeMs > 2000 || s_probeMs == 0) {
                 s_probeMs = nowP;
                 uint32_t desc40 = descPtr ? Mem::Read<uint32_t>(descPtr + 0x40) : 0;
-                uint32_t gate = 0xFFFFFFFFu;
-                {
-                    Guard::Scope g2;
-                    if (!g2.Caught()) {
-                        using fnGS = int(__thiscall*)(uintptr_t, int, void*);
-                        unsigned char out[0x40];
-                        memset(out, 0, sizeof(out));
-                        if (reinterpret_cast<fnGS>(0x4cfd20)(0xad49d0, spellId, out))
-                            gate = out[0x10] & 0x40u;
-                    }
-                }
                 uintptr_t r8 = OM::ObjectPtr3Guid(lo, hi, 8);
                 uintptr_t r1 = OM::ObjectPtr3Guid(lo, hi, 1);
-                RL::Log::Warn("CastProbe id=%d desc40=%08X gate=%02X r8=0x%lX r1=0x%lX",
-                              spellId, (unsigned)desc40, (unsigned)gate,
+                RL::Log::Warn("CastProbe id=%d desc40=%08X r8=0x%lX r1=0x%lX",
+                              spellId, (unsigned)desc40,
                               (unsigned long)r8, (unsigned long)r1);
             }
         }

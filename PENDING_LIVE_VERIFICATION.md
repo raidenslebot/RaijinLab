@@ -1385,3 +1385,41 @@ STILL returned `al=0` (rc=0x4AD8D600) even with the UNIT_FIELD_TARGET write.
    - `gate=0x40` → the spell-attribute gate 0x80CD11 fails (spell-level);
    - `r8=0 r1!=0` → the victim resolves as Object but not as Unit(mask 8);
    - `r8=0 r1=0` → the victim isn't in the object manager (GUID/mask issue).
+
+---
+
+## 2026-08-02 (29th round, 21:39 session) — the CastProbe ITSELF crashed (stack overflow) → 1.10.95-nogate
+
+1.10.94 live (21:39): the probe FIRED and PROVED two things, then caused the
+crash:
+```
+CastQueue STAGE id=45513 guid=0xF1300005E5006AF0   (correct cast)
+CastDiag id=45513 ...                              (correct)
+CastProbe id=1 desc40=E5006AF0 gate=00 r8=0 r1=0   (spellId became 1!)
+SafeNativeCast rc=0x00000001 al=1 id=1 guid=0x0    (fired spell 1 at nothing)
+```
+1. **`desc40=E5006AF0`** — the UNIT_FIELD_TARGET (desc+0x40) write LANDS. ✓
+2. **CRASH CAUSE**: the probe called `0x4cfd20` (GetSpellEntry) with a 0x40-byte
+   stack buffer, but the client writes a 0x2B8-byte spell struct (0x80CCE0:
+   `sub esp,0x2b8`). The overflow corrupted SafeNativeCast's locals — spellId
+   became 1, guid became 0, and the "cast" fired spell 1 at nothing → crash.
+   (The `r8=0 r1=0` are also garbage — read with corrupted lo/hi.)
+
+### FIX (1.10.95-nogate)
+Remove the `0x4cfd20` call from the CastProbe entirely. The probe is now PURE
+MEMORY reads (VirtualQuery-guarded, no game calls, no buffer):
+- `desc40` — confirms the UNIT_FIELD_TARGET write landed;
+- `r8` — ObjectPtr(lo,hi,8): does the sync resolution resolve the victim?
+- `r1` — ObjectPtr(lo,hi,1): is the victim in the object manager at all?
+(ObjectPtr3Guid is the same VEH-guarded call used by SafeObjectPtr everywhere.)
+
+### Live watchlist (1.10.95-nogate)
+1. VER reads `1.10.95-nogate`.
+2. NO crash — the corrupting 0x4cfd20 call is gone; the cast runs with the real
+   spellId/guid.
+3. Target NEVER dropped (no register on acquire-off).
+4. `CastProbe` shows `desc40` = victim lo, and valid `r8`/`r1`:
+   - `r8` non-zero → the sync resolution CAN resolve the victim → casts should
+     land (the UNIT_FIELD_TARGET write feeds it);
+   - `r8=0 r1!=0` → victim is Object but not Unit(mask 8) → mask issue;
+   - `r8=0 r1=0` → victim not in the object manager → GUID issue.

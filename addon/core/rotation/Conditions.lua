@@ -1073,18 +1073,39 @@ Conditions.register("aura", {
         end
         local present, stacks_tbl, rem_tbl = aura_tables_for(ctx, unit, kind)
         local here = aura_has(present, id, nm)
+        local st, rem = 0, 0
+        -- 2026-08-03 (ROUND 47 FIX): the UnitDebuff scan (ctx.target_debuffs)
+        -- misses custom Ascension auras — Frost Fever/Blood Plague never land in
+        -- ctx.target_debuffs, so "missing" ALWAYS passed (Icy Touch #6 re-fired
+        -- every GCD after Frost Fever was already up) and "present" NEVER passed
+        -- (Blood Strike, which requires both diseases, never fired at melee).
+        -- Union in World.guid_aura_state (UnitDebuff + runtime HasUnitAura +
+        -- CLEU notes) so the condition reflects the REAL aura state. The user's
+        -- rotation is authoritative; the engine must honor its conditions.
+        if not here and unit == "target" and RaijinLab and RaijinLab.World
+            and RaijinLab.World.guid_aura_state and UnitGUID then
+            local tguid = UnitGUID("target")
+            if tguid then
+                local has, s2, r2 = RaijinLab.World.guid_aura_state(tguid, id, nm)
+                if has then
+                    here = true
+                    if s2 and s2 > st then st = s2 end
+                    if r2 and r2 > rem then rem = r2 end
+                end
+            end
+        end
         if state == "missing" then
             return not here
         end
         if not here then return false end
-        local st = aura_stat(stacks_tbl, id, nm)
+        if st < 1 then st = aura_stat(stacks_tbl, id, nm) end
         if st < 1 then st = 1 end
         if st < num(args.min_stacks, 1) then return false end
         local max_st = num(args.max_stacks, 0)
         if max_st > 0 and st > max_st then return false end
 
         -- Duration remaining.
-        local rem = aura_stat(rem_tbl, id, nm)
+        if rem <= 0 then rem = aura_stat(rem_tbl, id, nm) end
         local op = string.lower(tostring(args.remaining_op or "any"))
         local rem_val = num(args.remaining, nil)
         -- Legacy min_remaining: treat as remaining_op >= when new fields unused.

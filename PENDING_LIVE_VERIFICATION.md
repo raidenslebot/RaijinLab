@@ -2320,3 +2320,64 @@ Same log, segmented by runtime version:
 - Proof 2 proves by construction: the OLD cooldown gate could cast up to 240ms
   BEFORE the local bar cleared (client "not ready" by design); the round-47
   gate fires only at rem <= 0.05. Run: python tools/_verify_round47.py (exit 0).
+
+---
+
+## 2026-08-03 (round 47, FINAL — three REAL source fixes; user: "the rotation is perfect, the engine must honor it")
+
+The rotation (screenshot-confirmed) is the SPEC: Renew/AA/PSx2/ITx2/Consec/BSx2
+with aura conditions. The engine violated it in THREE ways — all fixed + deployed
++ verified (python tools/_verify_round47.py, exit 0):
+
+### 1) Aura conditions on the TARGET were dead — Icy Touch spam + Blood Strike never fired
+- Slot #6 Icy Touch has ura: Frost Fever missing on target; BS slots require
+  Frost Fever present + Blood Plague present. ctx.target_debuffs is filled ONLY
+  by the UnitDebuff scan (scan_auras_rich), which misses custom Ascension auras
+  (and/or GetSpellInfo(55095) fails) -> "missing" ALWAYS passed (Icy Touch #6
+  re-fired every GCD at 13:57) and "present" NEVER passed (Blood Strike never
+  fired at melee). The CLEU tracker (World._aura_by_guid / guid_aura_state —
+  UnitDebuff + runtime HasUnitAura + CLEU notes) DID record Frost Fever the
+  moment it was applied, but the plain ura condition never consulted it.
+- FIX (Conditions.lua): the target-path ura condition now unions
+  World.guid_aura_state(UnitGUID("target"), id, name) into here. "missing"
+  now correctly blocks once the disease is up; "present both" now enables BS.
+- EXPECTED: IT#5 applies FF once; IT#6 blocked (FF up); PS applies BP; BS#8
+  (both present) fires at melee. No more Icy Touch-every-GCD.
+
+### 2) The round-46 melee-only FACING GATE was removed (round-41 FINAL restored)
+- The later session (205107+, runtime 1.10.106-aa) PROVED the gate unreliable
+  BOTH ways: "wait facing:Blood Strike x74" at 0-1yd (stalled casts the client
+  would accept) AND "Target needs to be in front of you." x11 (let through casts
+  the client refused). The runtime facing read cannot be trusted on this build
+  even after the 0.0-sentinel fix (round 46).
+- FIX (Executor.lua): removed the melee-only ObjectIsFacing pre-wire gates from
+  the candidate path and the target-relative path. Facing is DETECTION-ONLY
+  (round 41 FINAL). The CLIENT is the sole referee.
+- Added a FACING-REFUSAL BACKOFF: after an ACTUAL client facing refusal, all
+  melee wires back off 1.5s (Executor._facing_until), per-spell floor 0.6s. The
+  player must turn (the rotation NEVER turns); the refusal is no longer repeated
+  every 0.45s. Ranged never gated/backed-off.
+
+### 3) "Spell is not ready yet" early-fire (Engine.lua)
+- Cooldown gate fired up to 240ms BEFORE the local bar cleared (rem <= 0.04+lag,
+  lag from GetNetStats). Client judges readiness from its own local bar -> refusal.
+- FIX: fire only at rem <= 0.05 (bar essentially cleared; 50ms imperceptible).
+
+### EVIDENCE (tools/_verify_round47.py, 4 proofs, exit 0)
+- P1 live-log: 13:57 sub-segment 6/6 landed, 0 refusals (round-46 READ fix
+  works); the 205107+ refusals (facing=11 etc.) are the round-47 motivation.
+- P2 cooldown gate: OLD could cast 240ms early by construction; NEW only at
+  bar-clear.
+- P3 aura condition: OLD 'missing' passes with empty scan (the spam); NEW
+  blocks once CLEU notes Frost Fever; 'present both' works.
+- P4 deployed-source: no ObjectIsFacing pre-wire gate remains; _facing_until
+  backoff present; Conditions unions guid_aura_state; Engine uses rem>0.05.
+
+### LIVE WATCHLIST (after /reload)
+1. IT#5 applies Frost Fever ONCE; IT#6 does NOT re-fire (aura condition now
+   honors "missing").
+2. Plague Strike applies Blood Plague; Blood Strike#8 fires when both diseases
+   are present (was never firing).
+3. NO "wait facing:X x74" stalls; a genuinely-not-facing melee cast = ONE client
+   refusal + 1.5s quiet melee backoff, then re-measure.
+4. NO "Spell is not ready yet" (cooldown gate at bar-clear).

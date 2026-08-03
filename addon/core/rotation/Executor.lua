@@ -35,6 +35,12 @@ Executor._no_runtime_warned = false
 Executor._gcd_until = 0          -- authoritative global-cooldown end time (GetTime clock)
 Executor._pending = nil          -- a cast in flight awaiting client confirmation
 Executor._recent = nil           -- { [sid] = expire_t } synthetic per-spell floor (anti self-spam)
+-- ROUND 47: after the CLIENT refuses a melee cast for facing, ALL melee wires
+-- back off until this time (1.5s) so the refusal is not repeated every 0.45s.
+-- Set ONLY in the FACING REFUSE branch (a real client refusal) — never a
+-- preemptive measurement gate. Ranged spells are exempt (client never refuses
+-- them for facing).
+Executor._facing_until = nil
 Executor._unconf = nil           -- { sid, count } consecutive unconfirmed-cast streak (blind-detection guard)
 
 -- Latency philosophy: the only acceptable delay is (a) the real GCD after a
@@ -410,8 +416,15 @@ local function apply_pending_refuse(reason, fail_name)
         Executor._gcd_until = 0
         Executor._gcd_provisional = false
         Executor._gcd_src = "refuse_facing"
+        -- 2026-08-03 (ROUND 47): back off ALL melee wires for 1.5s after a
+        -- REAL client facing refusal — the player must turn (the rotation NEVER
+        -- turns); repeating the refusal every ~0.45s was the "spammed with
+        -- 'target not in front of you'" complaint. Ranged spells are exempt
+        -- (the client never refuses them for facing). Triggered only here, so
+        -- a cast the client would accept is never delayed.
+        Executor._facing_until = now() + 1.5
         Executor._recent = Executor._recent or {}
-        if sid and sid > 0 then Executor._recent[sid] = now() + 0.45 end
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
         log_cast("refused", sid, name or fail_name,
             "facing:" .. (reason ~= "" and tostring(reason) or "in front"), cast_t)
         return true
@@ -2699,33 +2712,28 @@ function Executor.attempt_action(action, ctx)
             --     hook-cached). With a correct read, a not-facing verdict is a
             --     genuine 1-tick skip, and the moment the player's facing is
             --     sufficient the native cache flips and this slot wires.
-            -- FACING — ROUND 46 (RUNTIME-ACCURATE, MELEE-ONLY): round 45 removed
-            -- the gate because the runtime accepted a 0.0 camera read as a real
-            -- "facing of north" (FacingLive face=0.0000 constantly) → confident
-            -- WRONG verdicts → lockups. The runtime now rejects |f|<0.0001 in
-            -- the facing cache (round 46), so ObjectIsFacing is CONFIDENT only
-            -- when the camera held a REAL non-zero facing AND the target is
-            -- genuinely outside the front cone; a failed read → nil (wire).
-            -- The live 13:50 log proves the CLIENT really refuses melee on
-            -- facing ("You are facing the wrong way!" / "Target needs to be in
-            -- front of you." on Blood Strike at edge=0-2yd) while RANGED spells
-            -- are never refused (Icy Touch landed every cast, facing or not).
-            -- So: gate MELEE spells ONLY, on a confident-false verdict — the
-            -- rotation then never wires a melee cast the client would refuse,
-            -- and the moment the player turns, the frame cache flips and the
-            -- cast wires immediately (no pause, no lockup). Ranged spells are
-            -- NEVER gated.
-            if not last_why and melee_rt == 1 and needs_enemy then
-                -- Runtime-authoritative ONLY (the Lua fallback in
-                -- World.is_facing_guid can return a confident wrong boolean
-                -- when the runtime is undetermined — that re-froze rotations).
-                -- The runtime now rejects the 0.0 sentinel, so `false` here is
-                -- a real not-facing verdict; nil (undetermined) wires.
-                local _fok, _fv = pcall(RaijinLab.RuntimeCall, RaijinLab,
-                    "ObjectIsFacing", "player", cg, 1.5707963267948966)
-                if _fok and _fv == false then
-                    last_why = "facing"
-                end
+            -- FACING — ROUND 47 (GATE REMOVED — ROUND-41 FINAL RESTORED): the
+            -- round-46 melee-only gate is REMOVED. The live session (1.10.106-aa)
+            -- proved it unreliable BOTH ways: it stalled melee the client would
+            -- have accepted ("wait facing:Blood Strike x74" at 0-1yd) AND let
+            -- through melee the client refused ("Target needs to be in front of
+            -- you." x11). The runtime facing read cannot be trusted on this
+            -- build even after the 0.0-sentinel fix. PERMANENT RULE (round 41
+            -- FINAL): facing is DETECTION-ONLY. The CLIENT is the sole referee —
+            -- a genuinely not-facing wire is refused once by the client,
+            -- recovered by the refuse floor (0.6s), NEVER a stall, NEVER an
+            -- event storm. The user's rotation is authoritative; the engine
+            -- must never pre-empt the client's facing decision.
+            -- FACING REFUSAL BACKOFF (ROUND 47): after the CLIENT refused a
+            -- melee cast for facing, back off ALL melee wires for 1.5s so a
+            -- "not in front of you" refusal (which the player must fix by
+            -- turning — the rotation NEVER turns) is not repeated every 0.45s.
+            -- Triggered ONLY by an actual client refusal (see the FACING REFUSE
+            -- branch) — NEVER a preemptive measurement gate — so a cast the
+            -- client would accept is never delayed. Ranged spells are exempt.
+            if not last_why and melee_rt == 1 and needs_enemy
+                and Executor._facing_until and now() < Executor._facing_until then
+                last_why = "facing"
             end
             -- WIRE (range was already validated in live_castable)
             -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
@@ -2923,30 +2931,23 @@ function Executor.attempt_action(action, ctx)
                         _c_los = false
                     end
                 end
-                -- FACING — ROUND 46 (RUNTIME-ACCURATE, MELEE-ONLY): same as the
-                -- candidate path. The runtime now rejects the 0.0 failed-read
-                -- sentinel, so a confident `false` is a REAL "melee target not
-                -- in front" — the client WOULD refuse ("Target needs to be in
-                -- front of you.", live on Blood Strike). Gate melee spells only
-                -- (ranged spells are never refused by the client); the player
-                -- turning flips the frame cache and the cast wires immediately.
-                local _tr_melee = false
-                if needs_enemy then
-                    local _mm, _ = runtime_spell_melee(cast_sid)
-                    _tr_melee = (_mm == 1)
-                end
-                local _c_face = true
-                if _tr_melee then
-                    -- Runtime-authoritative ONLY (see candidate path).
-                    local _fok2, _fv2 = pcall(RaijinLab.RuntimeCall, RaijinLab,
-                        "ObjectIsFacing", "player", cg2, 1.5707963267948966)
-                    if _fok2 and _fv2 == false then
-                        _c_face = false
-                    end
+                -- FACING — ROUND 47 (GATE REMOVED — ROUND-41 FINAL RESTORED):
+                -- same as the candidate path — the round-46 melee-only gate is
+                -- REMOVED here too (unreliable both ways: stalls + refusals).
+                -- The client is the sole facing referee; a refused wire is one
+                -- phantom + the 0.6s refuse floor, never a stall. After an
+                -- actual client facing refusal, the 1.5s melee backoff
+                -- (Executor._facing_until) suppresses re-wires until the
+                -- player turns.
+                local _fbackoff = false
+                if needs_enemy and Executor._facing_until
+                    and now() < Executor._facing_until then
+                    local _mm2, _ = runtime_spell_melee(cast_sid)
+                    _fbackoff = (_mm2 == 1)
                 end
                 if not _c_los then
                     last_why = "los"
-                elseif not _c_face then
+                elseif _fbackoff then
                     last_why = "facing"
                 else
                     if Act.CastQueued then

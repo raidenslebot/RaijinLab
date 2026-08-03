@@ -1653,13 +1653,18 @@ bool AttackTargetFor(uint64_t targetGuid) {
     // cast-feedback the same way. SafeNativeCast registers the engage target
     // via the client's real setter (0x524BF0) then casts Spell_C(6603, 0). No
     // restore: auto-attack is supposed to keep the target selected.
-    // 2026-08-02 (19:25): reverted to the PROVEN round-15 form. The victim
-    // reaches the client's cast machinery through SafeNativeCast's static-slot
-    // write + the arg4 GUID holder (zero client-state writes). Passing 0 for
-    // the cast target + registering the CURRENT target via 0x524BF0 is exactly
-    // the configuration that ran clean at 18:11/18:16/18:17 (no shield AVs,
-    // casts land, unitframe untouched for acquire-off).
-    int nrc = SafeNativeCast(6603, 0, targetGuid);
+    // 2026-08-02 (19:40 TARGET-DROP FIX): NEVER register the engage target via
+    // 0x524BF0. The client's target setter flips the player's [0xd0] cast-record
+    // pointer from the static slot (0xD3C00DFC) to a HEAP record, which breaks
+    // Spell_C's synchronous target resolution (0x80CD4A reads [0xd0]+0x18) for
+    // EVERY subsequent cast -> al=0 refusals + the client dropping the user's
+    // selection (live 19:26: tgt=no the instant the attack engage ran, then
+    // every cast refused). The rotation's direct-GUID casts (proven clean at
+    // 18:11) pass registerTarget=0 and rely ONLY on the static-slot write +
+    // arg4 GUID holder — the auto-attack engage now does the SAME: cast 6603 AT
+    // the target GUID (slot + holder get it, the walk resolves it) with ZERO
+    // selection touch. No unitframe change, no record-pointer flip.
+    int nrc = SafeNativeCast(6603, targetGuid, 0);
     if (nrc > 0) {
         s_engagedTarget = targetGuid;
         RL::Log::Warn("Attack engage id=6603 tgt=0x%llX ok",

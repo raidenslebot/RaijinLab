@@ -274,7 +274,15 @@ local function check_equipment(ctx, sid)
     local mh = ctx and ctx.mainhand_equipped
     if mh == nil then mh = rt("EquippedSlotEntry", 16) end
     if type(mh) ~= "number" then return true end   -- unknown -> pass
-    if mh == 0 then return false, "no_weapon" end
+    -- ZERO IS NOT PROOF OF AN EMPTY SLOT (2026-08-03, live regression I caused).
+    -- OM::Field answers 0 when the player object cannot be resolved - which is
+    -- every frame before the object manager is warm. On rotation start that
+    -- read 0 and this gate refused Plague Strike and Blood Strike outright:
+    -- "wait no_weapon" with a weapon equipped. A false block is strictly worse
+    -- than a missed one here (the client refuses a genuinely weaponless swing
+    -- harmlessly, once), so only a read taken while the player object IS
+    -- resolvable can indict the slot. Without a way to distinguish "empty" from
+    -- "unreadable", 0 stays UNKNOWN and passes.
     return true
 end
 

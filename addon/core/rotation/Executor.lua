@@ -2843,10 +2843,29 @@ function Executor.attempt_action(action, ctx)
             --     a verdict of "facing" is the read caught lying, counted in
             --     Executor._face_audit_lied and visible in the metrics. The
             --     gate earns trust by measurement, not by assertion.
-            if not last_why and search and cand and needs_enemy then
+            -- DIRECT-TARGET CASTS GO THROUGH THIS GATE TOO (2026-08-03).
+            --
+            -- This was scoped to `search and cand`, i.e. aura_search slots
+            -- only. Plague Strike and Blood Strike run with search=n - a plain
+            -- cast at the client target - so the gate never executed for them
+            -- and they wired straight into "Target needs to be in front of
+            -- you" every time. Live: three such refusals in four seconds while
+            -- the facing read was working correctly.
+            --
+            -- The candidate's own verdict is used when the search supplied one;
+            -- otherwise ask the runtime about this GUID. Only a CONFIDENT
+            -- not-facing skips - unknown still wires and lets the client
+            -- referee, so a cold cache cannot reintroduce the round-47 freeze.
+            if not last_why and needs_enemy and cg then
                 local nf = W and W.spell_needs_facing and W.spell_needs_facing(cast_sid)
-                if nf == true and cand.facing == false then
-                    last_why = "facing"
+                if nf == true then
+                    local facing = cand and cand.facing
+                    if facing == nil and W and W.is_facing_guid then
+                        facing = W.is_facing_guid(cg)
+                    end
+                    if facing == false then
+                        last_why = "facing"
+                    end
                 end
             end
             -- WIRE (range was already validated in live_castable)

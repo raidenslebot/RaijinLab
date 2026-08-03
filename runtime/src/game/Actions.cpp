@@ -397,6 +397,8 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // same-tick 0xBD07B0 write under the cast-feedback races 0x512B07).
         // The deferred restore is the round-14-proven mechanism.
         uint64_t prevSel = 0;
+        uint32_t prevTgtLo = 0, prevTgtHi = 0;
+        uintptr_t descPtr = 0;
         if (registerTarget != 0) {
             prevSel = ReadClientTargetGuid();
             NativeSetTarget(registerTarget);
@@ -405,8 +407,39 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 // it after the cast settles (deferred, min-hold).
                 ArmSelectionRestore(registerTarget, prevSel);
             }
+            // 2026-08-02 (ROUND 28 — write UNIT_FIELD_TARGET directly). The
+            // round-27 log PROVED 0x524BF0 does NOT populate the sync field:
+            // NativeSetTarget ran and the cast STILL refused al=0. Spell_C's
+            // sync resolution (0x80CD4A) reads [player+0xd0]+0x18, and the
+            // round-25 diag proved that field is desc+0x40 = the player's
+            // UNIT_FIELD_TARGET (descriptor at [player+0x8]; Health at 0x60,
+            // Flags at 0xEC => TARGET at 0x40). On this client it is 0 even
+            // when a target is selected (the server never synced it), which is
+            // the "Invalid target" root cause. So we write the victim GUID into
+            // desc+0x40/+0x44 BEFORE the cast and restore AFTER. This is
+            // invisible to the unitframe (it reads 0xBD07B0, untouched) and we
+            // write ONLY this field — round 25's charm corruption came from
+            // ALSO writing desc+0x50 (UNIT_FIELD_CHANNEL_OBJECT), which we do
+            // NOT touch here.
+            uintptr_t vp2 = OM::VerifiedPlayerPtr();
+            if (vp2) {
+                descPtr = Mem::Read<uintptr_t>(vp2 + 0x8);
+                if (descPtr && descPtr >= 0x10000u) {
+                    prevTgtLo = Mem::Read<uint32_t>(descPtr + 0x40);
+                    prevTgtHi = Mem::Read<uint32_t>(descPtr + 0x44);
+                    Mem::Write<uint32_t>(descPtr + 0x40, lo);
+                    Mem::Write<uint32_t>(descPtr + 0x44, hi);
+                }
+            }
         }
         int rc = fn(spellId, 0, guidPtr, 0, 0);
+        if (descPtr) {
+            // Restore the player's UNIT_FIELD_TARGET after the cast. The
+            // visible selection (0xBD07B0) is restored separately (deferred for
+            // aura-search victims).
+            Mem::Write<uint32_t>(descPtr + 0x40, prevTgtLo);
+            Mem::Write<uint32_t>(descPtr + 0x44, prevTgtHi);
+        }
         // 2026-08-02 (BLOCKED-ACTION DIALOG FIX): reset the "addon blocked"
         // cast counter after every cast so it never accumulates to 10 and
         // fires the native blocked dialog (0x530840). Pure memory write of the

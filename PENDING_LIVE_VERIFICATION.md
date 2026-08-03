@@ -1303,4 +1303,49 @@ now failed (invalid target / corruption / crash).
 3. **Aura-search casts LAND** at the victim and the selection restores after
    ~100ms (min-hold PulseSelectionRestore).
 4. NO crash (no [player+0xd0] writes); NO "Invalid target"; NO false charmed.
+
+---
+
+## 2026-08-02 (27th round, 21:22 session) — register ALONE doesn't seed the sync field → 1.10.93-unittarget
+
+1.10.92 live (21:22): `NativeSetTarget guid=0xF1300005E5006AF0` ran (the register)
+but the cast STILL refused `al=0`:
+
+```
+CastDiag ... castP=0x6CF113F8 camP=0x6CF113F8 rec=0x6CF12D68 static=0
+r8=0 r10=0 r18=0 r28=0 s20=0 flags=0 charm=0
+NativeSetTarget guid=0xF1300005E5006AF0 (client's real setter)
+SafeNativeCast rc=0x4D016C00 al=0 id=45477
+```
+
+**Conclusion: 0x524BF0 does NOT populate the sync field.** Spell_C's sync
+resolution (0x80CD4A) reads `[player+0xd0]+0x18`, and the round-25 diag PROVED
+that field is `desc+0x40` = **UNIT_FIELD_TARGET** (the player's descriptor is at
+`[player+0x8]`; with Health at 0x60 / Flags at 0xEC, TARGET is at 0x40). On this
+client UNIT_FIELD_TARGET is 0 even with a target selected (0xBD07B0 set) — the
+server never synced it — which is the persistent "Invalid target" root cause.
+The game's casts work only because UNIT_FIELD_TARGET is populated by the
+targeting/combat flow.
+
+### FIX (1.10.93-unittarget)
+Write the victim GUID directly into `desc+0x40/+0x44` (UNIT_FIELD_TARGET) right
+before `fn()` and restore it right after:
+- It is the EXACT field the sync resolution reads — the cast can now resolve
+  the victim.
+- It is INVISIBLE to the unitframe — the visible selection is 0xBD07B0
+  (untouched); the descriptor target field is server-synced data the UI does
+  not render.
+- We write ONLY this field — round 25's "Can't attack while charmed" corruption
+  came from ALSO writing desc+0x50 (UNIT_FIELD_CHANNEL_OBJECT), which is NOT
+  touched here.
+- Registration (0x524BF0) is kept for crash safety (round 13); the deferred
+  PulseSelectionRestore still reverts 0xBD07B0 for aura-search victims.
+
+### Live watchlist (1.10.93-unittarget)
+1. VER reads `1.10.93-unittarget`.
+2. **Unit-targeted casts LAND (`al=1`)** — the sync resolution now finds the
+   victim in UNIT_FIELD_TARGET.
+3. **Target-relative casts**: unitframe untouched (0xBD07B0 unchanged).
+4. **Aura-search casts**: land at the victim, selection restored deferred.
+5. NO "Invalid target", NO false charmed, NO crash.
 5. Rotation cycles: FIRE → landed.

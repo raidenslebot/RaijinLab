@@ -1628,3 +1628,76 @@ ignored by the wrapper. All existing machinery (desc+0x40 write, transient
    (confirms GetSpellEntry(0) was succeeding = root cause).
 3. **`al=1` → THE CASTS FINALLY LAND** (real spell id through the real
    logic; all gates were already verified clean).
+
+---
+
+## 2026-08-02 (34th round, 23:03 session) — 1.10.99 IS A REGRESSION → 1.10.100-minimal
+
+The 23:03 live verdict for 1.10.99-spellid was TOTAL failure:
+```
+CastProbe id=45477 mode=6 ... minS=00000001 maxS=00D54940 slot0=26693020
+SafeNativeCast rc=0x00000000 al=0 id=45477
+CastProbe id=45513 mode=2 ... minS=00000001 maxS=00D54940 slot0=26693020
+SafeNativeCast rc=0x00000000 al=0 id=45513
+SafeNativeCast rc=0x00000000 al=0 id=26573 guid=0x0     <-- Consecration TOO
+```
+Every spell — including Consecration (which landed in EVERY prior session) —
+now returns al=0. **The round-34 claim was WRONG and the "fix" was the cause.**
+
+### The disassembly PROVES round 34 had it backwards (0x80DA40 → 0x80CCE0)
+```
+0x0080DA5B  mov ecx, [ebp + 0x18]   ; arg5 (isTrade)
+0x0080DA5E  mov edx, [ebp + 0x14]   ; arg4 (guidHi)
+0x0080DA61  push ecx
+0x0080DA62  mov ecx, [ebp + 0x10]   ; arg3 (guidPtr)
+0x0080DA65  push 0
+0x0080DA67  push edx
+0x0080DA68  mov edx, [ebp + 0xc]    ; arg2 (itemId)
+0x0080DA6B  push ecx
+0x0080DA6C  mov ecx, [ebp + 8]      ; <-- arg1 (spellId) IS READ
+0x0080DA6F  push edx
+0x0080DA70  push ecx                ; push arg1 (spellId)
+0x0080DA71  push eax                ; push player
+0x0080DA72  call 0x80cce0           ; cdecl — last push = first arg
+```
+cdecl arg order → real-logic `0x80CCE0`:
+- arg1 = player (resolved by wrapper)
+- **arg2 (`[ebp+0xc]`) = wrapper arg1 = SPELL ID** → GetSpellEntry(0xad49d0,
+  [ebp+0xc], &out)
+- arg3 = wrapper arg2 (itemId, 0)
+- arg4 = wrapper arg3 (guidHolder)
+- arg5 = wrapper arg4 (guidHi)
+- arg6 = 0
+- arg7 = wrapper arg5 (isTrade)
+
+So the ORIGINAL call `fn(spellId, 0, guidPtr, 0, 0)` was CORRECT. Round 34's
+`fn(0, spellId, ...)` fed SPELL **0** to GetSpellEntry — and the live probe
+shows **`minS=00000001`** → `GetSpellEntry(0)` fails (`0 < minSpell`) → al=0
+for EVERY spell, including Consecration. The "minSpell==0" assumption in the
+round-34 claim was false (live `minS=1`).
+
+### FIX (1.10.100-minimal) — revert + strip to the 18:11-proven minimal path
+1. **REVERT the call** to `fn(spellId, 0, guidPtr, 0, 0)` (spell id in arg1;
+   the wrapper forwards it into GetSpellEntry — the disasm above is proof).
+2. **STRIP the accumulated side-writes** that were NOT in the 18:11 config —
+   the ONLY session where casts landed:
+   - round-28 UNIT_FIELD_TARGET seed `desc+0x40/+0x44` (still returned al=0;
+     descPtr kept READ-ONLY for the probe's desc40 diagnostic),
+   - round-32 transient `0xBD07B0` selection write (tracks the user's
+     persistent "aura search drops my target"),
+   - round-33 `[0xBEAF44]` mask bit write (never helped),
+   - round-26 `+0x10/+0x14` walk-slot fallback seed (a "fallback" the user
+     explicitly rejects).
+3. KEEP the crash-defense machinery (VEH guard, g_currentL clear, action-state
+   save/zero/restore, static-slot write 0xD3C00E14, arg4 GUID-holder,
+   blocked-counter reset) + CastProbe/CastDiag diagnostics + acquire-on
+   registration (NativeSetTarget only when registerTarget!=0).
+
+### Live watchlist (1.10.100-minimal)
+1. VER reads `1.10.100-minimal`.
+2. SafeNativeCast passes the real spell id again → GetSpellEntry finds the
+   entry (minS=1, real id >= 1) — the round-34 total-failure gate is gone.
+3. **`al=1` → casts land** (Consecration should return at minimum, like every
+   pre-round-34 session; unit-targeted spells are the real test).
+4. Acquire-off: 0xBD07B0 is NEVER touched → aura-search must NOT drop the
+   current target. No face-turning anywhere (detection-only).

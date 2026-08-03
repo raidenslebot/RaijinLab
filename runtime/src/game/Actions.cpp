@@ -75,17 +75,6 @@ static void EnsureBlockedCounterCommitted() {
     }
 }
 
-// 2026-08-02 (ROUND 33): the 0x50f4d0 mask-gate globals [0xBEAF44]/[0xBEAF4C]
-// live in the SAME uncommitted .data BSS tail as 0xD3F604 — commit the page
-// once (idempotent) so the bit-2 allow-write is real.
-static void EnsureBeafPageCommitted() {
-    static volatile LONG s_committed = 0;
-    if (InterlockedCompareExchange(&s_committed, 1, 0) == 0) {
-        LPVOID page = (LPVOID)(0x00BEAF44u & ~0xFFFu);
-        VirtualAlloc(page, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
-    }
-}
-
 // Forward declarations of OUTER-namespace helpers (defined at 0x.../below).
 // Kept outside the anonymous namespace: ReadClientTargetGuid (line ~783) and
 // ArmSelectionRestore (line ~942) are defined in RL::Game::Actions, so
@@ -102,11 +91,15 @@ using RL::Game::Actions::SoftHardwareUnlock;
 using fnVoid = void(__cdecl*)();
 using fnFSExec3 = void(__cdecl*)(const char* code, const char* name, int taintArg);
 // Real client cast used by FrameScript CastSpellByID / CastSpellByName
-// ROUND 34: arg1 is UNUSED by the wrapper (0x80DA40 never reads [ebp+8]);
-// arg2 is the SPELL ID the real logic (0x80CCE0) passes to GetSpellEntry and
-// stores in the cast record at +0x20. Always call with fn(0, spellId, ...).
-using fnCastSpell = int(__cdecl*)(int unused, int spellId,
-                                  uint32_t guidLo, uint32_t guidHi, int isTrade);
+// ROUND 35 (REVERT of round-34's wrong "root cause"): the wrapper 0x80DA40
+// READS arg1 ([ebp+8] -> ecx at 0x80DA6C) and forwards it into real-logic
+// 0x80CCE0's arg2 ([ebp+0xc]) — which GetSpellEntry(0xad49d0, [ebp+0xc],
+// &out) uses as the SPELL ID. So fn(spellId, 0, guidPtr, 0, 0) is CORRECT.
+// Round 34's fn(0, spellId, ...) fed SPELL 0 to GetSpellEntry and, with
+// minSpell==1 (live minS=00000001), the lookup failed -> EVERY spell
+// (incl. Consecration) died at the first gate (live 23:03 log: all rc=0).
+using fnCastSpell = int(__cdecl*)(int spellId, int itemId,
+                                  uint32_t guidPtr, uint32_t guidHi, int isTrade);
 // ObjectPtr(guidLo, guidHi, typeMask)
 using fnObjectPtr3 = uintptr_t(__cdecl*)(uint32_t lo, uint32_t hi, int typeMask);
 using fnGetActive = uint64_t(__cdecl*)();
@@ -262,11 +255,6 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             }
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
-            // ROUND 26: also seed the record's +0x28 fallback slot
-            // (0x80CD5B: if [rec+0x18]|[rec+0x1c]==0 the sync path falls back to
-            // [rec+0x28]) — [0xD3C00DFC+0x28] == 0xD3C00E24.
-            Mem::Write<uint32_t>(0xD3C00E14u + 0x10u, lo);
-            Mem::Write<uint32_t>(0xD3C00E14u + 0x14u, hi);
         }
         // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
         // charmed"): the round-18 [player+0xd0]+0x18 write was a corruption
@@ -425,18 +413,16 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         //   (3) a CastProbe names the exact failing gate if al=0 persists
         //       (spell-entry attribute gate 0x80CD11, the sync ObjectPtr(8)
         //       resolution, and canCast(2)) — data-driven, no more guessing.
+        // ROUND 35: the UNIT_FIELD_TARGET seed (round 28) is REMOVED — it was
+        // NOT part of the 18:11-proven minimal config (the ONLY session where
+        // casts landed) and round-28's own log showed it still returned al=0.
+        // descPtr is kept READ-ONLY for the CastProbe's desc40 diagnostic.
         uint64_t prevSel = 0;
-        uint32_t prevTgtLo = 0, prevTgtHi = 0;
         uintptr_t descPtr = 0;
         uintptr_t vp2 = OM::VerifiedPlayerPtr();
         if (vp2) {
             descPtr = Mem::Read<uintptr_t>(vp2 + 0x8);
-            if (descPtr && descPtr >= 0x10000u) {
-                prevTgtLo = Mem::Read<uint32_t>(descPtr + 0x40);
-                prevTgtHi = Mem::Read<uint32_t>(descPtr + 0x44);
-                Mem::Write<uint32_t>(descPtr + 0x40, lo);
-                Mem::Write<uint32_t>(descPtr + 0x44, hi);
-            }
+            if (descPtr < 0x10000u) descPtr = 0;
         }
         if (registerTarget != 0) {
             // Acquire-ON only: register the victim (the client's real setter)
@@ -557,61 +543,21 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                               (unsigned)slot0);
             }
         }
-        // ROUND 33 — MASK GATE (0x50F4D0) + TRANSIENT SELECTION.
-        // Spell_C calls 0x50f4d0(2) at 0x80D077 — but ONLY when
-        // [entry+0x238]!=0, which unit-targeted spells have (ground/self
-        // casts like Consecration skip it — that is why they land while
-        // EVERY unit-targeted spell is silently refused). 0x50f4d0(2)
-        // returns 0 (SILENT al=0 via the 0x80D249 epilogue; rc = 0x805100's
-        // return, e.g. 0x4C2F9400) whenever [0xBEAF4C]!=0 (input/action
-        // locked) AND [0xBEAF44]&4==0 (bit 2 not allowed). The client's own
-        // action handlers (0x525Bxx) temporarily set their mask bit, act,
-        // then clear it (`and [0xBEAF44], 0xFFFFFFDF`) — we replicate that
-        // for bit 2 around Spell_C. The transient 0xBD07B0 selection write
-        // (round 32, commit 'pending' pair) stays for acquire-off.
-        uint32_t selLo = Mem::Read<uint32_t>(0x00BD07B0);
-        uint32_t selHi = Mem::Read<uint32_t>(0x00BD07B4);
-        uint32_t maskLo = Mem::Read<uint32_t>(0x00BEAF44);
-        bool wroteSel = false, wroteMask = false;
-        if (registerTarget == 0 && (selLo != lo || selHi != hi)) {
-            Mem::Write<uint32_t>(0x00BD07B0, lo);
-            Mem::Write<uint32_t>(0x00BD07B4, hi);
-            wroteSel = true;
-        }
-        if ((maskLo & 4u) == 0) {
-            EnsureBeafPageCommitted();
-            Mem::Write<uint32_t>(0x00BEAF44, maskLo | 4u);
-            wroteMask = true;
-        }
-        // ROUND 34 — THE ACTUAL ROOT CAUSE: the wrapper (0x80DA40) ignores
-        // arg1 and forwards arg2 into the real logic 0x80CCE0, where
-        // GetSpellEntry(0xad49d0, [ebp+0xc], &out) reads arg2 as the SPELL
-        // ID and the cast record stores it at +0x20. The old call
-        // fn(spellId, 0, ...) put the spell id in the IGNORED arg1 and 0 in
-        // the arg2 the real logic reads — so EVERY cast looked up SPELL 0
-        // (GetSpellEntry(0) succeeds because minSpell==0 and slot 0 is
-        // valid), ran the whole gate chain on SPELL 0's empty data, and only
-        // guid=0 casts (Consecration) happened to return success. That is
-        // why the probe's entry=1 (our own table read with the real id) was
-        // misleading and why every targeted cast failed regardless of every
-        // gate. Fix: pass the spell id in arg2.
-        int rc = fn(0, spellId, guidPtr, 0, 0);
-        if (wroteSel) {
-            // Restore the user's selection — invisible to the unitframe (no
-            // frame rendered between the write and this restore).
-            Mem::Write<uint32_t>(0x00BD07B0, selLo);
-            Mem::Write<uint32_t>(0x00BD07B4, selHi);
-        }
-        if (wroteMask) {
-            // Clear the temporarily-allowed bit — the client's own pattern.
-            Mem::Write<uint32_t>(0x00BEAF44, maskLo);
-        }
-        if (descPtr) {
-            // Restore the player's UNIT_FIELD_TARGET (invisible field) after
-            // the cast. 0xBD07B0 was never touched for acquire-off.
-            Mem::Write<uint32_t>(descPtr + 0x40, prevTgtLo);
-            Mem::Write<uint32_t>(descPtr + 0x44, prevTgtHi);
-        }
+        // ROUND 35 (REVERT to the 18:11-proven minimal cast path): the
+        // round-32 transient 0xBD07B0 write, the round-33 [0xBEAF44] mask
+        // write, and the round-28 UNIT_FIELD_TARGET seed are ALL removed.
+        // NONE were present in the 18:11 config — the ONLY session where
+        // casts landed — and each correlates with breakage (the user's
+        // persistent "aura search drops my target" tracks the 0xBD07B0
+        // touch) or no improvement (mask + desc40 both returned al=0).
+        //
+        // The call uses the CORRECT original signature: arg1=spellId (the
+        // wrapper 0x80DA40 forwards it into real-logic arg2 / GetSpellEntry),
+        // arg2=0 (item), arg3=guidHolder (record target GUID via [ptr+8]),
+        // arg4=0, arg5=0. Round 34's fn(0, spellId, ...) fed spell 0 into
+        // GetSpellEntry and, with minS=1, killed EVERY spell at the first
+        // gate — the 23:03 total-failure log proves that was the regression.
+        int rc = fn(spellId, 0, guidPtr, 0, 0);
         // 2026-08-02 (BLOCKED-ACTION DIALOG FIX): reset the "addon blocked"
         // cast counter after every cast so it never accumulates to 10 and
         // fires the native blocked dialog (0x530840). Pure memory write of the

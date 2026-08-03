@@ -1207,9 +1207,20 @@ Conditions.register("aura_search", {
         local search_range = num(args.range, 40)
         local spell_max = W.spell_max_range and W.spell_max_range(id)
         if not spell_max then
+            -- ROUND 48 (SPAM FIX): this fired on EVERY aura_search eval for any
+            -- aura-id (55078/55095 etc. are auras, not castable spells — they
+            -- NEVER have a Spell.dbc range). Throttle to once per 10s per id;
+            -- the noise was thousands of lines/session and added I/O churn on
+            -- top of the per-tick evaluation.
             if W.dlog then
-                W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — using configured "
-                    .. "range %d (spell_max decode unavailable)", id, search_range)
+                local tnow = (GetTime and GetTime()) or 0
+                W._range_unknown_log_t = W._range_unknown_log_t or {}
+                local lt = W._range_unknown_log_t[id]
+                if not lt or (tnow - lt) > 10 then
+                    W._range_unknown_log_t[id] = tnow
+                    W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — using configured "
+                        .. "range %d (spell_max decode unavailable)", id, search_range)
+                end
             end
             -- 2026-08-02 (23:48): RANGE_UNKNOWN must NOT silently kill the
             -- search. The hard-fail left the rotation stuck in "wait no_target"

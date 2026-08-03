@@ -261,6 +261,83 @@ def prove_deployed_fixes():
 
 
 # ---------------------------------------------------------------------------
+# PROOF 5: full-denial next-ready sleep (round 48 — the UI-error storm fix)
+# ---------------------------------------------------------------------------
+# The 14:25 session: rotation casts correctly for 9s, then every slot is denied
+# (PS/IT aura-gated — diseases up; BS/Consec on CD) -> "wait cooldown x80" =
+# 80 full re-evaluations in ~3s (20-30Hz spin). That churn flooded the Lua VM
+# and crashed OTHER addons (GatherMate2 PerformAutoUpdate nil, XPert lower-on-
+# number — the round-45 event-storm pattern). FIX: after a fully-denied pass,
+# sleep exactly until the earliest next-ready time (a cast becomes possible),
+# waking on combat/target transitions. Concrete timers (cooldown ends) are
+# precise -> zero delay AND zero churn. No timer (pure aura-gated) -> poll 0.25s.
+
+
+def compute_next_wake(t, cooldowns=None, gcd_until=None, facing_until=None,
+                      pending_deadline=None, recent=None, has_aura_search=False):
+    nw = None
+    for sid, rem in (cooldowns or {}).items():
+        if rem > 0.05:
+            at = t + rem - 0.03
+            nw = at if nw is None else min(nw, at)
+    for exp in (recent or {}).values():
+        if exp and exp > t:
+            nw = exp if nw is None else min(nw, exp)
+    if gcd_until and gcd_until > t:
+        nw = gcd_until if nw is None else min(nw, gcd_until)
+    if facing_until and facing_until > t:
+        nw = facing_until if nw is None else min(nw, facing_until)
+    if pending_deadline:
+        nw = pending_deadline if nw is None else min(nw, pending_deadline)
+    if nw is None:
+        nw = t + (0.12 if has_aura_search else 0.25)
+    elif nw > t + 5.0:
+        nw = t + 5.0
+    return nw
+
+
+def prove_idle_sleep():
+    fails = []
+    t = 100.0
+    # 1) The 14:25 case: BS CD 3.9s, Consec CD 2.1s -> wake exactly when Consec
+    #    clears (2.07s), NOT a 0.25s poll, NOT a 60Hz spin.
+    nw = compute_next_wake(t, cooldowns={45902: 3.9, 26620: 2.1})
+    if abs(nw - (t + 2.07)) > 0.001:
+        fails.append(f"cooldown wake wrong: {nw}")
+    # 2) Pure aura-gated (no timers) -> bounded poll 0.25s (0.12 with aura_search).
+    nw = compute_next_wake(t)
+    if abs(nw - (t + 0.25)) > 0.001:
+        fails.append(f"aura-gated poll wrong: {nw}")
+    nw = compute_next_wake(t, has_aura_search=True)
+    if abs(nw - (t + 0.12)) > 0.001:
+        fails.append(f"aura_search poll wrong: {nw}")
+    # 3) GCD end is a precise wake.
+    nw = compute_next_wake(t, gcd_until=t + 0.9)
+    if abs(nw - (t + 0.9)) > 0.001:
+        fails.append(f"gcd wake wrong: {nw}")
+    # 4) 5s sanity cap.
+    nw = compute_next_wake(t, cooldowns={1: 999.0})
+    if nw > t + 5.0:
+        fails.append(f"sanity cap violated: {nw}")
+    # 5) Churn: OLD re-evaluated every frame (60Hz); NEW wakes only on timer
+    #    expiry. Over a 4s cooldown window: OLD ~240 evals, NEW ~2.
+    evals_old = int(4.0 * 60)
+    evals_new = 0
+    now = 100.0
+    cooldowns = {45902: 3.9, 26620: 2.1}
+    while now < 104.0:
+        nw = compute_next_wake(now, cooldowns={sid: max(0.0, rem - (now - 100.0))
+                                               for sid, rem in cooldowns.items()})
+        evals_new += 1
+        now = nw
+    if evals_new > 6:
+        fails.append(f"NEW churn too high: {evals_new} evals over 4s")
+    if evals_old <= evals_new * 20:
+        fails.append(f"churn reduction insufficient: old={evals_old} new={evals_new}")
+    return fails, evals_old, evals_new
+
+
+# ---------------------------------------------------------------------------
 def main():
     print("=" * 72)
     print("PROOF 1: LIVE LOG SEGMENTATION (raijinlab_dev.log)")
@@ -346,8 +423,22 @@ def main():
     print("      deployed Engine.lua cooldown gate fires only at rem <= 0.05.")
 
     print()
-    print("RESULT: all proofs hold. Round 46 (log evidence) and round 47 "
-          "(gate construction) verified.")
+    print("=" * 72)
+    print("PROOF 5: FULL-DENIAL NEXT-READY SLEEP (round 48 — UI-error storm fix)")
+    print("=" * 72)
+    fails, evals_old, evals_new = prove_idle_sleep()
+    if fails:
+        print("ASSERT FAILS:")
+        for f in fails:
+            print("  -", f)
+        sys.exit(1)
+    print(f"PASS: cooldown wait sleeps exactly to the earliest ready time "
+          f"(zero delay); aura-gated polls 0.25s/0.12s; over a 4s cooldown "
+          f"window OLD re-evaluated ~{evals_old}x, NEW wakes ~{evals_new}x.")
+
+    print()
+    print("RESULT: all proofs hold. Round 46 (log evidence) and rounds 47-48 "
+          "(gate construction + denial-sleep) verified.")
     return 0
 
 

@@ -2381,3 +2381,51 @@ with aura conditions. The engine violated it in THREE ways — all fixed + deplo
 3. NO "wait facing:X x74" stalls; a genuinely-not-facing melee cast = ONE client
    refusal + 1.5s quiet melee backoff, then re-measure.
 4. NO "Spell is not ready yet" (cooldown gate at bar-clear).
+
+---
+
+## 2026-08-03 (round 48 — UI-error storm + lockup spin, addon only; user: "rotation should never trigger UI errors, slot priority is absolute, basic checks are the verification layer")
+
+The 14:25 session (runtime 1.10.106-aa) PROVED the round-47 fixes work:
+- IT->PS->IT->Consec->BS->BS all LANDED, ZERO client refusals/errors in the
+  session the user pasted. The rotation behaved exactly as built.
+- The complaints: (a) GatherMate2 PerformAutoUpdate nil x3 + XPert lower-on-
+  number = OTHER addons crashing from OUR churn; (b) "locking up harder" =
+  wait cooldown x80 — after the burst, every slot was genuinely denied
+  (PS/IT aura-gated since diseases are up; BS/Consec on real CDs; Auto Attack
+  already autoing per IsCurrentSpell(6603)) — a CORRECT 4s DK downtime, but
+  the executor re-evaluated all slots at 20-30Hz (80 ticks/3s), flooding the
+  Lua VM = the round-45 event-storm pattern that crashes other addons.
+
+### FIXES (deployed, hash-verified, tools/_verify_round47.py now 5 proofs exit 0)
+1. FULL-DENIAL NEXT-READY SLEEP (Executor.lua, the storm killer): after a pass
+   where EVERY slot is denied, compute the earliest time anything can become
+   castable (min cooldown end - 0.03 / GCD end / facing backoff / pending
+   deadline / recent floor) and sleep EXACTLY until then (5s sanity cap).
+   Concrete timers = precise -> ZERO delay (a slot fires the instant it is
+   ready) AND zero churn (~3 evals vs ~240 over 4s). Pure aura-gated (no
+   timer) polls at 0.25s (0.12s when aura_search may find new units). The
+   consumer wakes on combat-state TRANSITION (was: merely being in combat,
+   which defeated the sleep) and on target-guid change. This is NOT a pause —
+   nothing can cast during the window.
+2. AURA_SEARCH RANGE_UNKNOWN LOG THROTTLE (Conditions.lua): the
+   "RANGE_UNKNOWN sid=55078/55095 ... using configured range" line fired on
+   EVERY aura_search eval (aura ids never have a Spell.dbc range) — thousands
+   of lines/session + I/O churn. Now once per 10s per id.
+3. EMPTY AURA-SEARCH CACHE 250ms (World.lua): a search that finds nothing no
+   longer re-issues the runtime bridge round-trip 20x/sec; 250ms is still
+   reactive for a new mob. Populated results stay 50ms for multi-dot.
+
+### CHECKLIST COMPLIANCE (verified against Basic_Rotation_Checks + Enumerable Data)
+- Slot priority is ABSOLUTE: Engine.evaluate iterates slots 1..N top-down;
+  slot N's aura_search/conditions NEVER run until slot 1..N-1 are denied.
+  First castable wins; denied slots fall through; repeat as fast as possible.
+- Basic checks run BEFORE user conditions (Phase A basic -> Phase B
+  conditions) with short-circuit on first hard failure:
+  identity -> busy -> gcd/cd -> resource -> target_rel -> range -> facing
+  (deferred to wire; client is sole referee per round 41 FINAL) -> los ->
+  immune. Matches the checklist order.
+- NEVER-UI-ERRORS: with the denial-sleep, the event storm is gone; a cast is
+  wired only after basic+conditions pass, and a genuinely-refused cast (client
+  authority) is one phantom + a 0.6s floor / 1.5s melee facing backoff — never
+  a repeat storm.

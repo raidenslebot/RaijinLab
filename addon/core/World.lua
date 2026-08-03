@@ -3000,7 +3000,12 @@ function World.find_aura_search_targets(opts)
     local tnow = (GetTime and GetTime()) or 0
     local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
     local ac = World._aura_search_cache
-    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.05 and ac.list then
+    -- ROUND 48 (CHURN FIX): empty results cache 250ms (not 50ms) — a search
+    -- that found nothing re-issues the bridge round-trip far less often
+    -- during downtime / single-target fights. Populated results stay 50ms
+    -- for fast multi-dot reaction.
+    local hit_ttl = (ac and ac.empty) and 0.25 or 0.05
+    if ac and ac.key == ck and (tnow - (ac.t or 0)) < hit_ttl and ac.list then
         return ac.list
     end
 

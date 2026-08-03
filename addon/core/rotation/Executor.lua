@@ -35,6 +35,12 @@ Executor._no_runtime_warned = false
 Executor._gcd_until = 0          -- authoritative global-cooldown end time (GetTime clock)
 Executor._pending = nil          -- a cast in flight awaiting client confirmation
 Executor._recent = nil           -- { [sid] = expire_t } synthetic per-spell floor (anti self-spam)
+-- ROUND 48: combat state captured when the idle sleep is set, so the sleep
+-- consumer wakes on a TRANSITION (idle->combat / combat->idle) instead of
+-- merely being in combat (the old check woke instantly in combat, defeating
+-- the full-denial sleep and keeping the 20-30Hz spin alive).
+Executor._idle_combat_at_sleep = nil
+Executor._idle_target_guid = nil
 -- ROUND 47: after the CLIENT refuses a melee cast for facing, ALL melee wires
 -- back off until this time (1.5s) so the refusal is not repeated every 0.45s.
 -- Set ONLY in the FACING REFUSE branch (a real client refusal) — never a
@@ -3584,9 +3590,23 @@ function Executor._tick_body()
         local wake = false
         if UnitExists and UnitExists("target") then
             if not Executor._idle_had_target then wake = true end
+            -- ROUND 48: wake when the TARGET CHANGES — a new target may be
+            -- castable while the previous one was fully denied.
+            if not wake and Executor._idle_target_guid ~= nil
+                and (UnitGUID and UnitGUID("target")) ~= Executor._idle_target_guid then
+                wake = true
+            end
         end
-        if not wake and UnitAffectingCombat and UnitAffectingCombat("player") then
-            wake = true
+        -- ROUND 48: wake on a COMBAT-STATE TRANSITION, not merely being in
+        -- combat. The old `if combat then wake` woke instantly during combat
+        -- waits, defeating the full-denial sleep and keeping the 20-30Hz
+        -- re-evaluation spin (the "wait cooldown x80" event storm that crashed
+        -- GatherMate2/XPert). Sleeping until the next-ready time is NOT a
+        -- pause: nothing can cast in that window, and the executor wakes
+        -- exactly when a slot becomes castable (or on any transition).
+        if not wake and Executor._idle_combat_at_sleep ~= nil then
+            local cnow = (UnitAffectingCombat and UnitAffectingCombat("player")) and true or false
+            if cnow ~= Executor._idle_combat_at_sleep then wake = true end
         end
         if wake then
             Executor._idle_until = nil
@@ -4138,8 +4158,16 @@ function Executor._tick_body()
         end
     end
 
-    -- Idle throttle: never sleep when aura_search / multi-dot may still find units
-    -- without a client target (was freezing multi-dot at "no_target").
+    -- Idle throttle: sleep until the earliest time anything can become
+    -- castable (next CD end / GCD end / facing backoff / pending deadline /
+    -- recent floor), capped so aura/event state changes re-check fast.
+    -- ROUND 48 (UI-ERROR STORM FIX): a FULLY-DENIED pass now sleeps. The old
+    -- behavior re-evaluated every slot every frame during "wait cooldown x80"
+    -- (20-30Hz), flooding the Lua VM and crashing OTHER addons (live 14:25:
+    -- GatherMate2 PerformAutoUpdate nil + XPert lower-on-number — the round-45
+    -- event-storm pattern). Sleeping until the next-ready time is NOT a pause:
+    -- nothing can cast in that window (the client would refuse), and the
+    -- executor wakes exactly when a slot becomes castable.
     do
         local has_aura_search = false
         for _, slot in ipairs(rotation.slots or {}) do
@@ -4156,10 +4184,67 @@ function Executor._tick_body()
             idle = true
         elseif G and G.list_is_idle and not has_aura_search then
             idle = select(1, G.list_is_idle(ctx, spell_ids))
+        elseif reason and reason ~= "idle" and reason ~= "throttle" and reason ~= "no_match" then
+            -- FULLY-DENIED pass: every slot was denied (cooldown / gcd / aura
+            -- / range / etc.). Nothing can cast this tick — sleep.
+            idle = true
         end
         Executor._idle_had_target = ctx.target_exists and true or false
         if idle then
-            Executor._idle_until = t + 0.05
+            -- Earliest time any rotation spell can become castable again.
+            local next_wake = nil
+            if ctx.cooldowns then
+                for _, slot in ipairs(rotation.slots or {}) do
+                    local sid2 = tonumber(slot.spell_id) or 0
+                    if sid2 > 0 then
+                        local rem2 = ctx.cooldowns[sid2] or ctx.cooldowns[tostring(sid2)]
+                        if type(rem2) == "number" and rem2 > 0.05 then
+                            local at2 = t + rem2 - 0.03
+                            if not next_wake or at2 < next_wake then next_wake = at2 end
+                        end
+                    end
+                end
+            end
+            if Executor._recent then
+                for sid2, exp2 in pairs(Executor._recent) do
+                    if exp2 and exp2 > t and (not next_wake or exp2 < next_wake) then
+                        next_wake = exp2
+                    end
+                end
+            end
+            if (Executor._gcd_until or 0) > t
+                and (not next_wake or Executor._gcd_until < next_wake) then
+                next_wake = Executor._gcd_until
+            end
+            if (Executor._facing_until or 0) > t
+                and (not next_wake or Executor._facing_until < next_wake) then
+                next_wake = Executor._facing_until
+            end
+            if Executor._pending and Executor._pending.deadline
+                and (not next_wake or Executor._pending.deadline < next_wake) then
+                next_wake = Executor._pending.deadline
+            end
+            -- ROUND 48: concrete timer wakes (cooldown end / GCD end / facing
+            -- backoff / pending deadline / recent floor) are PRECISE — sleep
+            -- the exact duration (5s sanity cap) so a slot fires the instant
+            -- it becomes ready: zero delay, zero churn. Only when there is NO
+            -- concrete timer (pure aura-gated state) do we poll at 0.25s
+            -- (0.12s when aura_search may find new units). The consumer also
+            -- wakes on combat / target-guid transitions.
+            if not next_wake then
+                next_wake = t + (has_aura_search and 0.12 or 0.25)
+            elseif next_wake > t + 5.0 then
+                next_wake = t + 5.0
+            end
+            if next_wake > t + 0.02 then
+                Executor._idle_until = next_wake
+                Executor._idle_combat_at_sleep =
+                    (UnitAffectingCombat and UnitAffectingCombat("player")) and true or false
+                Executor._idle_target_guid = (UnitGUID and UnitExists
+                    and UnitExists("target") and UnitGUID("target")) or nil
+            else
+                Executor._idle_until = nil
+            end
         else
             Executor._idle_until = nil
         end
@@ -4262,6 +4347,8 @@ function Executor.start(interval)
     Executor._recent = nil
     Executor._unconf = nil
     Executor._idle_until = nil
+    Executor._idle_combat_at_sleep = nil
+    Executor._idle_target_guid = nil
     Executor._idle_had_target = false
     Executor._skip_streak = 0
     do
@@ -4358,6 +4445,8 @@ function Executor.stop()
     Executor._unconf = nil
     Executor._recent = nil
     Executor._idle_until = nil
+    Executor._idle_combat_at_sleep = nil
+    Executor._idle_target_guid = nil
     Executor._next_gap = 0
     Executor._restore_selection = nil
     Executor._retick_pending = false

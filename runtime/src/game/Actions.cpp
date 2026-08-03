@@ -423,15 +423,16 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 ArmSelectionRestore(registerTarget, prevSel);
             }
         }
-        // ROUND 29 — CAST PROBE (native context, ~2s throttle): confirm the
-        // desc+0x40 write landed and whether the victim resolves.
-        // ROUND 30: the 0x4cfd20 (GetSpellEntry) call from this probe is
-        // REMOVED — it overflows the stack. The client writes a 0x2B8-byte
-        // spell struct (0x80CCE0: sub esp,0x2b8), but the probe gave it a
-        // 0x40-byte buffer; the overflow corrupted SafeNativeCast's locals
-        // (live: CastProbe id=1 after STAGE id=45513 — spellId became 1,
-        // guid became 0, and the cast fired spell 1 -> crash). The probe is
-        // now PURE MEMORY reads (VirtualQuery-guarded) — no game calls.
+        // ROUND 30 — CAST PROBE (native context, ~2s throttle). Round 29's
+        // data PROVED: desc40 lands (UNIT_FIELD_TARGET = victim), and r8
+        // (ObjectPtr(victim, mask 8) — the sync resolution) RESOLVES the victim
+        // (r8=0x4116D168). Yet al=0 persists => the failure is at a gate
+        // BEFORE or AFTER the target resolution. Round 30 adds a SAFE read of
+        // the spell-entry attributes (0x80CD11 gate: `test byte ptr
+        // [entry+0x10], 0x40`) via 0x4cfd20 with a CORRECTLY-SIZED 0x400 buffer
+        // (round 29's crash was a 0x40 buffer overflow — the client writes a
+        // 0x2B8-byte spell struct), plus the canCast(6)-related [0xBD078C]
+        // state the charmed/CC check reads. All game calls are VEH-guarded.
         if (held == 0) {
             static volatile LONG s_probeMs = 0;
             LONG nowP = (LONG)(RL::Game::State::GameTimeMs() & 0x7FFFFFFF);
@@ -440,9 +441,33 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 uint32_t desc40 = descPtr ? Mem::Read<uint32_t>(descPtr + 0x40) : 0;
                 uintptr_t r8 = OM::ObjectPtr3Guid(lo, hi, 8);
                 uintptr_t r1 = OM::ObjectPtr3Guid(lo, hi, 1);
-                RL::Log::Warn("CastProbe id=%d desc40=%08X r8=0x%lX r1=0x%lX",
+                int entryFound = 0;
+                uint32_t attr10 = 0;
+                uint32_t gate = 0;
+                {
+                    Guard::Scope g2;
+                    if (!g2.Caught()) {
+                        using fnGS = int(__thiscall*)(uintptr_t, int, void*);
+                        // 0x4cfd20 writes a 0x2B8-byte spell struct — give it
+                        // 0x400 (round 29's crash was a 0x40 buffer overflow).
+                        unsigned char out[0x400];
+                        memset(out, 0, sizeof(out));
+                        if (reinterpret_cast<fnGS>(0x4cfd20)(0xad49d0, spellId, out)) {
+                            entryFound = 1;
+                            attr10 = *(uint32_t*)(out + 0x10);
+                            gate = (attr10 & 0x40u) != 0;
+                        }
+                    }
+                }
+                uint32_t bd078c = Mem::Read<uint32_t>(0xBD078C);
+                uint32_t bd124c = 0;
+                if (bd078c >= 0x10000u) bd124c = Mem::Read<uint32_t>(bd078c + 0x124C);
+                RL::Log::Warn("CastProbe id=%d desc40=%08X r8=0x%lX r1=0x%lX "
+                              "entry=%d attr10=%08X gate=%d bd078c=%08X bd124c=%08X",
                               spellId, (unsigned)desc40,
-                              (unsigned long)r8, (unsigned long)r1);
+                              (unsigned long)r8, (unsigned long)r1,
+                              entryFound, (unsigned)attr10, (int)gate,
+                              (unsigned)bd078c, (unsigned)bd124c);
             }
         }
         int rc = fn(spellId, 0, guidPtr, 0, 0);

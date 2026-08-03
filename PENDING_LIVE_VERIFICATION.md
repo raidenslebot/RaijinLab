@@ -1423,3 +1423,42 @@ MEMORY reads (VirtualQuery-guarded, no game calls, no buffer):
      land (the UNIT_FIELD_TARGET write feeds it);
    - `r8=0 r1!=0` → victim is Object but not Unit(mask 8) → mask issue;
    - `r8=0 r1=0` → victim not in the object manager → GUID issue.
+
+---
+
+## 2026-08-02 (30th round, 21:53 session) — probe PROVES sync resolution works but al=0 persists → 1.10.96-gateprobe
+
+1.10.95 live (21:53) — the cleaned probe delivered the decisive data:
+```
+CastProbe id=45513 desc40=E50071EA r8=0x4116D168 r1=0x4116D168
+SafeNativeCast rc=0x4C6B4F00 al=0
+```
+- **`desc40=E50071EA`** — the UNIT_FIELD_TARGET (desc+0x40) write LANDS. ✓
+- **`r8=0x4116D168`** — ObjectPtr(victim, mask 8) — the sync resolution's exact
+  call — RESOLVES the victim. ✓
+- Yet the cast STILL refuses al=0. **CONCLUSION: the failure is NOT the target
+  resolution.** The sync path has a resolvable victim in the exact field it
+  reads, so al=0 comes from a gate BEFORE it (GetSpellEntry / the 0x80CD11
+  spell-attribute check `test byte [entry+0x10],0x40`) or AFTER it (target
+  object checks, canCast(6)-style CC state via [0xBD078C]+0x124C).
+- Also: the target drop after failed casts is the client's reaction to the
+  failed cast — fix the cast and the drop stops (we never touch 0xBD07B0 on
+  acquire-off).
+
+### FIX (1.10.96-gateprobe)
+Extend the probe to name the gate:
+- `entry` — did GetSpellEntry (0x4cfd20) find the spell? (0x80CCF4 → 0x80DA21)
+- `attr10` — the spell entry dword at +0x10 (the 0x80CD11 attribute gate);
+- `gate` — (attr10 & 0x40) — if 1, the 0x80CD11 pre-resolution gate fails;
+- `bd078c` / `bd124c` — the [0xBD078C]+0x124C state the canCast(6)/CC path
+  reads.
+0x4cfd20 is called with a 0x400 buffer (the client writes 0x2B8 — round 29's
+crash was a 0x40 buffer overflow; 0x400 is safe). All game calls VEH-guarded.
+
+### Live watchlist (1.10.96-gateprobe)
+1. VER reads `1.10.96-gateprobe`.
+2. CastProbe now shows `entry`/`attr10`/`gate`/`bd078c`/`bd124c`:
+   - `entry=0` → GetSpellEntry fails → spell not in the client DB → spell-level;
+   - `gate=1` → the 0x80CD11 spell-attribute gate fails → spell-level;
+   - `gate=0 entry=1` → the spell entry is fine → the failure is AFTER the sync
+     resolution (target object check / CC state) → next fix is data-driven.

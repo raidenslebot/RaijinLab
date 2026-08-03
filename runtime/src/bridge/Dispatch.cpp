@@ -259,6 +259,11 @@ static uint64_t GuidArg(lua_State* L, int idx) {
             !_stricmp(s, "npc") || !_stricmp(s, "vehicle")) {
             return 0;
         }
+        // "0" is the documented "this means the local player" argument for every
+        // unit native. It parses to 0 correctly and is not a failure; warning
+        // about it produced 12 lines of noise per rotation start (live 15:49:46).
+        if (s[0] == '0' && (s[1] == '\0' || (s[1] == 'x' && s[2] == '0' && s[3] == '\0')))
+            return 0;
         // Skip leading whitespace.
         while (*s == ' ' || *s == '\t') ++s;
         char* end = nullptr;
@@ -1028,7 +1033,42 @@ static int Handle(lua_State* L, const char* name) {
     // Same rule as above: unimplemented numerics answer nil, not a fake 0.
     // UnitCasting/UnitChannel are the sharpest of these - a 0 there reads to the
     // rotation as "casting spell 0", i.e. permanently busy, because 0 is truthy.
-    if (!std::strcmp(name, "UnitFlags") || !std::strcmp(name, "UnitCreator") ||
+    // UNIT_FIELD_FLAGS - a REAL descriptor read (D().Flags, already verified and
+    // used by the snapshot). It sat in the nil-stub list below, which meant the
+    // silenced / pacified / stunned basic checks had no data source at all: the
+    // gate existed and could never fire. Stubs that answer nil are the same
+    // defect class as ObjectQuestGiverStatus returning 0.
+    if (!std::strcmp(name, "UnitFlags")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        if (!g) return PushNil(L);
+        return PushNumber(L, (double)OM::Field(g, (uint32_t)Offsets::D().Flags));
+    }
+    // Equipped-slot occupancy from PLAYER_VISIBLE_ITEM_n_ENTRYID (RE'd live,
+    // see Offsets.h). Arg 2 = inventory slot (1..19, default 16 = main hand).
+    // Returns the DISPLAY entry: non-zero means "something is equipped there".
+    // It is deliberately NOT called ItemId - main hand read 121696 for a
+    // transmogged 4562, and naming it an id would invite a wrong lookup.
+    if (!std::strcmp(name, "EquippedSlotEntry") || !std::strcmp(name, "MainHandItemId")) {
+        uint64_t g = OM::LocalGuid();
+        if (!g) return PushNil(L);
+        int slot = (int)RL::Lua::optnumber(L, 2, 16);
+        if (slot < 1 || slot > 19) return PushNil(L);
+        uint32_t off = (uint32_t)(Offsets::D().VisibleItem1
+                                  + (uintptr_t)(slot - 1) * Offsets::D().VisibleItemStride);
+        return PushNumber(L, (double)OM::Field(g, off));
+    }
+    // UNIT_FIELD_BYTES_2 byte 3 = the active shapeshift form. Replaces the
+    // addon's GetShapeshiftForm call (user directive: assume every non-runtime
+    // API is protected). 0 = no form.
+    if (!std::strcmp(name, "ShapeshiftForm")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        if (!g) return PushNil(L);
+        uint32_t b2 = (uint32_t)OM::Field(g, (uint32_t)Offsets::D().Bytes2);
+        return PushNumber(L, (double)((b2 >> 24) & 0xFF));
+    }
+    if (!std::strcmp(name, "UnitCreator") ||
         !std::strcmp(name, "UnitTarget") || !std::strcmp(name, "UnitCasting") ||
         !std::strcmp(name, "UnitChannel") || !std::strcmp(name, "UnitPitch") ||
         !std::strcmp(name, "UnitMovementFlags") || !std::strcmp(name, "UnitCreatureTypeId") ||

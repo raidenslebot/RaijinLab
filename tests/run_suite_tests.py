@@ -5298,6 +5298,7 @@ def main() -> int:
         "core/rotation/Protection.lua",
         "core/rotation/Conditions.lua",
         "core/rotation/Engine.lua",
+        "core/rotation/BasicRules.lua",
         "core/Nav.lua",
     ):
         src = (ADDON / rel).read_text(encoding="utf-8")
@@ -5314,6 +5315,18 @@ def main() -> int:
             lua.execute("Engine = __mod")
             lua.execute("RaijinLab = RaijinLab or {};"
                         " RaijinLab.RotationEngine = Engine")
+        elif name == "BasicRules":
+            # Bound as a bare global ONLY. Publishing it as RaijinLab.BasicRules
+            # makes Engine.evaluate route every slot through the full gate set,
+            # which is a different unit under test - it broke 17 unrelated
+            # priority/condition checks. The BasicRules block calls it directly.
+            lua.execute("BasicRules = __mod")
+            # BasicRules.lua self-registers onto RaijinLab at its own file
+            # bottom, so loading it is enough to make Engine.evaluate route
+            # every slot through the full gate set - a different unit under
+            # test, and it broke 17 unrelated priority/condition checks.
+            # Withdraw the registration; the block calls BasicRules directly.
+            lua.execute("if RaijinLab then RaijinLab.BasicRules = nil end")
         elif name == "Nav":
             lua.execute("Nav = __mod")
 

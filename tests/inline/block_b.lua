@@ -505,4 +505,69 @@ if #fails > 0 then
   return #fails
 end
 print("ALL SUITE TESTS PASSED")
+-- ---- BasicRules: the checklist gates -------------------------------
+-- These had NO coverage at all before 2026-08-03, which is how four of the
+-- Basic_Rotation_Checks entries stayed unimplemented and one shipped inverted.
+print("=== BasicRules gates ===")
+do
+  -- ctx fields stand in for the runtime reads (BasicRules prefers ctx, then
+  -- the runtime, and NEVER client Lua - the cast path must stay taint-free).
+  local function base(extra)
+    local c = {
+      known_spells = {}, user_state = "free", cooldowns = {},
+      target_exists = true, target_is_enemy = true, auto_castable = true,
+      spell_targeted = {}, spell_instant = {},
+    }
+    for k, v in pairs(extra or {}) do c[k] = v end
+    return c
+  end
+
+  -- Silence: only a spell whose PreventionType is silence(1) is blocked, and
+  -- only on positive evidence of UNIT_FLAG_SILENCED (0x2000).
+  RaijinLab.World = RaijinLab.World or {}
+  RaijinLab.World.spell_req = function(sid)
+    if sid == 900 then return { prevent = 1, cd = 0, catcd = 0 } end   -- silenceable
+    if sid == 901 then return { prevent = 2, cd = 0, catcd = 0 } end   -- pacify (not silence)
+    if sid == 902 then return { stancesnot = 2, cd = 0, catcd = 0 } end -- barred in form 2
+    if sid == 903 then return { equipclass = 2, cd = 0, catcd = 0 } end -- needs a weapon
+    if sid == 904 then return { casteraura = 77, cd = 0, catcd = 0 } end -- needs aura 77
+    if sid == 905 then return { excaster = 88, cd = 0, catcd = 0 } end  -- barred by aura 88
+    return nil
+  end
+  local ok, why = BasicRules.check(base({ player_unit_flags = 0x2000 }), 900)
+  check("silenced blocks a silenceable spell", ok == false and why == "silenced")
+  check("silenced does NOT block a pacify-type spell",
+        (BasicRules.check(base({ player_unit_flags = 0x2000 }), 901)) == true)
+  check("not silenced -> silenceable spell passes",
+        (BasicRules.check(base({ player_unit_flags = 0 }), 900)) == true)
+  check("unknown flags -> pass (never invent a refusal)",
+        (BasicRules.check(base(), 900)) == true)
+
+  -- Shapeshift exclusion mask: form 2 => bit 2^(2-1) = 2.
+  check("excluded form blocks",
+        (BasicRules.check(base({ shapeshift_form = 2 }), 902)) == false)
+  check("other form passes",
+        (BasicRules.check(base({ shapeshift_form = 1 }), 902)) == true)
+  check("no form passes",
+        (BasicRules.check(base({ shapeshift_form = 0 }), 902)) == true)
+
+  -- Weapon requirement (occupancy, not item id - the live main hand read a
+  -- transmog display entry, so only zero/non-zero is meaningful).
+  check("empty main hand blocks a weapon spell",
+        (BasicRules.check(base({ mainhand_equipped = 0 }), 903)) == false)
+  check("occupied main hand passes",
+        (BasicRules.check(base({ mainhand_equipped = 121696 }), 903)) == true)
+  check("unknown equipment -> pass",
+        (BasicRules.check(base(), 903)) == true)
+
+  -- Required / forbidden caster auras.
+  check("missing required aura blocks",
+        (BasicRules.check(base({ player_aura_has = { [77] = false } }), 904)) == false)
+  check("present required aura passes",
+        (BasicRules.check(base({ player_aura_has = { [77] = true } }), 904)) == true)
+  check("forbidden aura present blocks",
+        (BasicRules.check(base({ player_aura_has = { [88] = true } }), 905)) == false)
+  RaijinLab.World.spell_req = nil
+end
+
 return 0

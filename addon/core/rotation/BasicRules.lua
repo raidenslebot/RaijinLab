@@ -242,43 +242,60 @@ end
 -- evidence; req==nil is unknown and passes (the client still referees), which
 -- keeps every one of these safe on a no-runtime session.
 
--- Weapon requirement: EquippedItemClass 2 = a weapon of the given subclass
--- mask must be in the main hand ("Must have a weapon equipped" refusals).
+-- RUNTIME ONLY (user directive 2026-08-03: "assume everything non-runtime and
+-- native is protected and convert everything to runtime"). These gates read
+-- player state through runtime natives exclusively - a client Lua call here is
+-- both a taint surface ("blocked from an action only available to the Blizzard
+-- UI") and, on this client, unreliable. When the runtime cannot answer, the
+-- gate PASSES: unknown never invents a refusal.
+local function rt(call, ...)
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then
+        return nil
+    end
+    local ok, v = pcall(RaijinLab.RuntimeCall, RaijinLab, call, ...)
+    if not ok then return nil end
+    return v
+end
+
+-- Weapon requirement: EquippedItemClass 2 = a weapon must be equipped
+-- ("You must have a weapon equipped" / "Requires a melee weapon" refusals).
 local function check_equipment(ctx, sid)
     local W = RaijinLab and RaijinLab.World
     local req = W and W.spell_req and W.spell_req(sid)
     if not req then return true end
     local cls = tonumber(req.equipclass) or -1
-    if cls ~= 2 then return true end          -- only weapon checks modelled
-    local get = (ctx and ctx.inventory_item_id) or GetInventoryItemID
-    if not get then return true end
-    local ok, itemId = pcall(get, "player", 16)   -- main hand
-    if not ok or not itemId then return false, "no_weapon" end
-    -- Subclass mask precision needs GetItemInfo's subclass id; a wrong-type
-    -- weapon is rare enough that presence is the load-bearing half. The mask
-    -- check upgrades here later without changing any caller.
+    if cls ~= 2 then return true end          -- only weapon requirements modelled
+    -- ctx may carry a pre-read snapshot; otherwise ask the runtime. There is no
+    -- client-Lua fallback BY DESIGN - a missing native means unknown, and
+    -- unknown passes (the client referees) rather than inventing a block.
+    -- EquippedSlotEntry 16 = main hand OCCUPANCY (a display entry, not an item
+    -- id - the live main hand read 121696 for a transmogged 4562). Non-zero is
+    -- exactly the question this gate asks: is a weapon there at all.
+    local mh = ctx and ctx.mainhand_equipped
+    if mh == nil then mh = rt("EquippedSlotEntry", 16) end
+    if type(mh) ~= "number" then return true end   -- unknown -> pass
+    if mh == 0 then return false, "no_weapon" end
     return true
 end
 
 -- Shapeshift EXCLUSION mask ("You can't do that while shapeshifted").
--- Only the NOT mask is enforced: Ascension marks caster spells with a stance
--- bit whose semantics are unconfirmed (0x200000 observed on stock casters),
--- so the positive mask is observed and logged but never gates until pinned.
+-- Only the NOT mask is enforced: Ascension marks caster spells with a positive
+-- stance bit whose semantics are unconfirmed (0x200000 observed on stock
+-- casters), so the positive mask is never gated until it is pinned. Refusing
+-- on an unproven bit would silently stop casting - the exact failure mode this
+-- project keeps hitting.
 local function check_stance(ctx, sid)
     local W = RaijinLab and RaijinLab.World
     local req = W and W.spell_req and W.spell_req(sid)
     if not req then return true end
     local notmask = tonumber(req.stancesnot) or 0
     if notmask == 0 then return true end
-    local formfn = (ctx and ctx.shapeshift_form) or GetShapeshiftForm
-    if not formfn then return true end
-    local ok, form = pcall(formfn)
-    form = ok and tonumber(form) or 0
-    if form and form > 0 then
-        local bit = 2 ^ (form - 1)
-        if math.floor(notmask / bit) % 2 == 1 then
-            return false, "wrong_form"
-        end
+    local form = ctx and ctx.shapeshift_form
+    if form == nil then form = rt("ShapeshiftForm") end
+    if type(form) ~= "number" or form <= 0 then return true end
+    local bit = 2 ^ (form - 1)
+    if math.floor(notmask / bit) % 2 == 1 then
+        return false, "wrong_form"
     end
     return true
 end
@@ -291,12 +308,11 @@ local function check_aura_requirements(ctx, sid)
     if not req then return true end
     local function player_has(aid)
         if ctx and ctx.player_aura_has then return ctx.player_aura_has[aid] end
-        if not (RaijinLab and RaijinLab.RuntimeCall) then return nil end
         -- HasUnitAura returns a NUMBER (stack count, 0 = absent). 0 is truthy
         -- in Lua - the exact footgun that made ObjectQuestGiverStatus lie -
         -- so the comparison must be numeric, never `if has then`.
-        local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", 0, aid)
-        if not ok or type(stacks) ~= "number" then return nil end
+        local stacks = rt("HasUnitAura", 0, aid)
+        if type(stacks) ~= "number" then return nil end
         return stacks > 0
     end
     local need = tonumber(req.casteraura) or 0
@@ -320,12 +336,17 @@ local function check_silence(ctx, sid)
     if not req then return true end
     if (tonumber(req.prevent) or 0) ~= 1 then return true end
     local flags = ctx and ctx.player_unit_flags
-    if type(flags) ~= "number" then return true end
+    if flags == nil then flags = rt("UnitFlags") end
+    if type(flags) ~= "number" then return true end   -- unknown -> pass
+    -- UNIT_FLAG_SILENCED = 0x2000.
     if math.floor(flags / 0x2000) % 2 == 1 then
         return false, "silenced"
     end
     return true
 end
+
+-- Player-death / ghost is checked in check_caster_busy via UnitIsDeadOrGhost.
+-- Everything else in this module now reads through `rt` only.
 
 local function check_target_relationship(ctx, sid, slot, name)
     local policy = policy_of(slot, ctx)

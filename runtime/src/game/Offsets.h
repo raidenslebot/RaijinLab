@@ -64,7 +64,26 @@ struct DescriptorTable {
     uintptr_t DisplayId = 0x108;
     uintptr_t NativeDisplayId = 0x10C;
     uintptr_t MountDisplayId = 0x114;
-    uintptr_t Bytes0 = 0xC0; // race/class/gender packing — verify
+    uintptr_t Bytes0 = 0xC0; // race/class/gender packing - verify
+    // UNIT_FIELD_BYTES_2 packs [0]=sheath, [1]=pvp/flags, [2]=petFlags,
+    // [3]=SHAPESHIFT FORM. Bytes0 is 0xC0 (verified), and BYTES_2 sits three
+    // update-fields later in the 3.3.5a unit block: 0xC0 + 3*4 = 0xCC.
+    // Used by the shapeshift basic check so the addon never calls the client's
+    // GetShapeshiftForm (user directive: assume non-runtime is protected).
+    uintptr_t Bytes2 = 0xCC;
+    // PLAYER_VISIBLE_ITEM_1_ENTRYID, stride 8 (entry + enchantment pair).
+    // RE'd live 2026-08-03 by scanning the player descriptor against
+    // GetInventoryItemID ground truth; confirmed on four untransmogged slots:
+    //   wrist(9)=0x4AC=499680  hands(10)=0x4B4=276082
+    //   back(15)=0x4DC=559183  ranged(18)=0x4F4=824390
+    // so slot N sits at VisibleItem1 + (N-1)*8, and main hand (16) = 0x4E4.
+    //
+    // THESE ARE DISPLAY ENTRIES, NOT ITEM IDS. Main hand read 121696 while
+    // GetInventoryItemID said 4562 - the weapon is transmogged. So this field
+    // answers "is something equipped in that slot" (non-zero) and must NEVER
+    // be compared against an item id or used to look an item up.
+    uintptr_t VisibleItem1 = 0x46C;
+    uintptr_t VisibleItemStride = 0x8;
 
     // GAMEOBJECT descriptor fields.
     //

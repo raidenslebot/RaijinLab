@@ -155,7 +155,27 @@ local function spell_ready_remaining(sid, name)
     local until_t = tonumber(Executor._gcd_until) or 0
     if until_t > t then best = until_t - t end
     -- Primary: Blizzard GetSpellCooldown (works on every client)
-    if GetSpellCooldown then
+    -- THE GCD IS NOT A COOLDOWN (2026-08-03).
+    --
+    -- GetSpellCooldown reports the GLOBAL cooldown as this spell's (start,
+    -- duration) whenever the spell has no cooldown of its own. Taking that at
+    -- face value made every slot in the list report "cooldown" for the whole
+    -- GCD - live 15:49:53 showed `Renew=gcd_cd:cooldown` for five seconds, and
+    -- Renew has no cooldown at all. The GCD is already tracked separately in
+    -- _gcd_until, so counting it again here is pure double-gating, and it is
+    -- what the full-denial sleep then slept on.
+    --
+    -- The record settles it exactly: RecoveryTime and CategoryRecoveryTime are
+    -- this spell's REAL cooldowns. Both zero => the spell has no cooldown, so
+    -- any duration the client reports for it can only be the GCD. No epsilon,
+    -- no "<= 1.5s" heuristic that would misread a genuine 1s cooldown.
+    local Wq = RaijinLab and RaijinLab.World
+    local req = Wq and Wq.spell_req and Wq.spell_req(sid)
+    local has_own_cd = true
+    if req then
+        has_own_cd = ((tonumber(req.cd) or 0) > 0) or ((tonumber(req.catcd) or 0) > 0)
+    end
+    if GetSpellCooldown and has_own_cd then
         local function sample(key)
             if not key then return end
             local s, d = GetSpellCooldown(key)
@@ -170,7 +190,10 @@ local function spell_ready_remaining(sid, name)
     end
     -- Authoritative supplement: runtime pure-C++ cooldown (covers custom
     -- spells / cases where Lua GetSpellCooldown misses).
-    if sid and sid > 0 then
+    -- Gated the same way: a spell the record says has NO cooldown cannot be on
+    -- one, and the runtime read of the client's cooldown table carries the same
+    -- GCD entry the Lua API does.
+    if sid and sid > 0 and has_own_cd then
         local rt = runtime_cooldown_remaining(sid)
         if rt > best then best = rt end
     end
@@ -2785,41 +2808,38 @@ function Executor.attempt_action(action, ctx)
                 local _, cmaxR = spell_range_info(cast_sid)
                 local rt_melee, rt_maxR = runtime_spell_melee(cast_sid)
                 if rt_maxR and rt_maxR > 0 then cmaxR = rt_maxR end
-                if cmaxR and cmaxR > 0 then
-                    if cdist and cdist > 0 and cdist < 900 then
-                        -- 2026-08-02 (14:09 RANGE GATE FIX - the client measures
-                        -- CENTER, not edge): the OLD gate subtracted combat reaches
-                        -- (cedge = cdist - pr - tr) and compared THAT to maxR+0.5.
-                        -- The client refuses on CENTER distance (live: a 5yd melee
-                        -- at edge=2.5 / center=5.5 got "Out of range"; edge=2.0 /
-                        -- center=5.0 too). The old gate allowed center up to
-                        -- maxR+0.5+pr+tr ~ 8.5yd for a 5yd spell - every far add
-                        -- passed the gate and the client refused "too far away".
-                        -- Compare the CENTER distance directly against the spell's
-                        -- real max range - NO tolerance (2026-08-02, user
-                        -- directive: perfect range). The old ranged +1.5yd slack
-                        -- let a 20yd spell wire at 21.5yd center -> client "Out
-                        -- of range" refusal. A spell never casts beyond maxR.
-                        if cdist > cmaxR then
-                            last_why = "oor"
-                        end
-                    else
-                        -- 2026-08-03 (NO BLIND WIRES - "target distance ...
-                        -- allowing some casts that shouldnt be allowed"): a
-                        -- candidate whose distance is unknown/unplaceable
-                        -- (nil/0/>=999) with a KNOWN spell max range is NEVER
-                        -- wired blind - that was the "edge=999 -> Out of range"
-                        -- spam. The runtime/World search already excludes
-                        -- unplaceable units, so reaching here is an edge; skip
-                        -- to the next candidate (round-42 fallthrough) rather
-                        -- than cast at an unverified distance.
-                        last_why = "oor_unknown"
-                    end
+                -- AN UNMEASURABLE TARGET IS NEVER A CAST TARGET (2026-08-03).
+                --
+                -- This whole check used to live inside `if cmaxR > 0`, so when
+                -- the spell's range was UNKNOWN there was no gate at all - not
+                -- even the unplaceable one. Live proof (15:49:47): custom Icy
+                -- Touch 45477 decodes no range, aura_search returned a guid at
+                -- edge=999.0 (the unplaceable sentinel) with tgt=no, and the
+                -- wire went out blind. The native answered al=1 - which means
+                -- DISPATCHED, not landed - nothing happened, the cast phantomed,
+                -- and the leftover pending froze both Icy Touch slots.
+                --
+                -- Distance-unknown and range-unknown are INDEPENDENT questions.
+                -- Not knowing how far a spell reaches is a reason to let the
+                -- client referee the range; it is never a reason to fire at
+                -- coordinates we could not read. Unknown stays unknown.
+                if not (cdist and cdist > 0 and cdist < 900) then
+                    last_why = "oor_unknown"
+                elseif cmaxR and cmaxR > 0 and cdist > cmaxR then
+                    -- 2026-08-02 (14:09 RANGE GATE FIX - the client measures
+                    -- CENTER, not edge): the OLD gate subtracted combat reaches
+                    -- (cedge = cdist - pr - tr) and compared THAT to maxR+0.5.
+                    -- The client refuses on CENTER distance (live: a 5yd melee
+                    -- at edge=2.5 / center=5.5 got "Out of range"). Compare the
+                    -- CENTER distance directly against the spell's real max
+                    -- range - NO tolerance (user directive: perfect range).
+                    last_why = "oor"
                 end
-                -- When cmaxR is unknown (both GetSpellInfo and the runtime
-                -- decode failed): fail-open - the client is the final authority
-                -- (round-38 decision for spell-range-unknown; a hard refuse
-                -- here would be a silent "never casts" for custom spells).
+                -- cmaxR unknown with a MEASURED distance: the client referees
+                -- the range (round-38; a hard refuse here would be a silent
+                -- "never casts" for every custom spell). That fail-open is
+                -- about the SPELL's reach only - the target's position is
+                -- already proven measured by the branch above.
             end
             -- 2026-08-02 (PER-CANDIDATE LOS): live_castable/Engine check LoS on
             -- the HEAD candidate only; the try_list loop wires candidates #2+ with

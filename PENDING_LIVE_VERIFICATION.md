@@ -1349,3 +1349,39 @@ before `fn()` and restore it right after:
 4. **Aura-search casts**: land at the victim, selection restored deferred.
 5. NO "Invalid target", NO false charmed, NO crash.
 5. Rotation cycles: FIRE → landed.
+
+---
+
+## 2026-08-02 (28th round, 21:29 session) — user identified the aura-search target drop + al=0 persists → 1.10.94-probe
+
+1.10.93 live (21:29): the user could HOLD the target for a few seconds, and
+correctly diagnosed that the **aura-search cast is what changes/drops the
+current target**. Confirmed: the round-27 register (0x524BF0) for acquire-off
+writes 0xBD07B0 = the aura-search victim, then the deferred restore reverts it
+~100ms later — the "aura search forcing my target to drop". Also the cast
+STILL returned `al=0` (rc=0x4AD8D600) even with the UNIT_FIELD_TARGET write.
+
+### FIX (1.10.94-probe)
+1. **Acquire-off casts NO LONGER register** — `SafeNativeCast(spellId, guid,
+   0)` everywhere for kCastNoTargetChange. 0xBD07B0 is NEVER touched by
+   aura-search or target-relative casts; only acquire-ON registers. This
+   directly removes the target-drop the user observed.
+2. The UNIT_FIELD_TARGET (desc+0x40) seeding now runs for EVERY targeted cast
+   (before fn, restored after) — the invisible sync-resolution feed.
+3. **NEW CastProbe** (native context, ~2s throttle) names the exact failing
+   gate if al=0 persists:
+   - `desc40` — the desc+0x40 value AFTER the write (confirms the write landed);
+   - `gate` — the spell-entry attribute byte [entry+0x10]&0x40 (the 0x80CD11
+     pre-resolution gate);
+   - `r8` — ObjectPtr(lo,hi,8): does the sync resolution resolve the victim?
+   - `r1` — ObjectPtr(lo,hi,1): is the victim in the object manager at all?
+
+### Live watchlist (1.10.94-probe)
+1. VER reads `1.10.94-probe`.
+2. **Target is NEVER dropped** by aura-search or target-relative casts (no
+   register, 0xBD07B0 untouched).
+3. Casts either LAND, or the new `CastProbe` line names the exact gate:
+   - `desc40` != victim lo → the write isn't landing;
+   - `gate=0x40` → the spell-attribute gate 0x80CD11 fails (spell-level);
+   - `r8=0 r1!=0` → the victim resolves as Object but not as Unit(mask 8);
+   - `r8=0 r1=0` → the victim isn't in the object manager (GUID/mask issue).

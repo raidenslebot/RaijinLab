@@ -386,57 +386,73 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // matrix is definitive — register (0x524BF0) + Spell_C(GUID) is the ONLY
         // crash-free + casting combo; direct-GUID (no register) refuses
         // "Invalid target" and the record/pointer writes corrupt or crash. The
-        // game's own CastSpellByID registers the target BEFORE Spell_C; the sync
-        // resolution reads the REGISTERED target. So acquire-off casts NOW also
-        // register the victim (callers pass registerTarget=guid for both states).
-        // For target-relative casts the victim IS the current selection -> the
-        // register is a no-op on the unitframe (0xBD07B0 unchanged). For
-        // aura-search victims (victim != previous selection) we SAVE the previous
-        // selection and ARM the DEFERRED PulseSelectionRestore (min-hold 100ms,
-        // not-mid-cast guarded) — NEVER a same-tick restore (round 9 proved a
-        // same-tick 0xBD07B0 write under the cast-feedback races 0x512B07).
-        // The deferred restore is the round-14-proven mechanism.
+        // 2026-08-02 (ROUND 29 — no-touch sync seeding + cast probe).
+        // The round-28 log proved the UNIT_FIELD_TARGET write alone still
+        // returns al=0 (SafeNativeCast rc=0x4AD8D600), and the round-27
+        // register (0x524BF0) is what the user observed CHANGING/DROPPING the
+        // current target on aura-search casts (it writes 0xBD07B0). So:
+        //   (1) acquire-off no longer registers — 0xBD07B0 is NEVER touched
+        //       (the user's requirement: aura-search must not affect targeting);
+        //   (2) UNIT_FIELD_TARGET (desc+0x40, the field Spell_C's sync
+        //       resolution reads at 0x80CD4A) is seeded with the victim for
+        //       EVERY targeted cast and restored after — invisible to the
+        //       unitframe (it reads 0xBD07B0, which stays the user's target);
+        //   (3) a CastProbe names the exact failing gate if al=0 persists
+        //       (spell-entry attribute gate 0x80CD11, the sync ObjectPtr(8)
+        //       resolution, and canCast(2)) — data-driven, no more guessing.
         uint64_t prevSel = 0;
         uint32_t prevTgtLo = 0, prevTgtHi = 0;
         uintptr_t descPtr = 0;
+        uintptr_t vp2 = OM::VerifiedPlayerPtr();
+        if (vp2) {
+            descPtr = Mem::Read<uintptr_t>(vp2 + 0x8);
+            if (descPtr && descPtr >= 0x10000u) {
+                prevTgtLo = Mem::Read<uint32_t>(descPtr + 0x40);
+                prevTgtHi = Mem::Read<uint32_t>(descPtr + 0x44);
+                Mem::Write<uint32_t>(descPtr + 0x40, lo);
+                Mem::Write<uint32_t>(descPtr + 0x44, hi);
+            }
+        }
         if (registerTarget != 0) {
+            // Acquire-ON only: register the victim (the client's real setter)
+            // so the unitframe follows it. Acquire-off NEVER registers —
+            // 0xBD07B0 is untouched and no restore is needed.
             prevSel = ReadClientTargetGuid();
             NativeSetTarget(registerTarget);
             if (prevSel != 0 && prevSel != registerTarget) {
-                // Aura-search victim differs from the user's selection — restore
-                // it after the cast settles (deferred, min-hold).
                 ArmSelectionRestore(registerTarget, prevSel);
             }
-            // 2026-08-02 (ROUND 28 — write UNIT_FIELD_TARGET directly). The
-            // round-27 log PROVED 0x524BF0 does NOT populate the sync field:
-            // NativeSetTarget ran and the cast STILL refused al=0. Spell_C's
-            // sync resolution (0x80CD4A) reads [player+0xd0]+0x18, and the
-            // round-25 diag proved that field is desc+0x40 = the player's
-            // UNIT_FIELD_TARGET (descriptor at [player+0x8]; Health at 0x60,
-            // Flags at 0xEC => TARGET at 0x40). On this client it is 0 even
-            // when a target is selected (the server never synced it), which is
-            // the "Invalid target" root cause. So we write the victim GUID into
-            // desc+0x40/+0x44 BEFORE the cast and restore AFTER. This is
-            // invisible to the unitframe (it reads 0xBD07B0, untouched) and we
-            // write ONLY this field — round 25's charm corruption came from
-            // ALSO writing desc+0x50 (UNIT_FIELD_CHANNEL_OBJECT), which we do
-            // NOT touch here.
-            uintptr_t vp2 = OM::VerifiedPlayerPtr();
-            if (vp2) {
-                descPtr = Mem::Read<uintptr_t>(vp2 + 0x8);
-                if (descPtr && descPtr >= 0x10000u) {
-                    prevTgtLo = Mem::Read<uint32_t>(descPtr + 0x40);
-                    prevTgtHi = Mem::Read<uint32_t>(descPtr + 0x44);
-                    Mem::Write<uint32_t>(descPtr + 0x40, lo);
-                    Mem::Write<uint32_t>(descPtr + 0x44, hi);
+        }
+        // ROUND 29 — CAST PROBE (native context, ~2s throttle): confirm the
+        // desc+0x40 write landed and name the failing gate.
+        if (held == 0) {
+            static volatile LONG s_probeMs = 0;
+            LONG nowP = (LONG)(RL::Game::State::GameTimeMs() & 0x7FFFFFFF);
+            if (nowP - s_probeMs > 2000 || s_probeMs == 0) {
+                s_probeMs = nowP;
+                uint32_t desc40 = descPtr ? Mem::Read<uint32_t>(descPtr + 0x40) : 0;
+                uint32_t gate = 0xFFFFFFFFu;
+                {
+                    Guard::Scope g2;
+                    if (!g2.Caught()) {
+                        using fnGS = int(__thiscall*)(uintptr_t, int, void*);
+                        unsigned char out[0x40];
+                        memset(out, 0, sizeof(out));
+                        if (reinterpret_cast<fnGS>(0x4cfd20)(0xad49d0, spellId, out))
+                            gate = out[0x10] & 0x40u;
+                    }
                 }
+                uintptr_t r8 = OM::ObjectPtr3Guid(lo, hi, 8);
+                uintptr_t r1 = OM::ObjectPtr3Guid(lo, hi, 1);
+                RL::Log::Warn("CastProbe id=%d desc40=%08X gate=%02X r8=0x%lX r1=0x%lX",
+                              spellId, (unsigned)desc40, (unsigned)gate,
+                              (unsigned long)r8, (unsigned long)r1);
             }
         }
         int rc = fn(spellId, 0, guidPtr, 0, 0);
         if (descPtr) {
-            // Restore the player's UNIT_FIELD_TARGET after the cast. The
-            // visible selection (0xBD07B0) is restored separately (deferred for
-            // aura-search victims).
+            // Restore the player's UNIT_FIELD_TARGET (invisible field) after
+            // the cast. 0xBD07B0 was never touched for acquire-off.
             Mem::Write<uint32_t>(descPtr + 0x40, prevTgtLo);
             Mem::Write<uint32_t>(descPtr + 0x44, prevTgtHi);
         }
@@ -1040,11 +1056,16 @@ bool CastSpell(int spellId, uint64_t targetGuid, uint32_t flags) {
     // restore is needed, and the walk no longer AVs. Acquire-ON still
     // registers (the player wants the unitframe to follow the victim).
     if (targetGuid != 0) {
-        // ROUND 27: EVERY targeted cast registers the victim (the round-13
-        // crash-free combo). SafeNativeCast saves/restores the previous
-        // selection same-tick, so acquire-off target-relative casts are a
-        // no-op on the unitframe and aura-search victims are restored.
-        int nrc = SafeNativeCast(spellId, targetGuid, targetGuid);
+        // ROUND 29: acquire-off (kCastNoTargetChange) casts DIRECT-GUID with
+        // registerTarget=0 — 0xBD07B0 is NEVER touched (the user's rule). The
+        // UNIT_FIELD_TARGET seeding inside SafeNativeCast handles the sync
+        // resolution invisibly. Acquire-ON registers (unitframe follows).
+        int nrc;
+        if (flags & kCastNoTargetChange) {
+            nrc = SafeNativeCast(spellId, targetGuid, 0);
+        } else {
+            nrc = SafeNativeCast(spellId, targetGuid, targetGuid);
+        }
         // 2026-08-02 (CRASH FIX — 22:42 PROOF): NEVER write UNIT_FIELD_TARGET
         // (desc+0x48) synchronously from the bridge, in ANY form. The plain
         // CastSpell(guid) path's `WriteDescriptorTargetOnly(prev)` here — when
@@ -2027,9 +2048,9 @@ bool ExecSecure(const char* luaCode) {
 bool CastSpellNoAcquire(int spellId, uint64_t targetGuid) {
     if (spellId <= 0) return false;
     if (targetGuid == 0) return CastSpell(spellId, 0);  // no pin needed
-    // ROUND 27: register the victim (the round-13 crash-free combo). The
-    // previous selection is saved/restored same-tick inside SafeNativeCast.
-    int nrc = SafeNativeCast(spellId, targetGuid, targetGuid);
+    // ROUND 29: direct-GUID with registerTarget=0 — 0xBD07B0 is never touched;
+    // the UNIT_FIELD_TARGET seeding inside SafeNativeCast feeds the sync path.
+    int nrc = SafeNativeCast(spellId, targetGuid, 0);
     RL::Log::Warn("CastSpellNoAcquire id=%d at=0x%llX nrc=%d", spellId,
                   (unsigned long long)targetGuid, nrc);
     return nrc > 0;
@@ -2126,25 +2147,22 @@ void DrainCastQueue() {
         // 0x512B07 VM corruption.
         int nrc = 0;
         if (q.guid != 0) {
-            // 2026-08-02 (ROUND 27 — REGISTER IS MANDATORY for EVERY targeted
-            // cast): the round-13 matrix proved register + Spell_C(GUID) is the
-            // ONLY crash-free + casting combo; direct-GUID (registerTarget=0)
-            // refuses "Invalid target" (the sync path reads the REGISTERED
-            // target, and the game's own CastSpellByID registers before casting).
-            // Acquire-off (kCastNoTargetChange) now registers the victim TOO;
-            // SafeNativeCast saves/restores the previous selection around the
-            // cast, so for target-relative casts (victim == current selection)
-            // the unitframe is untouched, and for aura-search victims it is
-            // restored same-tick. Acquire-ON registers and keeps the target.
-            nrc = SafeNativeCast(q.spellId, q.guid, q.guid);
+            // ROUND 29: acquire-off (kCastNoTargetChange) casts DIRECT-GUID with
+            // registerTarget=0 — 0xBD07B0 is NEVER touched (the user's rule: a
+            // cast must not change targeting). The UNIT_FIELD_TARGET seeding
+            // inside SafeNativeCast makes the sync resolution find the victim
+            // invisibly. Acquire-ON still registers (unitframe follows victim).
+            if (q.flags & kCastNoTargetChange) {
+                nrc = SafeNativeCast(q.spellId, q.guid, 0);
+            } else {
+                nrc = SafeNativeCast(q.spellId, q.guid, q.guid);
+            }
         } else {
             nrc = SafeNativeCast(q.spellId, 0);
         }
-        // DEFERRED restore only — never synchronous (crash-proven). ROUND 27
-        // restores the previous selection same-tick inside SafeNativeCast (the
-        // client's own 0x524BF0, still in the zeroed [0xD4139C] window); the
-        // min-hold PulseSelectionRestore remains as the safety net if that
-        // same-tick restore ever refuses.
+        // DEFERRED restore only — never synchronous (crash-proven). Acquire-off
+        // arms nothing (never registers); the min-hold PulseSelectionRestore is
+        // the safety net for the acquire-on path only.
         (void)prev;
         RL::Log::Warn("CastQueue DRAIN id=%d guid=0x%llX nrc=%d pend=%d",
                       q.spellId, (unsigned long long)q.guid, nrc, g_castQSize);

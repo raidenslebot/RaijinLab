@@ -228,6 +228,11 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             }
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
+            // ROUND 26: also seed the record's +0x28 fallback slot
+            // (0x80CD5B: if [rec+0x18]|[rec+0x1c]==0 the sync path falls back to
+            // [rec+0x28]) — [0xD3C00DFC+0x28] == 0xD3C00E24.
+            Mem::Write<uint32_t>(0xD3C00E14u + 0x10u, lo);
+            Mem::Write<uint32_t>(0xD3C00E14u + 0x14u, hi);
         }
         // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
         // charmed"): the round-18 [player+0xd0]+0x18 write was a corruption
@@ -270,56 +275,39 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         s_victimGuid = targetGuid;
         s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
         uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
-        // 2026-08-02 (ROUND 24 — SAFE SYNC-RECORD WRITE + signature check):
-        // the round-23 CastDiag proved the exact failure: [player+0xd0] is a
-        // HEAP record (0x371C8FD0, not the static slot 0xD3C00DFC), its
-        // +0x18/+0x1c target GUID is EMPTY (r18=0 r1c=0), and the client's sync
-        // resolution (0x80CD4A: edi=[edi+0xd0]; ObjectPtr([edi+0x18],
-        // [edi+0x1c],8)) resolves 0 -> "Invalid target" al=0. The diag ALSO
-        // proved castP==camP (the camera player IS the cast-path player, so
-        // VerifiedPlayerPtr is correct) and charm=0 (the player is NOT charmed —
-        // the round-22 charm was contaminated by the then-active 6603 engage).
+        // 2026-08-02 (ROUND 26 — THE DEFINITIVE FIX: restore the static
+        // cast-record pointer). The round-25 CastDiag PROVED the [player+0xd0]+
+        // 0x18 write is UNCONDITIONALLY UNSAFE: [player+0xd0] is NOT a cast
+        // record — it points INTO the player's own descriptor (rec = desc+0x28
+        // where desc = [player+0x8]), so writing [rec+0x18]/[rec+0x1c] lands on
+        // desc+0x40/0x44, the player's live unit fields. Live proof:
+        //   CastDiag ... rec=0x37470080 static=0 vt=0 r18=F1300005E5006AF0
+        //   r28=F1300005E5006AF0 s20=0 flags=F1300005 charm=0
+        // The "flags" field (desc+0x44) became the victim GUID's HIGH DWORD
+        // (0xF1300005) — the write corrupted the player -> "Can't attack while
+        // charmed" + XPerl flood. NEVER write [player+0xd0]+0x18 again.
         //
-        // ROUND 24's caster-GUID signature check was TOO STRICT: the live diag
-        // proved [player+0xd0] is an EMPTY heap record (r8=0 r10=0 r18=0 r28=0
-        // s20=0 — no caster GUID to match), so every write was skipped and every
-        // cast still refused "Invalid target" al=0.
-        // ROUND 25 relaxes the check to what the EMPTY record actually is:
-        //   - rec must be a valid readable pointer;
-        //   - [rec] (vtable slot) must NOT be in .text (0x400000..0x9DE400) —
-        //     a live CGObject always has its vtable there, an empty cast record
-        //     has 0;
-        //   - the sync slots [rec+0x18/+0x1c] must be EMPTY — we never overwrite
-        //     an existing GUID the client already placed there.
-        // When all hold, rec is an unused/pre-allocated cast record and seeding
-        // the sync target GUID slots ([rec+0x18/+0x1c] primary, [rec+0x28/+0x2c]
-        // the client's zero-fallback at 0x80CD5B) is exactly the semantic the
-        // client uses for its own casts. Otherwise the write is SKIPPED (never
-        // write through an unverified record — round 20's rule). The round-22
-        // charmed corruption was the engage's 6603 write (charm=0 now with the
-        // engage disabled); if this write ever corrupts, the post-write CastDiag
-        // shows charm=1 immediately. Native-hook context only (held==0).
+        // THE REAL MECHANISM: the client's sync resolution (0x80CD4A) reads
+        // [player+0xd0]+0x18 as the cast-target GUID. In the 18:11 clean session
+        // [player+0xd0] was the STATIC slot 0xD3C00DFC, so our walk-slot write
+        // (0xD3C00E14 = [0xD3C00DFC+0x18]) fed the sync path and casts LANDED.
+        // The user's target SELECTION (TargetUnit -> 0x524BF0) is what flips
+        // [player+0xd0] to the descriptor alias — after that the walk-slot write
+        // misses and every targeted cast refuses "Invalid target" al=0.
+        // FIX: at cast time (native context), restore [player+0xd0] =
+        // 0xD3C00DFC (a legitimate pointer VALUE the client itself uses as the
+        // default — a pointer-field write, NOT a descriptor write, NOT a
+        // selection write). The walk-slot write then feeds the sync path exactly
+        // like 18:11. The user's selection (0xBD07B0) and the unitframe are
+        // untouched — acquire-off casts still never change the target.
+        // The [0xd0] pointer write is safe: 0xD3C00DFC is the client's own
+        // default record address on the page we already committed (round 15).
         if (held == 0) {
             uintptr_t vplayer = OM::VerifiedPlayerPtr();
             if (vplayer) {
-                uintptr_t recPtr = Mem::Read<uintptr_t>(vplayer + 0xD0);
-                if (recPtr && recPtr >= 0x10000u) {
-                    uint32_t recVT = Mem::Read<uint32_t>(recPtr + 0x0);
-                    uint32_t r18 = Mem::Read<uint32_t>(recPtr + 0x18);
-                    uint32_t r1c = Mem::Read<uint32_t>(recPtr + 0x1C);
-                    bool liveObj = (recVT >= 0x400000u && recVT < 0x9DE400u);
-                    if (!liveObj && r18 == 0 && r1c == 0) {
-                        Mem::Write<uint32_t>(recPtr + 0x18, lo);
-                        Mem::Write<uint32_t>(recPtr + 0x1C, hi);
-                        Mem::Write<uint32_t>(recPtr + 0x28, lo);
-                        Mem::Write<uint32_t>(recPtr + 0x2C, hi);
-                    } else {
-                        RL::Log::Warn("CastDiag rec-UNSAFE id=%d vt=%08X "
-                                      "r18=%08X%08X skip-sync-write",
-                                      spellId, (unsigned)recVT,
-                                      (unsigned)r1c, (unsigned)r18);
-                    }
-                }
+                uintptr_t cur = Mem::Read<uintptr_t>(vplayer + 0xD0);
+                if (cur != 0xD3C00DFCu)
+                    Mem::Write<uintptr_t>(vplayer + 0xD0, 0xD3C00DFCu);
             }
         }
         // 2026-08-02 (ROUND 23/24 — SYNC-TARGET DIAGNOSTIC): names the exact

@@ -1202,3 +1202,54 @@ corrupts.
 5. Rotation cycles: FIRE → landed instead of FIRE → phantom_grace → retry.
 6. If `CastDiag rec-UNSAFE` appears, [rec] had a .text vtable (live object) —
    that names the next thing to fix.
+
+---
+
+## 2026-08-02 (25th round, 21:00 session) — the [0xd0]+0x18 write is UNCONDITIONALLY UNSAFE → 1.10.91-staticrec
+
+1.10.90 live (21:00) — the round-25 write LANDED but corrupted the player:
+
+```
+CastDiag id=45513 ... castP=0x3746E710 camP=0x3746E710 rec=0x37470080 static=0
+vt=00000000 r8=0 r10=0 r18=F1300005E5006AF0 r28=F1300005E5006AF0 s20=0
+flags=F1300005 charm=0
+```
+
+**The definitive proof**: the write hit `[rec+0x18]/[rec+0x1c]`, and the
+player's descriptor field `desc+0x44` (read as "flags") became **0xF1300005 —
+exactly the victim GUID's HIGH DWORD**. So `[player+0xd0]` is NOT a cast
+record: it points INTO the player's own descriptor (`rec = desc + 0x28`, where
+`desc = [player+0x8]`). Writing `[rec+0x18]` = `desc+0x40`/`desc+0x44` corrupts
+the player's live unit fields → "Can't attack while charmed" + the XPerl flood
+(30k errors). **The `[player+0xd0]+0x18` write is PROVEN unconditionally unsafe
+(rounds 18, 22, 25) and is now permanently removed — do NOT reintroduce it.**
+
+### The real mechanism (from RE of the game's CastSpellByID)
+The game's FS handler (0x53E060) REGISTERS the target (via the TargetUnit
+chain 0x60ABF0 → 0x524BF0) BEFORE calling Spell_C(0x80DA40) — the sync
+resolution reads the REGISTERED target, which is why the game's casts work.
+Our direct-GUID casts never register, so the sync path finds no target.
+
+The ONLY configuration that ever cast cleanly (18:11) had `[player+0xd0]` =
+the STATIC slot **0xD3C00DFC**, where our walk-slot write (0xD3C00E14 =
+[0xD3C00DFC+0x18]) fed the sync path. The user's target SELECTION
+(TargetUnit → 0x524BF0) flips `[player+0xd0]` to the descriptor alias — after
+that the walk-slot write misses and every targeted cast fails.
+
+### FIX (1.10.91-staticrec)
+At cast time (native context), restore `[player+0xd0] = 0xD3C00DFC` — a
+legitimate pointer VALUE the client itself uses as the default (a pointer-field
+write, NOT a descriptor write, NOT a selection write; the page is already
+committed from round 15). The walk-slot write (0xD3C00E14, now also seeding the
++0x28 fallback at 0xD3C00E24) then feeds the sync resolution exactly like the
+18:11 clean session. The user's selection (0xBD07B0) and the unitframe are
+untouched — acquire-off casts still never change the target.
+
+### Live watchlist (1.10.91-staticrec)
+1. VER reads `1.10.91-staticrec`.
+2. **Unit-targeted casts LAND (`al=1`)** — CastDiag should show `rec=0xD3C00DFC
+   static=1` and `r18` = the victim GUID (from the walk slot).
+3. **Target NEVER changes** — manual selection retained, aura-search casts land
+   without touching the unitframe (0xBD07B0 unchanged).
+4. NO "Can't attack while charmed" (no descriptor writes); no XPerl flood.
+5. Rotation cycles: FIRE → landed (no phantom_grace churn).

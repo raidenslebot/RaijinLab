@@ -2674,6 +2674,35 @@ function Executor.attempt_action(action, ctx)
     -- record + range entry (used for the runtime range authority below).
     local melee_rt = runtime_spell_melee(cast_sid)
     local _, maxR_spell = spell_range_info(cast_sid)
+    -- TRY THE FACED CANDIDATES FIRST (2026-08-03).
+    --
+    -- For a spell whose record says the client WILL face-check it, a candidate
+    -- we are confidently NOT facing is a guaranteed red refusal, and one we are
+    -- confidently facing is guaranteed to pass that check. The list already
+    -- carries a per-candidate verdict from the runtime search; it was simply
+    -- ordered by distance, so a nearer unfaced mob was tried before a faced one
+    -- and ate the refusal.
+    --
+    -- This is a REORDER, never a filter: undetermined and not-facing candidates
+    -- stay in the list, in their original relative order, and are still tried.
+    -- So it strictly removes avoidable refusals and cannot cause the "wait
+    -- facing forever" freeze that a hard pre-gate caused in round 47 - if
+    -- nothing is confidently faced, behaviour is exactly as before.
+    if #try_list > 1 and W and W.spell_needs_facing
+        and W.spell_needs_facing(cast_sid) == true then
+        local faced, rest = {}, {}
+        for i = 1, #try_list do
+            local c = try_list[i]
+            if c and c.facing == true then faced[#faced + 1] = c
+            else rest[#rest + 1] = c end
+        end
+        if #faced > 0 and #faced < #try_list then
+            for i = 1, #rest do faced[#faced + 1] = rest[i] end
+            try_list = faced
+            dlog("cast", "try_list reordered: %d faced first (face-checked spell %d)",
+                #try_list - #rest, cast_sid)
+        end
+    end
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid

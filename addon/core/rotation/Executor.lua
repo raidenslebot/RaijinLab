@@ -704,11 +704,15 @@ end
 
 -- Combat reach (melee / unit-targeted). Descriptor + Trinity default 1.5.
 local function combat_reach(unit)
-    if not (RaijinLab and RaijinLab.ObjectCombatReach) then return 1.5 end
+    -- 2026-08-02 (NO FALLBACKS, user directive): an unmeasured combat reach
+    -- must NOT silently become 1.5 — the range model would then claim a
+    -- precise geometry it does not have. Return nil so the caller's range
+    -- model fails closed (never casts on a guessed hitbox).
+    if not (RaijinLab and RaijinLab.ObjectCombatReach) then return nil end
     local ok, v = pcall(RaijinLab.ObjectCombatReach, RaijinLab, unit)
-    if not ok then return 1.5 end
+    if not ok then return nil end
     v = tonumber(v)
-    if not v or v ~= v or v < 0 or v > 100 then return 1.5 end
+    if not v or v ~= v or v < 0 or v > 100 then return nil end
     return v
 end
 
@@ -806,10 +810,13 @@ local function live_range_model(ctx)
                 return nil, nil, nil, nil, nil, false
             end
         end
-        pr = tonumber(pr) or 1.5
-        tr = tonumber(tr) or 1.5
-        if pr < 0 or pr > 100 then pr = 1.5 end
-        if tr < 0 or tr > 100 then tr = 1.5 end
+        pr = tonumber(pr)
+        tr = tonumber(tr)
+        -- 2026-08-02 (NO FALLBACKS): unknown/outlier reach => no precise
+        -- model => fail closed (caller refuses the cast, never guesses).
+        if not pr or pr < 0 or pr > 100 or not tr or tr < 0 or tr > 100 then
+            return nil, nil, nil, nil, nil, false
+        end
         local edge = center - pr - tr
         if edge < 0 then edge = 0 end
         -- Self-AoE: pure center for normal models; giant bound extends only.
@@ -954,43 +961,44 @@ local function spell_in_range_vs_target(sid, name, ctx)
     end
 
     ----------------------------------------------------------------------
-    -- TARGETED: edge vs maxRange (both hitboxes)
+    -- TARGETED: CENTER vs maxRange — the CLIENT's authority (2026-08-02).
+    -- The client measures CENTER distance against the spell's max range
+    -- (live proof: a 5yd melee refused "Out of range" at center=5.0 with
+    -- edge=2.0). The OLD gate compared EDGE (center - pr - tr), which let a
+    -- 5yd melee wire at center up to ~8yd (edge 5 <= band 5) -> the client
+    -- refused "Out of range" on every cast. USER DIRECTIVE (perfect range):
+    -- a spell NEVER casts beyond its real max range — no tolerance, no
+    -- silent slack, no edge-based looseness.
     ----------------------------------------------------------------------
     if not is_aoe then
-        if client_r == 0 then
-            -- IsSpellInRange returns 0 for Ascension custom spells even when
-            -- the target IS in range. Trust precise measurement over client API.
-            -- Use `band` (defaults to 5yd when maxR is unknown from GetSpellInfo).
-            if precise and edge ~= nil and edge <= band + RANGE_EPS then
-                diag.verdict = "in_edge_ovr"  -- precise overrides lying client
-                return true, nil, diag
-            end
-            diag.verdict = "oor_client"
-            return false, "oor", diag
-        end
-        if client_r == 1 then
-            -- Client hitbox-aware; still reject obvious contradicting precise edge.
-            if precise and edge ~= nil and maxR and maxR > 0
-                and edge > (maxR + 0.75) then
-                diag.verdict = "oor_client_vs_edge"
-                diag.gap = edge
-                return false, "oor", diag
-            end
-            diag.verdict = "in_client"
-            return true, nil, diag
-        end
-        if precise and edge ~= nil then
-            diag.gap = edge
-            if minR and minR > 0 and edge + RANGE_EPS < minR then
+        if precise and center ~= nil then
+            diag.gap = center
+            if minR and minR > 0 and center + RANGE_EPS < minR then
                 diag.verdict = "oor_min"
                 return false, "oor", diag
             end
-            if edge > band + RANGE_EPS then
-                diag.verdict = "oor_edge"
+            if center > band + RANGE_EPS then
+                diag.verdict = "oor_center"
                 return false, "oor", diag
             end
-            diag.verdict = "in_edge"
+            if client_r == 0 then
+                -- IsSpellInRange returns 0 for Ascension custom spells even
+                -- when the target IS in range; precise center already proved
+                -- in-range -> cast (measurement overrides the lying API).
+                diag.verdict = "in_center_ovr"
+                return true, nil, diag
+            end
+            diag.verdict = "in_center"
             return true, nil, diag
+        end
+        -- No precise center: only the client API can say.
+        if client_r == 1 then
+            diag.verdict = "in_client"
+            return true, nil, diag
+        end
+        if client_r == 0 then
+            diag.verdict = "oor_client"
+            return false, "oor", diag
         end
         -- No CheckInteract soft-IN. Without ObjectPosition yards we fail closed.
         diag.verdict = "oor_no_pos"
@@ -1053,7 +1061,9 @@ local function slot_corpse_range(slot)
     if not slot then return nil end
     for _, c in ipairs(slot.conditions or {}) do
         if c and c.id == "corpse" then
-            return tonumber(c.args and c.args.range) or 30
+            -- 2026-08-02 (NO FALLBACKS): unknown range = nil (the caller's
+            -- corpse check fails) — never a silent 30yd search.
+            return tonumber(c.args and c.args.range)
         end
     end
     return nil
@@ -2616,12 +2626,11 @@ function Executor.attempt_action(action, ctx)
                     -- maxR+0.5+pr+tr ≈ 8.5yd for a 5yd spell — every far add
                     -- passed the gate and the client refused "too far away".
                     -- Compare the CENTER distance directly against the spell's
-                    -- real max range. MELEE is strict (center >= maxR refuses);
-                    -- ranged gets a small tolerance for the client hitbox slack.
-                    local _cm = (rt_melee == true or rt_melee == 1
-                        or tostring(rt_melee) == "1")
-                    local _ctol = _cm and 0.5 or 1.5
-                    if cdist > cmaxR + _ctol then
+                    -- real max range — NO tolerance (2026-08-02, user
+                    -- directive: perfect range). The old ranged +1.5yd slack
+                    -- let a 20yd spell wire at 21.5yd center -> client "Out
+                    -- of range" refusal. A spell never casts beyond maxR.
+                    if cdist > cmaxR then
                         last_why = "oor"
                     end
                 end
@@ -3315,39 +3324,27 @@ function Executor._tick_body()
                 end
                 log_cast("landed", sid, p.name, "grace_confirm", p.cast_t)
             else
-                -- PHANTOM / FAILED RECOVERY (2026-08-02): the wire was ACCEPTED
-                -- (Spell_C al=1) — the client applied a real GCD even though no
-                -- event/field evidence arrived (instant spells never set the
-                -- casting field; Ascension custom spells often skip CD-table
-                -- writes). Zeroing _gcd_until here re-fired into the live
-                -- client GCD → "spell not ready" red spam + double-casts.
-                -- KEEP the GCD floor; only a genuine FAIL event frees early
-                -- (apply_pending_refuse).
-                -- 2026-08-02 (INSTANT RECOVERY, user directive): a phantom is a
-                -- cast that never landed — the rotation must recover from it
-                -- IMMEDIATELY, not wait a full 1.5s GCD. The GCD floor is a
-                -- guess (the spell may not have cast at all); the spell-level
-                -- _recent micro-lock prevents re-fire spam, and the real CD
-                -- table still gates a genuinely-on-CD spell. Free the GCD.
+                -- PHANTOM / FAILED RECOVERY (2026-08-02): a phantom is a cast
+                -- that produced NO success and NO fail event — it never landed.
+                -- USER DIRECTIVE (no hesitation, fail-open): recover IMMEDIATELY,
+                -- never wait a full 1.5s GCD on a cast that may never have
+                -- happened. The GCD floor is a guess; the spell-level _recent
+                -- micro-lock prevents same-spell re-fire spam, and the real CD
+                -- table (GetSpellCooldown + runtime SpellCooldownMs) still
+                -- gates a genuinely-on-CD spell. Free the GCD — always.
+                -- (The old `phantom_kept` branch — keeping the wire-time GCD
+                -- floor on a phantom — is what locked the rotation in
+                -- "wait cooldown x240" for 8+ seconds after refused casts.
+                -- Live 18:36: every refused cast left a 1.5s GCD floor that
+                -- compounded into a total rotation freeze. Removed.)
                 Executor._pending = nil
                 Executor._gcd_provisional = false
                 Executor._next_gap = 0
                 Executor._idle_until = nil
                 Executor._unconf = nil
                 clear_sid_soft_locks(sid)
-                if p.multidot then
-                    -- Multi-dot: micro-lock only (never freeze the whole list).
-                    Executor._gcd_until = 0
-                    Executor._gcd_src = "phantom_multidot"
-                elseif not (Executor._gcd_until and Executor._gcd_until > t) then
-                    -- NO full GCD floor on phantom — the cast never produced
-                    -- evidence, so there is no confirmed GCD to wait out. Only
-                    -- the spell micro-lock + real CD table gate re-fire.
-                    Executor._gcd_until = 0
-                    Executor._gcd_src = "phantom_free"
-                else
-                    Executor._gcd_src = "phantom_kept"
-                end
+                Executor._gcd_until = 0
+                Executor._gcd_src = "phantom_free"
                 Executor._recent = Executor._recent or {}
                 Executor._recent[sid] = math.max(Executor._recent[sid] or 0,
                                                  t + (p.multidot and 0.12 or 0.08))

@@ -215,32 +215,38 @@ local function parse_nearby_hostiles(packed)
                 if guid then guid = "0x" .. guid end
             end
             if guid then
-                center = tonumber(center) or 999
-                edge = tonumber(edge) or center
-                local aoe = center
-                local face_n = tonumber(face)
-                local facing = true
-                if face_n ~= nil then facing = face_n ~= 0 end
-                out[#out + 1] = {
-                    guid = guid,
-                    entry = tonumber(entry) or 0,
-                    x = tonumber(x) or 0,
-                    y = tonumber(y) or 0,
-                    z = tonumber(z) or 0,
-                    dist = aoe,
-                    dist_aoe = aoe,
-                    dist_center = center,
-                    dist_edge = edge,
-                    t_reach = 1.5,
-                    p_reach = 1.5,
-                    precise = true,
-                    source = "rt_hostiles",
-                    unit_flags = tonumber(flags) or 0,
-                    health = tonumber(hp) or 0,
-                    max_health = tonumber(mhp) or 0,
-                    facing = facing,
-                    token = nil,
-                }
+                -- 2026-08-02 (NO FALLBACKS): a unit the runtime cannot PLACE
+                -- (center unparseable / 0 / >=999) is excluded right here —
+                -- never a silent 999 that later surfaces as "edge=999.0 ->
+                -- Out of range" casts.
+                center = tonumber(center)
+                edge = tonumber(edge)
+                if center and center == center and center > 0 and center < 999 then
+                    local aoe = center
+                    local face_n = tonumber(face)
+                    local facing = true
+                    if face_n ~= nil then facing = face_n ~= 0 end
+                    out[#out + 1] = {
+                        guid = guid,
+                        entry = tonumber(entry) or 0,
+                        x = tonumber(x) or 0,
+                        y = tonumber(y) or 0,
+                        z = tonumber(z) or 0,
+                        dist = aoe,
+                        dist_aoe = aoe,
+                        dist_center = center,
+                        dist_edge = edge or center,
+                        t_reach = 1.5,
+                        p_reach = 1.5,
+                        precise = true,
+                        source = "rt_hostiles",
+                        unit_flags = tonumber(flags) or 0,
+                        health = tonumber(hp) or 0,
+                        max_health = tonumber(mhp) or 0,
+                        facing = facing,
+                        token = nil,
+                    }
+                end
             end
         end
     end
@@ -571,7 +577,10 @@ end
 -- enemies_in_range / WW pack: hitbox-aware AoE gap <= range.
 -- precise=false units still count if we have a yard number (runtime pack).
 local function dist_within(u, range)
-    range = tonumber(range) or 8
+    -- 2026-08-02 (NO FALLBACKS): unknown range = not within (fail), never a
+    -- silent 8yd default.
+    range = tonumber(range)
+    if not range or range <= 0 then return false end
     if not u then return false end
     local d = tonumber(u.dist_aoe or u.dist_center or u.dist)
     if d == nil then return false end
@@ -582,7 +591,13 @@ end
 -- NEVER cache empty packs (that zeroed enemies_in_range for 100ms+ forever
 -- when OM was still warming — condition looked permanently broken).
 function World.collect_nearby_enemies(max_range)
-    max_range = tonumber(max_range) or 40
+    -- 2026-08-02 (NO FALLBACKS): a required search range must not silently
+    -- become 40yd. Unknown range = no enemies = the enemies_in_range
+    -- condition fails (fail-open), never a hidden 40yd sweep.
+    max_range = tonumber(max_range)
+    if not max_range or max_range ~= max_range or max_range <= 0 then
+        return {}
+    end
     local now = (GetTime and GetTime()) or 0
     local c = World._hostiles_cache
     if c and c.list and #c.list > 0 and c.range and c.range >= max_range
@@ -591,7 +606,9 @@ function World.collect_nearby_enemies(max_range)
         local slim = {}
         for i = 1, #c.list do
             local e = c.list[i]
-            if (tonumber(e.dist_center) or 999) <= max_range + 1 then
+            local dc = tonumber(e.dist_center)
+            -- NO FALLBACKS: unplaceable (nil/0/>=999) is never in range; no +1 slack.
+            if dc and dc > 0 and dc < 999 and dc <= max_range then
                 slim[#slim + 1] = e
             end
         end
@@ -651,7 +668,9 @@ function World.collect_nearby_enemies(max_range)
     if max_range >= scan then return out end
     local slim = {}
     for i = 1, #out do
-        if (tonumber(out[i].dist_center) or 999) <= max_range + 1 then
+        local dc = tonumber(out[i].dist_center)
+        -- NO FALLBACKS: unplaceable is never in range; no +1 slack.
+        if dc and dc > 0 and dc < 999 and dc <= max_range then
             slim[#slim + 1] = out[i]
         end
     end
@@ -678,10 +697,10 @@ function World.collect_units_from_tokens()
                     guid = guid, token = token,
                     name = UnitName and UnitName(token) or "?",
                     x = x or 0, y = y or 0, z = z or 0,
-                    dist = aoe or center or 999,
-                    dist_center = center or 999,
-                    dist_edge = edge or center or 999,
-                    dist_aoe = aoe or center or 999,
+                    dist = aoe or center,
+                    dist_center = center,
+                    dist_edge = edge or center,
+                    dist_aoe = aoe or center,
                     precise = precise and true or false,
                     p_reach = pr, t_reach = tr, t_bound = tb,
                     health = hp, max_health = mhp,

@@ -214,6 +214,43 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
         }
+        // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX): the client's
+        // cast-target resolution is NOT always the static slot. Spell_C
+        // (0x80CCE0) resolves the target from [player+0xd0]+0x18 (0x80CD4A)
+        // where [player+0xd0] is the live cast-record pointer: the STATIC slot
+        // base (0xD3C00DFC, so +0x18 == 0xD3C00E14) while no selection
+        // machinery has run, OR a HEAP cast record once the client's target
+        // setter (0x524BF0) has run (e.g. the auto-attack engage). The
+        // static-slot write above ONLY covers the static case. Live regression
+        // (18:36, 1.10.82): the attack-engage NativeSetTarget flipped the
+        // player's record pointer to a heap record, so the feedback walk read
+        // a stale heap GUID (esi=0xF75FC697) -> 0x512B07 SHIELD + every
+        // targeted cast refused "Out of range" + phantom_grace rotation
+        // lockup. Write the victim GUID into the LIVE record too so whichever
+        // source the client resolves, it sees the victim.
+        {
+            uintptr_t player = PlayerPtr();
+            uintptr_t recPtr = 0;
+            if (player) recPtr = Mem::Read<uint32_t>(player + 0xd0u);
+            if (recPtr) {
+                Mem::Write<uint32_t>(recPtr + 0x18u, lo);
+                Mem::Write<uint32_t>(recPtr + 0x1cu, hi);
+            }
+        }
+        // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX part 2): the
+        // client's "guidLo" argument to Spell_C (0x80CCE0) is a POINTER, not
+        // a raw dword: 0x80CDC1 does `mov ecx,[ebx+8]; mov eax,[ecx]; mov
+        // ecx,[ecx+4]` to fill the NEW cast record's target GUID from
+        // [guidPtr+8]. Passing the raw lo dword made the client read a
+        // garbage GUID from [lo+8] into the record -> async cast-feedback walk
+        // AV'd on that garbage (esi=0xF75FC697) and casts refused
+        // "Out of range". Hand the client a valid holder so the record always
+        // gets the real victim GUID.
+        static uint64_t s_victimGuid = 0;
+        static uint32_t s_guidHolder[4] = { 0, 0, 0, 0 };
+        s_victimGuid = targetGuid;
+        s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
+        uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
         // 2026-08-02 (0x512B07 FINAL FIX v3): we are inside the [0xD4139C]==0
         // window — register the cast target via the client's real setter so
         // the cast-feedback can resolve it. Raw 0xBD07B0 writes leave the
@@ -224,7 +261,7 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // passes registerTarget=0 (unitframe never touched).
         if (registerTarget != 0)
             NativeSetTarget(registerTarget);
-        int rc = fn(spellId, 0, lo, hi, 0);
+        int rc = fn(spellId, 0, guidPtr, 0, 0);
         // 2026-08-02 (BLOCKED-ACTION DIALOG FIX): reset the "addon blocked"
         // cast counter after every cast so it never accumulates to 10 and
         // fires the native blocked dialog (0x530840). Pure memory write of the
@@ -1607,7 +1644,12 @@ bool AttackTargetFor(uint64_t targetGuid) {
     // cast-feedback the same way. SafeNativeCast registers the engage target
     // via the client's real setter (0x524BF0) then casts Spell_C(6603, 0). No
     // restore: auto-attack is supposed to keep the target selected.
-    int nrc = SafeNativeCast(6603, 0, targetGuid);
+    // 2026-08-02 (18:36 — 1.10.83): pass the REAL target GUID as targetGuid so
+    // SafeNativeCast writes the victim into the walk slot AND the live
+    // [player+0xd0]+0x18 record AND the arg4 GUID holder. Passing 0 left the
+    // record with a zero GUID so the auto-attack feedback could not resolve
+    // the victim (and the attack engage itself refused "Out of range").
+    int nrc = SafeNativeCast(6603, targetGuid, targetGuid);
     if (nrc > 0) {
         s_engagedTarget = targetGuid;
         RL::Log::Warn("Attack engage id=6603 tgt=0x%llX ok",

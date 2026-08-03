@@ -1182,15 +1182,26 @@ void RefreshLiveFacingCache() {
     //
     // With the correct field, zero means the player faces north. Rejecting it
     // would discard a legitimate reading and reintroduce undetermined verdicts.
-    if (cam) {
-        float v = Mem::Read<float>(cam + 0x11C);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
-    }
-    // Path 1 — client's exact path object field, only when no camera facing.
-    if (f >= 1e8f && (clo || chi)) obj = CallObjectPtr3(clo, chi, 1);
-    if (f >= 1e8f && obj) {
+    // ORDER REVERSED 2026-08-03 - and the order was a defect I introduced one
+    // build earlier. The OBJECT field +0x7A8 is the proven-exact orientation
+    // (live RE matched GetPlayerFacing to 0.00000, twice). The CAMERA field is
+    // only a fallback and genuinely reads 0.0 when unpopulated - so once the
+    // zero sentinel was correctly removed for the object, an unpopulated
+    // camera 0.0 was ACCEPTED as truth and short-circuited the good path:
+    // the runtime reported facing 0 while the client said 1.0667.
+    //
+    // Object first, accepting 0.0 (due north is a real orientation). Camera
+    // only when the object cannot be resolved, and THERE a 0.0 still means
+    // "not populated", because that is what it means for that field.
+    if (clo || chi) obj = CallObjectPtr3(clo, chi, 1);
+    if (obj) {
         float v = Mem::Read<float>(obj + 0x7A8);
         if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+    }
+    if (f >= 1e8f && cam) {
+        float v = Mem::Read<float>(cam + 0x11C);
+        if (!(v != v) && !(v > -0.0001f && v < 0.0001f)
+            && v >= -0.01f && v <= 6.30f) f = v;
     }
     // Path 3 — GetActive player object (mask 0x10 = player).
     if (f >= 1e8f) {

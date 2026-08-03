@@ -55,6 +55,21 @@ constexpr uintptr_t kActionRestoreFlagGlob = 0x00D413A4;
 // cast — we reset it after every cast so it never reaches 10.
 constexpr uintptr_t kBlockedCastCounter = 0x00D3F604;
 
+// 2026-08-02 (19:25 BLOCKED-DIALOG ROOT CAUSE): 0xD3F604 (the "addon blocked"
+// cast counter) lives in the client's UNCOMMITTED .data BSS tail (committed
+// ends 0xB2EE00, virtual to 0xDD0508) — the SAME region as 0xD3C00E14.
+// Mem::Write is VirtualQuery-guarded, so writing an uncommitted page is a
+// silent NO-OP: the counter climbed past 10 and fired the native blocked
+// dialog (0x530840) on suite disable DESPITE the reset. Commit the page once
+// (idempotent) so the reset is real.
+static void EnsureBlockedCounterCommitted() {
+    static volatile LONG s_committed = 0;
+    if (InterlockedCompareExchange(&s_committed, 1, 0) == 0) {
+        LPVOID page = (LPVOID)(kBlockedCastCounter & ~0xFFFu);
+        VirtualAlloc(page, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
+    }
+}
+
 namespace {
 
 using RL::Game::Actions::SoftHardwareUnlock;
@@ -214,29 +229,20 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
         }
-        // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX): the client's
-        // cast-target resolution is NOT always the static slot. Spell_C
-        // (0x80CCE0) resolves the target from [player+0xd0]+0x18 (0x80CD4A)
-        // where [player+0xd0] is the live cast-record pointer: the STATIC slot
-        // base (0xD3C00DFC, so +0x18 == 0xD3C00E14) while no selection
-        // machinery has run, OR a HEAP cast record once the client's target
-        // setter (0x524BF0) has run (e.g. the auto-attack engage). The
-        // static-slot write above ONLY covers the static case. Live regression
-        // (18:36, 1.10.82): the attack-engage NativeSetTarget flipped the
-        // player's record pointer to a heap record, so the feedback walk read
-        // a stale heap GUID (esi=0xF75FC697) -> 0x512B07 SHIELD + every
-        // targeted cast refused "Out of range" + phantom_grace rotation
-        // lockup. Write the victim GUID into the LIVE record too so whichever
-        // source the client resolves, it sees the victim.
-        {
-            uintptr_t player = PlayerPtr();
-            uintptr_t recPtr = 0;
-            if (player) recPtr = Mem::Read<uint32_t>(player + 0xd0u);
-            if (recPtr) {
-                Mem::Write<uint32_t>(recPtr + 0x18u, lo);
-                Mem::Write<uint32_t>(recPtr + 0x1cu, hi);
-            }
-        }
+        // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
+        // charmed"): the round-18 [player+0xd0]+0x18 write is REMOVED. It was
+        // a corruption source: the runtime's player resolution is unreliable
+        // on this client (FacingLive local=1e9 every session), so `player`
+        // can be a garbage pointer; recPtr+0x18 then lands wherever garbage
+        // points (often a live unit-flags field) and the victim GUID's LOW
+        // DWORD sets UNIT_FLAG_CHARMED (0x40) — the client then refuses EVERY
+        // cast with "Can't attack while charmed" while the player is NOT
+        // charmed (all sessions since round 18) and the unit data corruption
+        // flooded OTHER addons' unit-frame code (XPerl_Player 21k errors).
+        // The arg4 GUID-holder (below) is the correct, SAFE mechanism: it
+        // feeds the victim GUID into the client's NEW cast record via a
+        // pointer to OUR memory — zero client-state writes. The static-slot
+        // write above stays (proven round-15, the walk's own GUID slot).
         // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX part 2): the
         // client's "guidLo" argument to Spell_C (0x80CCE0) is a POINTER, not
         // a raw dword: 0x80CDC1 does `mov ecx,[ebx+8]; mov eax,[ecx]; mov
@@ -266,6 +272,9 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         // cast counter after every cast so it never accumulates to 10 and
         // fires the native blocked dialog (0x530840). Pure memory write of the
         // same value the client itself writes (0x80CE84).
+        // 2026-08-02 (19:25): the counter page is UNCOMMITTED BSS — the write
+        // was a silent no-op. Commit the page first so the reset is real.
+        EnsureBlockedCounterCommitted();
         Mem::Write<uint32_t>(kBlockedCastCounter, 0u);
         if (depth != 0 && Mem::Read<uint32_t>(kActionRestoreFlagGlob) == 0)
             Mem::Write<uint32_t>(kActionStateGlob, saved);
@@ -1644,12 +1653,13 @@ bool AttackTargetFor(uint64_t targetGuid) {
     // cast-feedback the same way. SafeNativeCast registers the engage target
     // via the client's real setter (0x524BF0) then casts Spell_C(6603, 0). No
     // restore: auto-attack is supposed to keep the target selected.
-    // 2026-08-02 (18:36 — 1.10.83): pass the REAL target GUID as targetGuid so
-    // SafeNativeCast writes the victim into the walk slot AND the live
-    // [player+0xd0]+0x18 record AND the arg4 GUID holder. Passing 0 left the
-    // record with a zero GUID so the auto-attack feedback could not resolve
-    // the victim (and the attack engage itself refused "Out of range").
-    int nrc = SafeNativeCast(6603, targetGuid, targetGuid);
+    // 2026-08-02 (19:25): reverted to the PROVEN round-15 form. The victim
+    // reaches the client's cast machinery through SafeNativeCast's static-slot
+    // write + the arg4 GUID holder (zero client-state writes). Passing 0 for
+    // the cast target + registering the CURRENT target via 0x524BF0 is exactly
+    // the configuration that ran clean at 18:11/18:16/18:17 (no shield AVs,
+    // casts land, unitframe untouched for acquire-off).
+    int nrc = SafeNativeCast(6603, 0, targetGuid);
     if (nrc > 0) {
         s_engagedTarget = targetGuid;
         RL::Log::Warn("Attack engage id=6603 tgt=0x%llX ok",
@@ -1912,7 +1922,10 @@ bool QueueCast(int spellId, uint64_t targetGuid, uint32_t flags) {
 int PendingCastCount() { return g_castQSize; }
 
 void ResetBlockedCastCounter() {
-    // Pure memory write of the same value the client itself writes (0x80CE84).
+    // 2026-08-02 (19:25): the counter page was UNCOMMITTED -> Mem::Write was a
+    // no-op -> the counter climbed past 10 and fired the native blocked dialog
+    // (0x530840) on suite disable. Commit the page once (idempotent), then zero.
+    EnsureBlockedCounterCommitted();
     Mem::Write<uint32_t>(kBlockedCastCounter, 0u);
 }
 

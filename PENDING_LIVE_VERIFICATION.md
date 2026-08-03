@@ -1253,3 +1253,54 @@ untouched — acquire-off casts still never change the target.
    without touching the unitframe (0xBD07B0 unchanged).
 4. NO "Can't attack while charmed" (no descriptor writes); no XPerl flood.
 5. Rotation cycles: FIRE → landed (no phantom_grace churn).
+
+---
+
+## 2026-08-02 (26th round, 21:14 session) — static pointer CRASHED → 1.10.92-register
+
+1.10.91 live (21:14): the `[player+0xd0] = 0xD3C00DFC` pointer redirect
+CRASHED the client the moment a targeted cast ran (manual target → Icy Touch):
+
+```
+CastDiag id=45477 ... rec=0xD3C00DFC static=1 r18=0 ... flags=0 charm=0
+skip corrupt call eip=0x503BAC69 -> ret=0x0053002B@+60
+crash.fatal code=0xC0000005 type=AV_WRITE eip=0x0053002B fault=0x7D8BF445
+```
+
+- The CastDiag confirmed the reset worked (static=1) BUT `r18=0` — the walk-slot
+  write (0xD3C00E14) is NOT landing in this session, so the "static slot feeds
+  the sync path" theory is not holding either.
+- eip=0x53002B disassembles to garbage (`add [ebx+0x7D8BF445], cl` with ebx=0
+  → AV_WRITE to an unmapped heap address) — the client's cast machinery was
+  driven into a broken state by the forced static pointer. **The static-slot
+  redirect is REMOVED (round 26 is reverted).**
+
+### The definitive path — REGISTER (round-13-proven)
+The round-13 empirical matrix is unambiguous:
+- **register (0x524BF0) + Spell_C(GUID) → CRASH-FREE, casts land**
+- no-register + Spell_C(GUID) → crash; register + Spell_C(0) → crash
+The game's own CastSpellByID (0x53E060) registers the target (TargetUnit chain
+0x60ABF0 → 0x524BF0) BEFORE calling Spell_C — the sync resolution (0x80CD4A)
+reads the REGISTERED target. Every no-register/direct-write alternative has
+now failed (invalid target / corruption / crash).
+
+### FIX (1.10.92-register)
+1. REMOVE the [player+0xd0] pointer write (the 1.10.91 crash).
+2. **Every targeted cast now registers the victim** (`SafeNativeCast(spellId,
+   guid, guid)` for BOTH acquire states — drain, CastSpell, CastSpellNoAcquire).
+   The register (0x524BF0) is the client's own setter — crash-free (round 13).
+3. SafeNativeCast saves the previous selection; when the victim differs (aura-
+   search), it arms the DEFERRED `PulseSelectionRestore` (min-hold 100ms,
+   not-mid-cast guarded — round 14-proven). NEVER a same-tick restore (round 9
+   0x512B07 race).
+4. For target-relative casts the victim IS the current selection → the register
+   is a NO-OP on the unitframe (0xBD07B0 unchanged) — zero impact.
+
+### Live watchlist (1.10.92-register)
+1. VER reads `1.10.92-register`.
+2. **Target-relative casts LAND** (register the current target — unitframe
+   untouched, no flash).
+3. **Aura-search casts LAND** at the victim and the selection restores after
+   ~100ms (min-hold PulseSelectionRestore).
+4. NO crash (no [player+0xd0] writes); NO "Invalid target"; NO false charmed.
+5. Rotation cycles: FIRE → landed.

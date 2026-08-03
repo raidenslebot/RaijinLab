@@ -1057,6 +1057,33 @@ void PodsToVectors() {
 
 } // namespace
 
+// 2026-08-02 (round 22 — SYNC TARGET RESOLUTION): the client's Spell_C SYNC
+// target resolution (0x80CD4A) reads the cast target GUID from
+// [player+0xd0]+0x18. To write that record safely we need a VERIFIED player
+// object pointer. PlayerPtr()/LocalPtr() are NOT it: the MainThread snapshot
+// stores OM::LocalPtr() (garbage — FacingLive local=1e9 every session), so a
+// [player+0xd0] write through them corrupts client state (round 18: false
+// "charmed"). This returns the player object via the SAME verified paths
+// RefreshLiveFacingCache proves correct live (obj=0x37825EE0):
+//   1) SafeGetActive → ObjectPtr mask 0x10 — the object the cast wrapper
+//      resolves (SafeGetActive is VEH-guarded, cached 120ms, already called
+//      from every bridge accessor).
+//   2) Camera path (client's exact GetPlayerFacing resolution: cam → GUID →
+//      ObjectPtr mask 1).
+// Returns 0 when the player can't be verified — callers MUST skip any write
+// (never write through an unverified pointer). NOTE: defined OUTSIDE the
+// anonymous namespace so it's exported from RL::Game::OM (the statics it
+// calls — SafeGetActive/CallObjectPtr3/CameraPlayerPtr — are file-scope and
+// remain in scope for the whole translation unit).
+uintptr_t VerifiedPlayerPtr() {
+    uint64_t active = SafeGetActive();
+    if (active) {
+        uintptr_t pobj = CallObjectPtr3((uint32_t)active, (uint32_t)(active >> 32), 0x10);
+        if (pobj) return pobj;
+    }
+    return CameraPlayerPtr();
+}
+
 // Live local-player facing via the client's exact resolution path (camera →
 // GUID → ObjectPtr → +0x7AC). 1e9 on fail. Primary source for PlayerFacing.
 //

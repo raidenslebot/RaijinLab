@@ -89,6 +89,13 @@ const std::vector<Object>& All();
 
 uint64_t LocalGuid();
 uintptr_t LocalPtr();
+// VERIFIED local-player object pointer (round 22): SafeGetActive → ObjectPtr
+// mask 0x10, then the camera path — the same resolutions RefreshLiveFacingCache
+// proves correct live (obj=0x37825EE0). Returns 0 when the player can't be
+// verified. NEVER write through PlayerPtr()/LocalPtr() (garbage on this
+// client — MainThread snapshots LocalPtr); use this for any [player+off]
+// write so an unverifiable pointer never corrupts client state.
+uintptr_t VerifiedPlayerPtr();
 bool InWorld();
 
 // Field accessors (work without full snapshot)

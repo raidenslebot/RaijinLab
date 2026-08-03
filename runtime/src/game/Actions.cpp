@@ -230,19 +230,32 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
         }
         // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
-        // charmed"): the round-18 [player+0xd0]+0x18 write is REMOVED. It was
-        // a corruption source: the runtime's player resolution is unreliable
-        // on this client (FacingLive local=1e9 every session), so `player`
-        // can be a garbage pointer; recPtr+0x18 then lands wherever garbage
-        // points (often a live unit-flags field) and the victim GUID's LOW
-        // DWORD sets UNIT_FLAG_CHARMED (0x40) — the client then refuses EVERY
-        // cast with "Can't attack while charmed" while the player is NOT
-        // charmed (all sessions since round 18) and the unit data corruption
-        // flooded OTHER addons' unit-frame code (XPerl_Player 21k errors).
-        // The arg4 GUID-holder (below) is the correct, SAFE mechanism: it
-        // feeds the victim GUID into the client's NEW cast record via a
-        // pointer to OUR memory — zero client-state writes. The static-slot
-        // write above stays (proven round-15, the walk's own GUID slot).
+        // charmed"): the round-18 [player+0xd0]+0x18 write was a corruption
+        // source because it used PlayerPtr(), whose MainThread snapshot stores
+        // OM::LocalPtr() (garbage — FacingLive local=1e9 every session);
+        // recPtr+0x18 then landed wherever garbage pointed (often a live
+        // unit-flags field) and the victim GUID's LOW DWORD set
+        // UNIT_FLAG_CHARMED (0x40) — the client then refused EVERY cast with
+        // "Can't attack while charmed" while the player was NOT charmed.
+        //
+        // 2026-08-02 (ROUND 22 — SYNC TARGET RESOLUTION, the "Invalid
+        // target" al=0 fix): the write is RE-ADDED but ONLY with a VERIFIED
+        // player object (OM::VerifiedPlayerPtr = SafeGetActive → ObjectPtr
+        // mask 0x10, then the camera path — the exact resolution
+        // RefreshLiveFacingCache proves correct live, obj=0x37825EE0) and
+        // ONLY in the native-hook context (held==0, no Lua on stack). With a
+        // verified player, [player+0xd0] is the client's REAL cast record and
+        // [recPtr+0x18/+0x1c] IS the cast-record target-GUID field — the same
+        // field the client itself writes for its own casts, and the field
+        // Spell_C's SYNC resolution (0x80CD4A) reads. Writing the victim GUID
+        // there restores the sync resolution (which is why Consecration
+        // lands — guid=0 needs no target — while EVERY unit-targeted cast
+        // fails "Invalid target" al=0). If the player can't be verified, the
+        // write is SKIPPED (never write through an unverified pointer).
+        // The arg4 GUID-holder (below) stays: it feeds the victim GUID into
+        // the client's NEW cast record via a pointer to OUR memory.
+        // The static-slot write above stays (proven round-15, the walk's own
+        // GUID slot).
         // 2026-08-02 (18:36 REGRESSION — 1.10.83 CAST-GUID FIX part 2): the
         // client's "guidLo" argument to Spell_C (0x80CCE0) is a POINTER, not
         // a raw dword: 0x80CDC1 does `mov ecx,[ebx+8]; mov eax,[ecx]; mov
@@ -257,6 +270,25 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
         s_victimGuid = targetGuid;
         s_guidHolder[2] = (uint32_t)(uintptr_t)&s_victimGuid; // [holder+8] = &GUID
         uint32_t guidPtr = (uint32_t)(uintptr_t)s_guidHolder;
+        // 2026-08-02 (ROUND 22 — SYNC TARGET RESOLUTION): Spell_C's SYNC path
+        // (0x80CD4A: edi=[edi+0xd0]; ObjectPtr([edi+0x18],[edi+0x1c],8))
+        // resolves the cast target from [player+0xd0]+0x18. On this client the
+        // [0xd0] record is NOT the static walk slot (0xD3C00E14), so the slot
+        // write alone leaves the sync resolution empty -> "Invalid target"
+        // al=0 for EVERY unit-targeted cast while guid=0 casts (Consecration)
+        // land. Write the victim GUID into the record's +0x18/+0x1c using a
+        // VERIFIED player object only, native-hook context only (held==0).
+        // Unverifiable player -> skip (no corruption).
+        if (held == 0) {
+            uintptr_t vplayer = OM::VerifiedPlayerPtr();
+            if (vplayer) {
+                uintptr_t recPtr = Mem::Read<uintptr_t>(vplayer + 0xD0);
+                if (recPtr && recPtr >= 0x10000u) {
+                    Mem::Write<uint32_t>(recPtr + 0x18, lo);
+                    Mem::Write<uint32_t>(recPtr + 0x1C, hi);
+                }
+            }
+        }
         // 2026-08-02 (0x512B07 FINAL FIX v3): we are inside the [0xD4139C]==0
         // window — register the cast target via the client's real setter so
         // the cast-feedback can resolve it. Raw 0xBD07B0 writes leave the

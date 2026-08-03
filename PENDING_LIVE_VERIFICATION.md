@@ -829,6 +829,61 @@ A phantom (cast never landed) took the `phantom_kept` branch → waited the full
 for 8+ seconds. FIX (user directive): phantom ALWAYS frees the GCD
 (`phantom_free`); the `_recent` micro-lock + real CD table still gate re-fire.
 
+---
+
+## 2026-08-02 (22nd round, 20:00) — SYNC TARGET RESOLUTION → 1.10.87-synctarget
+
+The 19:34 session showed NO casts at all: left-click target instantly dropped,
+rotation locked, "no ui errors". The decisive evidence in the log:
+
+- **Consecration (guid=0) LANDS (nrc=1)** while **EVERY unit-targeted cast
+  fails `al=0` ("Invalid target")** — with or without a retained target.
+- Conclusion: the ONLY thing failing is the client's SYNC target resolution.
+  Spell_C's sync path (0x80CD4A: `edi=[edi+0xd0]; ObjectPtr([edi+0x18],
+  [edi+0x1c],8)`) reads the cast-target GUID from **[player+0xd0]+0x18**.
+  The static walk slot (0xD3C00E14, round 15) feeds only the ASYNC cast-
+  feedback walk (0x856370→0x512B00), NOT the sync resolution. The [0xd0]
+  record is not always 0xD3C00DFC — any selection machinery flips it to a
+  heap record, so the slot write alone leaves the sync GUID empty/stale →
+  every targeted cast refused "Invalid target" al=0. guid=0 casts (self /
+  ground, e.g. Consecration) skip resolution entirely → they land.
+
+### Root cause — round 18's [0xd0] write used an UNVERIFIED player pointer
+Round 18 DID write [player+0xd0]+0x18 and it "functionally" worked, but it
+corrupted client state (false "Can't attack while charmed") because `player`
+came from `PlayerPtr()`. **`MainThread.cpp:76` sets the snapshot's
+`playerPtr = OM::LocalPtr()` — and `LocalPtr()` is garbage on this client
+(FacingLive local=1e9 in every session).** So `recPtr = [garbage+0xd0]`,
+and `recPtr+0x18` landed wherever garbage pointed (often a live unit-flags
+field) → the victim GUID's low dword set UNIT_FLAG_CHARMED (0x40).
+
+### FIX (1.10.87-synctarget)
+1. **NEW `OM::VerifiedPlayerPtr()`** (ObjectManager) — resolves the player via
+   the SAME paths RefreshLiveFacingCache proves correct live (obj=0x37825EE0):
+   `SafeGetActive → CallObjectPtr3(mask 0x10)`, then the camera path
+   (`CameraPlayerPtr`: cam → GUID → ObjectPtr mask 1). Returns 0 when the
+   player can't be verified. (Defined OUTSIDE the anonymous namespace so it's
+   exported — the anon namespace spans lines 17-1082; an earlier placement
+   there caused LNK2019.)
+2. **SafeNativeCast re-adds the `[player+0xd0]+0x18/+0x1C` victim-GUID write**,
+   but ONLY with the verified player AND ONLY in the native-hook context
+   (`held == 0`, no Lua on stack). With a verified player, `[player+0xd0]` is
+   the client's REAL cast record and `[recPtr+0x18]` IS its target-GUID field —
+   writing the victim GUID there is exactly what the client does for its own
+   casts. **If the player can't be verified, the write is SKIPPED** (never
+   write through an unverified pointer — round 20's rule).
+3. Arg4 GUID-holder (round 18 A) and static walk-slot write (round 15) stay —
+   they feed the ASYNC record/walk. The new write covers the SYNC path.
+
+### Live watchlist (next session)
+1. VER reads `1.10.87-synctarget`.
+2. **Unit-targeted casts LAND (nrc=1, al=1)** — not just guid=0 spells. The
+   rotation actually fires (no "Invalid target" al=0).
+3. Left-click target is RETAINED (no instant drop); acquire-off never touches
+   the unitframe.
+4. NO false "Can't attack while charmed" (verified-player write only).
+5. NO 0x512B07 SHIELD AVs; no crash.fatal; no blocked dialog.
+
 ### Root cause E — the range gate was EDGE-based, the client is CENTER-based
 `spell_in_range_vs_target` compared EDGE (center − pr − tr) to band — a 5yd
 melee could wire at center ~8yd. The client refuses on CENTER > maxR (proof:

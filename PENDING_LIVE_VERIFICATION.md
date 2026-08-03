@@ -2308,3 +2308,15 @@ the aura_search slot) — not an engine bug.
 3. "out of range" appears only as the accurate oor: wait (never a client
    refusal) for genuinely out-of-range casts.
 4. Aura search wires the closest candidate and multi-dots.
+
+### QUANTIFIED EVIDENCE (extracted by tools/_verify_round47.py from the 13:50-13:58 session)
+Same log, segmented by runtime version:
+  runtime        casts  landed  refused   refusal kinds
+  1.10.105-aa      107      72       28   facing=17, range=2, FAILED_QUIET=3, Invalid_target=1, not_ready_gcd=5
+  1.10.106-aa        6       6        0   (none)
+- ALL 28 client refusals happened BEFORE the 13:57 re-inject of the round-46
+  runtime. The 1.10.106-aa segment (6 casts) had ZERO refusals — the facing/
+  range/quiet/invalid spam is gone in-game.
+- Proof 2 proves by construction: the OLD cooldown gate could cast up to 240ms
+  BEFORE the local bar cleared (client "not ready" by design); the round-47
+  gate fires only at rem <= 0.05. Run: python tools/_verify_round47.py (exit 0).

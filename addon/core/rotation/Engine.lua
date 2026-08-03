@@ -333,16 +333,16 @@ function Engine.spell_ready(ctx, spell_id)
     local rem = cds[spell_id]
     if rem == nil then rem = cds[tostring(spell_id)] end
     rem = tonumber(rem) or 0
-    -- Lag-aware: bar can clear a few ms before the server accepts the next cast.
-    local lag = 0.08
-    if GetNetStats then
-        local ok, _, _, lh, lw = pcall(GetNetStats)
-        if ok then
-            local ms = math.max(tonumber(lh) or 0, tonumber(lw) or 0)
-            if ms > 0 then lag = math.min(0.35, math.max(0.05, ms / 1000 * 0.6)) end
-        end
-    end
-    if rem > (0.04 + lag) then
+    -- 2026-08-03 (ROUND 47 — "Spell is not ready yet" SPAM FIX): the old gate
+    -- fired when `rem <= 0.04 + lag` where lag scaled with GetNetStats up to
+    -- 0.24s — i.e. it cast UP TO 0.24s BEFORE the local cooldown bar cleared.
+    -- The client judges readiness from its OWN local state, so a cast while
+    -- the bar still shows cooldown → the "Spell is not ready yet" refusal
+    -- (and the user's spam). Fire only when the bar is essentially cleared
+    -- (rem <= 0.05 = 50ms — imperceptible, not a pause). A residual server
+    -- "not ready" is ONE phantom recovered by the refuse floor (0.6s), never
+    -- a spam. The GCD gate below still governs the global cooldown.
+    if rem > 0.05 then
         return false, "cooldown"
     end
 

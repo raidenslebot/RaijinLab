@@ -1,0 +1,17 @@
+round 47: fix "Spell is not ready yet" early-fire in Engine.spell_ready
+
+- The cooldown gate fired when rem <= 0.04 + lag, where lag scaled with
+  GetNetStats up to 0.24s - i.e. it cast UP TO 0.24s BEFORE the local
+  cooldown bar cleared. The client judges readiness from its OWN local
+  state, so a cast while the bar still shows cooldown guaranteed the
+  "Spell is not ready yet" refusal the user was spammed with.
+- Fix: fire only when rem <= 0.05 (bar essentially cleared; 50ms is
+  imperceptible, not a pause). Residual server-side "not ready" = one
+  phantom recovered by the existing 0.6s refuse floor, never a spam.
+  live_castable already used 0.05; Engine now matches.
+
+Verified in the 13:57 session log (1.10.106-aa): 6 Icy Touch casts,
+ALL landed, ZERO client refusals of any kind - the round-46 facing
+fixes work. Range gates verified solid (center vs real maxR, fail-closed
+on unknown). The visible Icy Touch every-GCD filler is the user's
+rotation config (target_rel slots with no aura condition).

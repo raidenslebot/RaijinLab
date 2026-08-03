@@ -2267,3 +2267,44 @@ accurate... the runtime is the key."
    the melee slot skips (no client error) and wires the instant facing is OK.
 3. Ranged Icy Touch still casts regardless of facing.
 4. No "wait facing:X" lockup (undetermined → wire) and no attempt storm.
+
+---
+
+## 2026-08-03 (round 47) — "nothing improved": the 13:57 log shows ZERO refusals; "not ready" early-fire fixed
+
+User: "pretty much nothing improved." The pasted 13:57 session (1.10.106-aa):
+- 6 Icy Touch casts (1 search + 5 target-rel) in ~10s — ALL landed (al=1),
+  ZERO client refusals of ANY kind (no "in front of you", no "wrong way", no
+  "out of range", no "not ready"). The rotation was turned OFF after 10s.
+
+### "Spell is not ready yet" — REAL BUG FOUND + FIXED (Engine.lua)
+Engine.spell_ready's cooldown gate fired when em <= 0.04 + lag, where lag
+scaled with GetNetStats up to 0.24s — i.e. it cast UP TO 0.24s BEFORE the
+local cooldown bar cleared. The client judges readiness from its OWN local
+state → a cast while the bar still shows cooldown → "Spell is not ready yet".
+FIX: fire only when rem <= 0.05 (bar essentially cleared; 50ms imperceptible,
+not a pause). A residual server-side "not ready" is ONE phantom recovered by
+the existing 0.6s refuse floor — never a spam. (live_castable already used
+0.05; Engine now matches.)
+
+### "Out of range" — gates VERIFIED SOLID (no code gap found)
+- current-target path: spell_in_range_vs_target compares CENTER vs the spell's
+  real maxR (runtime Spell.dbc decode), fail-closed on unknown; RANGE_EPS=0.05.
+- search candidates: live_castable fails-closed "range_unknown" when the band
+  is unknown; the try_list gate oor/oor_unknown skips out-of-range / unknown.
+- The oor:Blood Strike wait at edge=3-4yd is ACCURATE — Blood Strike is a 5yd
+  spell; at that CENTER distance the client would refuse "too far". It is our
+  gate correctly refusing, not a client error.
+
+### The visible behavior (Icy Touch every GCD) is the USER'S ROTATION CONFIG
+The target-rel Icy Touch slots (#5/#6) have NO aura condition, so they fire
+every GCD as filler (this is the "empty conditions = try when capable" rule).
+If Icy Touch should stop once its debuff is up, add the aura condition (like
+the aura_search slot) — not an engine bug.
+
+### Live watchlist (after /reload — addon-only change; runtime still 1.10.106-aa)
+1. No "Spell is not ready yet" refusals (cooldown gate no longer fires early).
+2. No facing refusals on melee when facing the target (round-46 gate).
+3. "out of range" appears only as the accurate oor: wait (never a client
+   refusal) for genuinely out-of-range casts.
+4. Aura search wires the closest candidate and multi-dots.

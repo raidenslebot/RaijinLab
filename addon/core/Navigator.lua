@@ -1154,12 +1154,23 @@ local function force_release()
     Navigator._strafe = nil
     set_forward(false)
     set_strafe(nil)
+    -- STAGE A NATIVE HALT; NEVER CALL THE MOVEMENT APIS DIRECTLY (2026-08-03).
+    --
+    -- The four calls that used to be here - MoveForward(false),
+    -- MoveBackward(false), StrafeLeft/Right(false) - are the PROTECTED movement
+    -- APIs. Master.halt_movement documents exactly this and was fixed to stage
+    -- a native halt instead; force_release kept calling them, and Navigator.stop
+    -- runs BEFORE halt_movement, so suite-OFF popped "RaijinLab has been blocked
+    -- from an action only available to the Blizzard UI" every single time -
+    -- which is precisely when the user sees it.
+    --
+    -- HaltMovement is drained by the runtime's frame hook (main thread, no Lua
+    -- on the stack), which releases every held key, stops, and commits. That is
+    -- the native-carrier rule, and it is strictly more thorough than the four
+    -- calls it replaces.
     local a = A()
-    if a then
-        if a.MoveForward then a.MoveForward(false) end
-        if a.MoveBackward then a.MoveBackward(false) end
-        if a.StrafeLeft then a.StrafeLeft(false) end
-        if a.StrafeRight then a.StrafeRight(false) end
+    if a and a.HaltMovement then
+        pcall(a.HaltMovement)
     end
 end
 Navigator.force_release = force_release

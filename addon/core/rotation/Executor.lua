@@ -3715,7 +3715,22 @@ function Executor._tick_body()
                 Executor._recent = Executor._recent or {}
                 Executor._recent[sid] = math.max(Executor._recent[sid] or 0,
                                                  t + (p.multidot and 0.12 or 0.08))
-                log_cast("refused", sid, p.name, "phantom_grace", p.cast_t)
+                -- "refused" CONFLATED TWO DIFFERENT FAULTS (2026-08-03).
+                --
+                -- A phantom is not a refusal. The client ACCEPTED this cast
+                -- (SafeNativeCast al=1) and then produced no effect - no aura,
+                -- no damage, no failure event. That is a completely different
+                -- fault from al=0, where the client rejected the wire outright
+                -- and said why ("not_ready", "Target needs to be in front of
+                -- you"). Reporting both as "refused" made the log unable to
+                -- distinguish "the client said no" from "the client said yes
+                -- and nothing happened", and those need opposite fixes: the
+                -- first is a gate we failed to apply, the second is a cast that
+                -- went somewhere it should not have.
+                Executor._phantom_n = (Executor._phantom_n or 0) + 1
+                log_cast("phantom", sid, p.name,
+                    string.format("accepted-then-nothing (n=%d)", Executor._phantom_n),
+                    p.cast_t)
                 -- INSTANT RECOVERY: a phantom must trigger an immediate re-eval
                 -- (event-driven path bypasses the poll throttle), so the next
                 -- castable spell fires THIS frame, not after the next poll.
@@ -4231,10 +4246,23 @@ function Executor._tick_body()
         Executor._idle_until = nil
         Executor._idle_had_target = ctx.target_exists and true or false
         -- One clear line per cast attempt.
-        dlog("cast", "FIRE  #%d %s  edge=%.1f",
+        -- LOG THE DISTANCE TO WHAT WE ACTUALLY CAST AT (2026-08-03).
+        --
+        -- This printed ctx.target_distance - the CLIENT TARGET's distance -
+        -- even when the cast went to an aura_search GUID that is not the
+        -- client target. With no client target that reads 999 (the unplaceable
+        -- sentinel), producing "FIRE Icy Touch edge=999.0" for a cast whose
+        -- real candidate was a few yards away. That log line sent me hunting a
+        -- blind-wire defect that was not there: the range gate had already
+        -- validated the candidate. A diagnostic that names the wrong subject
+        -- is worse than none - it manufactures phantom bugs.
+        local fired_dist = tonumber(wire_guid and search and search.dist)
+            or tonumber(ctx.target_distance) or -1
+        dlog("cast", "FIRE  #%d %s  edge=%.1f%s",
             tonumber(action.index) or 0,
             tostring(action.name),
-            tonumber(ctx.target_distance) or -1)
+            fired_dist,
+            (wire_guid and search and search.dist) and " (search target)" or "")
         if M then
             if M.note_tick then M.note_tick(tick_timer_ms(_tick_t0)) end
             if M.maybe_log then M.maybe_log(t) end

@@ -2560,6 +2560,8 @@ function World.build_context(opts)
         -- GetSpellInfo returns castTime (ms) as the 7th value.
         local instant = true
         if GetSpellInfo then
+            -- GetSpellInfo (verified live): 1 name 2 rank 3 icon 4 powerCost
+            -- 5 isFunnel 6 powerType 7 castTime 8 minRange 9 maxRange.
             local _, _, _, _, _, _, castTime = GetSpellInfo(rid)
             castTime = tonumber(castTime)
             if castTime and castTime > 0 then instant = false end
@@ -2592,6 +2594,8 @@ function World.build_context(opts)
         local minR, maxR = 0, 0
         local sname = nil
         if GetSpellInfo then
+            -- GetSpellInfo (verified live): 1 name 2 rank 3 icon 4 powerCost
+            -- 5 isFunnel 6 powerType 7 castTime 8 minRange 9 maxRange.
             local n, _, _, _, _, _, _, mn, mx = GetSpellInfo(rid)
             sname = n
             minR, maxR = tonumber(mn) or 0, tonumber(mx) or 0
@@ -2702,6 +2706,8 @@ function World.build_context(opts)
                 local maxR = 0
                 local nm = nil
                 if GetSpellInfo then
+                    -- GetSpellInfo (verified live): 1 name 2 rank 3 icon 4 powerCost
+                    -- 5 isFunnel 6 powerType 7 castTime 8 minRange 9 maxRange.
                     local n, _, _, _, _, _, _, _, mx = GetSpellInfo(id)
                     nm, maxR = n, tonumber(mx) or 0
                 end
@@ -3024,6 +3030,49 @@ function World.spell_req(sid)
     end
     _spell_req_cache[sid] = r
     return r
+end
+
+-- NAME -> SPELL ID, from the player's own spellbook.
+--
+-- This client's GetSpellInfo returns NO spell id (verified live: nine returns
+-- ending at maxRange, position 10 nil), so any code extracting an id from it
+-- was reading an unrelated column - Actions.cast_by_name was taking powerType
+-- and would have cast spell 3 for every energy ability.
+--
+-- The spellbook is the exact source: GetSpellLink carries the real id in its
+-- hyperlink, and the book is precisely the set of spells that can be cast by
+-- name anyway. Built once and cached; SPELLS_CHANGED clears it (a rank-up or
+-- a newly trained ability must be picked up live).
+local _name_id = nil
+function RaijinLab.SpellIdByName(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if not _name_id then
+        if not (GetSpellLink and GetSpellName and BOOKTYPE_SPELL) then return nil end
+        _name_id = {}
+        local i = 1
+        while true do
+            local ok, sname = pcall(GetSpellName, i, BOOKTYPE_SPELL)
+            if not ok or not sname then break end
+            local okl, link = pcall(GetSpellLink, i, BOOKTYPE_SPELL)
+            if okl and type(link) == "string" then
+                local sid = tonumber(link:match("spell:(%d+)") or "")
+                if sid and sid > 0 then
+                    local key = string.lower(sname)
+                    -- First wins: the book lists lowest rank first, and the
+                    -- rank resolver upgrades separately. Never overwrite with a
+                    -- later duplicate name.
+                    if _name_id[key] == nil then _name_id[key] = sid end
+                end
+            end
+            i = i + 1
+            if i > 1024 then break end        -- bounded: never an infinite walk
+        end
+    end
+    return _name_id[string.lower(name)]
+end
+
+function RaijinLab.ClearSpellNameIndex()
+    _name_id = nil
 end
 
 -- Data-driven classification helpers (replace the English name lists).

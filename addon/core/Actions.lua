@@ -234,13 +234,21 @@ function A.CastSpellByName(name, unitOrGuid)
     -- its 7th value on 3.3.5. The old name path used runtime ExecSecure
     -- (FrameScript_Execute from inside the bridge) - a nested-VM re-entry crash
     -- surface AND the "Tainted call to a secure function" source.
+    -- THIS CLIENT'S GetSpellInfo RETURNS NO SPELL ID (verified live 2026-08-03).
+    --
+    -- The nine returns are: name, rank, icon, powerCost, isFunnel, powerType,
+    -- castTime, minRange, maxRange - position 10 is nil. The comment above
+    -- claimed the id arrived 7th, and through pcall (which shifts everything by
+    -- one) slot 7 is powerType. So a name lookup produced an ID OF THE POWER
+    -- TYPE: mana spells gave 0 (harmlessly falling through), but every energy
+    -- spell resolved to id 3 and would have cast SPELL 3 instead of the spell
+    -- asked for. Fabricating an id from an unrelated column is worse than
+    -- having none, so the name is resolved through the runtime's own record
+    -- store, and failing that left to the last-resort path below.
     local id = tonumber(name)
-    if not id and GetSpellInfo then
-        local ok, _, _, _, _, _, sid = pcall(GetSpellInfo, tostring(name))
-        if ok then
-            local n = tonumber(sid)
-            if n and n > 0 then id = n end
-        end
+    if not id and RaijinLab and RaijinLab.SpellIdByName then
+        local n = tonumber(RaijinLab.SpellIdByName(tostring(name)))
+        if n and n > 0 then id = n end
     end
     if id then
         return A.CastSpell(id, unitOrGuid)

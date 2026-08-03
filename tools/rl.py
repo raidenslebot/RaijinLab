@@ -355,6 +355,68 @@ def gate_magicindex(paths=None) -> list[str]:
     return bad
 
 
+
+def gate_spellinfo(paths=None) -> list[str]:
+    """A positional GetSpellInfo unpack must bind each name at its real slot.
+
+    Verified live 2026-08-03 (Fireball -> cost=35 powerType=0 castTime=1415
+    min=0 max=35): nine returns, and NO spell id.
+        1 name  2 rank  3 icon  4 powerCost  5 isFunnel
+        6 powerType  7 castTime  8 minRange  9 maxRange   (10 is nil)
+
+    Three defects came from getting this wrong, none of which threw:
+      * spell_range_info unpacked through pcall with nine slots, so `ok` ate
+        position 1 and maxR received MINRANGE - 0 for nearly every spell, which
+        silently disabled the caller's range gate;
+      * Actions read slot 7 through pcall as a "spell id" and got powerType, so
+        every energy ability would have cast SPELL 3;
+      * a cross-check in this session read slot 6 as maxRange and reported a
+        40% decode mismatch that did not exist.
+
+    So this checks the ARITHMETIC, not the presence of a comment: it reads the
+    variable names off the left-hand side and asserts each sits at the slot that
+    actually carries it (pcall shifts everything by one). A comment-only gate
+    passed a deliberate re-introduction of the pcall bug, which is why it does
+    not work that way.
+    """
+    EXPECT = {
+        "name": 1, "n": 1, "sname": 1, "nm": 1, "spellname": 1,
+        "rank": 2, "icon": 3,
+        "cost": 4, "powercost": 4, "mana": 4,
+        "isfunnel": 5, "funnel": 5,
+        "powertype": 6, "ptype": 6,
+        "casttime": 7, "castms": 7, "ct": 7,
+        "minrange": 8, "minr": 8, "mn": 8,
+        "maxrange": 9, "maxr": 9, "mx": 9,
+    }
+    bad = []
+    call = re.compile(r"local\s+([^=]+?)\s*=\s*(pcall\s*\(\s*GetSpellInfo|GetSpellInfo\s*\()")
+    for f in sorted((ROOT / "addon").rglob("*.lua")):
+        if "RaijinQuest" in f.as_posix():
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").split(chr(10))):
+            m = call.search(line)
+            if not m:
+                continue
+            names = [v.strip() for v in m.group(1).split(",")]
+            shift = 1 if "pcall" in m.group(2) else 0
+            for idx, var in enumerate(names):
+                if var == "_" or (idx == 0 and shift):
+                    continue                      # the placeholder / pcall's ok
+                want = EXPECT.get(var.lower())
+                if want is None:
+                    continue                      # not a name we can adjudicate
+                got = idx + 1 - shift             # 1-based GetSpellInfo slot
+                if got != want:
+                    bad.append("%s:%d: `%s` is bound at GetSpellInfo slot %d "
+                               "but that value lives at slot %d (1 name 2 rank "
+                               "3 icon 4 cost 5 isFunnel 6 powerType 7 castTime "
+                               "8 minRange 9 maxRange%s)"
+                               % (f.relative_to(ROOT).as_posix(), i + 1, var,
+                                  got, want,
+                                  "; pcall shifts all by one" if shift else ""))
+    return bad
+
 def gate_addresses(paths=None) -> list[str]:
     """Every hardcoded VA the runtime CALLS, checked against the real client.
 
@@ -544,7 +606,7 @@ def cmd_verify(a) -> int:
     for name, errs in (("ascii", gate_ascii()), ("lua-syntax", gate_lua()),
                        ("local-order", gate_localorder()), ("no-ctm", gate_ctm()),
                        ("keep-objects", gate_optional_filter()),
-                       ("magic-index", gate_magicindex()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
+                       ("magic-index", gate_magicindex()), ("spellinfo", gate_spellinfo()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
                        ("addresses", gate_addresses()),
                        ("multireturn", gate_multireturn()),
                        ("lua5.1", gate_lua51()),

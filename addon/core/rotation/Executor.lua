@@ -736,7 +736,19 @@ end
 local function spell_range_info(sid)
     sid = tonumber(sid) or 0
     if sid <= 0 or not GetSpellInfo then return 0, 0 end
-    local ok, _, _, _, _, _, _, minR, maxR = pcall(GetSpellInfo, sid)
+    -- PCALL SHIFTS EVERY POSITION BY ONE (2026-08-03).
+    --
+    -- GetSpellInfo on this client returns nine values, verified live:
+    --   1 name  2 rank  3 icon  4 powerCost  5 isFunnel
+    --   6 powerType  7 castTime  8 minRange  9 maxRange
+    -- (Fireball: cost=35 powerType=0 castTime=1415 min=0 max=35.)
+    -- Through pcall, `ok` occupies slot 1 and those shift to 2..10. The old
+    -- unpack used nine slots, so minR received castTime and maxR received
+    -- MINRANGE - which is 0 for nearly every spell. That is the real reason
+    -- this function "returned 0 range", wrongly blamed on custom spell ids in
+    -- the comment above; it was misreading stock spells too, and a maxR of 0
+    -- silently disabled the caller's range gate.
+    local ok, _, _, _, _, _, _, _, minR, maxR = pcall(GetSpellInfo, sid)
     if not ok then return 0, 0 end
     return tonumber(minR) or 0, tonumber(maxR) or 0
 end
@@ -1318,6 +1330,8 @@ local function spell_meta(id)
     local name = spell_name(id)
     local instant = true
     if GetSpellInfo then
+        -- GetSpellInfo (verified live): 1 name 2 rank 3 icon 4 powerCost
+        -- 5 isFunnel 6 powerType 7 castTime 8 minRange 9 maxRange.
         local _, _, _, _, _, _, castTime = GetSpellInfo(id)
         castTime = tonumber(castTime)
         if castTime and castTime > 0 then instant = false end

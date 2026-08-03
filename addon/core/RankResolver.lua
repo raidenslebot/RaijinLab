@@ -134,7 +134,16 @@ function RankResolver.init()
         f:RegisterEvent("LEARNED_SPELL_IN_TAB")
         f:RegisterEvent("PLAYER_LOGIN")
     end
-    f:SetScript("OnEvent", function() RankResolver._dirty = true end)
+    f:SetScript("OnEvent", function()
+        RankResolver._dirty = true
+        -- The name->id index is built from the same spellbook these events
+        -- describe, so it goes stale for exactly the same reasons (rank-up,
+        -- newly trained ability). Drop it here rather than adding a second
+        -- frame watching identical events.
+        if RaijinLab and RaijinLab.ClearSpellNameIndex then
+            RaijinLab.ClearSpellNameIndex()
+        end
+    end)
 end
 
 if RaijinLab then RaijinLab.RankResolver = RankResolver end

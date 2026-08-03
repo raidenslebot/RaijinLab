@@ -1,4 +1,4 @@
--- StructuredLog — unified machine-parseable logging for the entire addon
+-- StructuredLog - unified machine-parseable logging for the entire addon
 -- ==========================================================================
 -- Format:  SSS.SSS|L|cat.sub|k1=v1 k2=v2 k3=v3 ...
 --   SSS.SSS = GetTime() seconds since login, 3 decimal places
@@ -7,9 +7,9 @@
 --   Body = key=value pairs, space-separated
 --
 -- Sinks:
---   1. DevLog (disk)  — all levels at or above configured threshold
---   2. DebugLog (UI)  — Warn+ only, plus Info if verbose
---   3. chat (print)   — Error only (always visible)
+--   1. DevLog (disk)  - all levels at or above configured threshold
+--   2. DebugLog (UI)  - Warn+ only, plus Info if verbose
+--   3. chat (print)   - Error only (always visible)
 --
 -- Usage:
 --   SLog.info("cast.fire", "sid", sid, "name", name, "guid", guid)
@@ -87,14 +87,14 @@ local function emit(level_num, cat_sub, msg_fmt, ...)
 
     local line = string.format("%.3f|%s|%s|%s", now(), lvl_char, cat_sub or "?", body)
 
-    -- Sink 1: DevLog (disk) — all levels
+    -- Sink 1: DevLog (disk) - all levels
     local DL = RaijinLab and RaijinLab.DevLog
     if DL and DL.log then
         local cat = string.match(cat_sub or "", "^(%w+)") or "log"
         DL.log(cat, line:sub(12)) -- strip timestamp (DevLog adds its own)
     end
 
-    -- Sink 2: DebugLog (UI ring buffer) — Warn+
+    -- Sink 2: DebugLog (UI ring buffer) - Warn+
     if level_num <= 2 then
         local Dbg = RaijinLab and RaijinLab.DebugLog
         if Dbg and Dbg.Log then
@@ -102,7 +102,7 @@ local function emit(level_num, cat_sub, msg_fmt, ...)
         end
     end
 
-    -- Sink 3: Chat (print) — Error only
+    -- Sink 3: Chat (print) - Error only
     if level_num == 1 then
         print("|cffff5555RaijinLab|r " .. body)
     end

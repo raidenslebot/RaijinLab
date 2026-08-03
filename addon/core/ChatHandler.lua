@@ -864,7 +864,7 @@ function RaijinLab:RunCommand(msg)
     elseif cmd == "search" or cmd == "as" then
         -- LIVE AURA-SEARCH DIAGNOSTIC (2026-08-02). Aura search silently
         -- returning nothing (rotation stuck in "wait no_target") is usually one
-        -- of: (1) World.spell_max_range(id) == nil → the aura_search condition
+        -- of: (1) World.spell_max_range(id) == nil -> the aura_search condition
         -- HARD-FAILS RANGE_UNKNOWN and never calls the runtime; (2) the
         -- runtime AuraSearch returns an empty pack (OM snapshot empty / aura
         -- notes not seeded); (3) the second-pass aura filter drops every hit.
@@ -885,7 +885,7 @@ function RaijinLab:RunCommand(msg)
             " state=" .. state .. " spell_max_range=" .. tostring(maxR or "NIL"))
         if not maxR then
             SendSystemMessage("  |cffff5555aura_search blocked: spell_max_range==nil " ..
-                "(RANGE_UNKNOWN) — the runtime SpellMeleeInfo max= decode failed")
+                "(RANGE_UNKNOWN) - the runtime SpellMeleeInfo max= decode failed")
             return true
         end
         local sr = tonumber(range) or maxR
@@ -1688,7 +1688,7 @@ function RaijinLab:RunCommand(msg)
                     pcall(function() RaijinLab:InitObjectManager() end)
                 end
             else
-                SendSystemMessage("|cffffd200RaijinLab|r OM warming after suite-on — wait ~8s")
+                SendSystemMessage("|cffffd200RaijinLab|r OM warming after suite-on - wait ~8s")
             end
             local om = RaijinLab.om and RaijinLab.om.object_list
             local ver = RaijinLab.RuntimeCall and RaijinLab:RuntimeCall("GetRuntimeVersion")
@@ -1820,7 +1820,7 @@ function RaijinLab:RunCommand(msg)
         local Mw = RaijinLab.Master
         if Mw and Mw.in_suite_warm and Mw.in_suite_warm() then
             SendSystemMessage(string.format(
-                "|cffffd200RaijinLab|r OM warming (%.0fs left) — not forcing enable",
+                "|cffffd200RaijinLab|r OM warming (%.0fs left) - not forcing enable",
                 Mw.suite_om_eta and Mw.suite_om_eta() or 0))
             return true
         end
@@ -2182,7 +2182,7 @@ function RaijinLab_ToggleMenu()
 end
 
 -- Toggle ONLY the rotation module (Home tab selection + start/stop if suite on).
--- Bind in Esc → Key Bindings → RaijinLab → "Toggle rotation module".
+-- Bind in Esc -> Key Bindings -> RaijinLab -> "Toggle rotation module".
 function RaijinLab_ToggleRotation()
     RaijinLabDB = RaijinLabDB or {}
     RaijinLabDB.modules = RaijinLabDB.modules or {}
@@ -2210,7 +2210,7 @@ function RaijinLab_ToggleRotation()
     if print then
         print("|cff7ec8e3RaijinLab|r rotation module "
             .. (on and "|cff10ff10ON|r" or "|cffff5555OFF|r")
-            .. "  (bind: Esc→Key Bindings→RaijinLab)")
+            .. "  (bind: Esc->Key Bindings->RaijinLab)")
     end
     if RaijinLab and RaijinLab.Menu and RaijinLab.Menu.RefreshHome then
         pcall(function() RaijinLab.Menu:RefreshHome() end)

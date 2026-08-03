@@ -188,11 +188,11 @@ function M.halt_movement()
     if R.Nav and R.Nav.cancel then pcall(R.Nav.cancel) end
     local A = R.Actions
     if A then
-        -- 2026-08-02 (NO BLOCKED ACTION — user directive): calling the
+        -- 2026-08-02 (NO BLOCKED ACTION - user directive): calling the
         -- client's PROTECTED movement APIs (MoveForward(false), MouselookStop,
         -- StopMoving, CommitMovement) from this Lua-dispatched RuntimeCall pops
         -- "RaijinLab has been blocked from an action only available to the
-        -- Blizzard UI" — the client treats bridge-origin calls as addon taint
+        -- Blizzard UI" - the client treats bridge-origin calls as addon taint
         -- regardless of the HW-gate patch. STAGE one native halt instead: the
         -- runtime's frame hook (main thread, no Lua on the stack) releases
         -- every held key + stops + commits. This is the native-carrier rule.
@@ -259,7 +259,7 @@ function M.start_all(reason)
     -- ================================================================
     -- NO DELAYS. NO OM FREEZE/REARM. Suite toggle must not thrash native
     -- state. Live crash 2026-07-31: every "wait N seconds then om.enable=1"
-    -- just postponed the AV to +4–8s after master ON. Delays are not safety.
+    -- just postponed the AV to +4-8s after master ON. Delays are not safety.
     --
     -- OM lifecycle is owned by ArmRuntimeSystems (once, when player+bridge
     -- are real). start_all only starts modules.
@@ -268,7 +268,7 @@ function M.start_all(reason)
     M._om_gen = (M._om_gen or 0) + 1
 
     -- Ensure runtime is armed if PEW already ran and bridge is up. Idempotent.
-    -- Does not destroy OM, does not flip om.enable 1→0→1.
+    -- Does not destroy OM, does not flip om.enable 1->0->1.
     pcall(function()
         if not (RaijinLab.HasRuntime and RaijinLab:HasRuntime()) then return end
         if RaijinLab.ArmRuntimeSystems and not RaijinLab._runtime_armed then

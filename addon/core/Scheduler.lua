@@ -278,7 +278,7 @@ function Scheduler.start()
         -- 2026-08-02 (idle FPS): when the suite is OFF and no jobs are queued,
         -- this OnUpdate fires every rendered frame but must cost ~nothing. The
         -- empty-queue path in tick() is cheap, but update_frame() still runs
-        -- the EMA + adaptive-budget math every frame — pointless when nothing
+        -- the EMA + adaptive-budget math every frame - pointless when nothing
         -- is being scheduled. Skip both; the heartbeat instrumentation calls
         -- Scheduler.run, which sets a job, which wakes tick() up naturally.
         local q1, q2, q3 = #Scheduler._q[1], #Scheduler._q[2], #Scheduler._q[3]

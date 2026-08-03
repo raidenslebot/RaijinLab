@@ -54,7 +54,7 @@ function Brain.act(state)
     if state.recommendation == "disengage" and pp and Nav then
         -- Step backward along facing inverse (simple kite vector)
         local facing = 0
-        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED — runtime native only.
+        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED - runtime native only.
         if RaijinLab and RaijinLab.ObjectFacing then
             local f = RaijinLab:ObjectFacing("player")
             if type(f) == "number" and f == f then facing = f end
@@ -68,7 +68,7 @@ function Brain.act(state)
     end
 
     if state.recommendation == "reposition" and pp and Nav then
-        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED — runtime native only.
+        -- ROUND 49 (TAINT): GetPlayerFacing is PROTECTED - runtime native only.
         local facing = 0
         if RaijinLab and RaijinLab.ObjectFacing then
             local f = RaijinLab:ObjectFacing("player")

@@ -449,7 +449,7 @@ Conditions.register("form_equals", {
 Conditions.register("auto_repeat", {
     name = "Auto-Attack / Auto-Shot",
     category = "Self",
-    description = "Melee auto-attack (Attack) or ranged auto-repeat (Auto Shot / wand Shoot) is currently active. Pick Melee, Ranged, or Any. Toggle Invert for 'not attacking'. Auto Search (with Invert ON): when not autoing, engage the current target OR the nearest hostile within auto-attack range — zero target acquisition (the client's selection is never changed).",
+    description = "Melee auto-attack (Attack) or ranged auto-repeat (Auto Shot / wand Shoot) is currently active. Pick Melee, Ranged, or Any. Toggle Invert for 'not attacking'. Auto Search (with Invert ON): when not autoing, engage the current target OR the nearest hostile within auto-attack range - zero target acquisition (the client's selection is never changed).",
     params = {
         { key = "mode", type = "string", default = "melee", label = "Repeat type", cycle = AUTO_MODE_CYCLE },
         { key = "auto_search", type = "bool", default = false, label = "Auto Search" },
@@ -457,7 +457,7 @@ Conditions.register("auto_repeat", {
     eval = function(ctx, args)
         local mode = string.lower(tostring(args.mode or "melee"))
         -- ROUND 49 (TAINT): IsCurrentSpell / IsAutoRepeatSpell are PROTECTED
-        -- FrameScript APIs — calling them from addon Lua taints the client
+        -- FrameScript APIs - calling them from addon Lua taints the client
         -- ("RaijiNLab tainted the call of the secure function 'bl'" + other
         -- addons crashing). All auto-state reads go through the RUNTIME's
         -- native current-spells walk (pure client memory, never protected):
@@ -783,7 +783,7 @@ Conditions.register("facing_target", {
 Conditions.register("auto_face", {
     name = "Auto Face",
     category = "Target",
-    description = "Before casting this slot, turn to face the cast unit (current target or Aura Search GUID). Does NOT change your selected target. Without this condition the slot only fires when you are already facing — no automatic turn.",
+    description = "Before casting this slot, turn to face the cast unit (current target or Aura Search GUID). Does NOT change your selected target. Without this condition the slot only fires when you are already facing - no automatic turn.",
     params = {},
     eval = function()
         -- Always true: presence on the slot is the policy. Invert disables it
@@ -1043,7 +1043,7 @@ Conditions.register("aura", {
         end
 
         -- Multi-dot companion: aura_search already picked a unit this slot.
-        -- Prefer GUID (CLEU / optimistic) — never require mouseover token or
+        -- Prefer GUID (CLEU / optimistic) - never require mouseover token or
         -- UnitExists("target"). That was why Icy Touch only worked on hover.
         local hit = ctx and ctx.aura_search_hit
         if unit == "target" and hit and (hit.guid or hit.token) then
@@ -1090,7 +1090,7 @@ Conditions.register("aura", {
         local here = aura_has(present, id, nm)
         local st, rem = 0, 0
         -- 2026-08-03 (ROUND 47 FIX): the UnitDebuff scan (ctx.target_debuffs)
-        -- misses custom Ascension auras — Frost Fever/Blood Plague never land in
+        -- misses custom Ascension auras - Frost Fever/Blood Plague never land in
         -- ctx.target_debuffs, so "missing" ALWAYS passed (Icy Touch #6 re-fired
         -- every GCD after Frost Fever was already up) and "present" NEVER passed
         -- (Blood Strike, which requires both diseases, never fired at melee).
@@ -1211,10 +1211,10 @@ Conditions.register("aura_search", {
             args.reset_after = false
         end
 
-        -- RUNTIME AuraSearch only — no Unit* discovery.
-        -- 2026-08-02 (NO FALLBACKS — user directive): the search range is
+        -- RUNTIME AuraSearch only - no Unit* discovery.
+        -- 2026-08-02 (NO FALLBACKS - user directive): the search range is
         -- min(user condition range, the SPELL's REAL max range). The spell's
-        -- range is decoded from the client's Spell.dbc by the runtime — it is
+        -- range is decoded from the client's Spell.dbc by the runtime - it is
         -- the authority. An ability with a 20yd range must NEVER be searched
         -- at 30/40yd, and a spell whose range cannot be decoded is a HARD
         -- failure (never a silent 30/40-yard search that finds targets the
@@ -1223,7 +1223,7 @@ Conditions.register("aura_search", {
         local spell_max = W.spell_max_range and W.spell_max_range(id)
         if not spell_max then
             -- ROUND 48 (SPAM FIX): this fired on EVERY aura_search eval for any
-            -- aura-id (55078/55095 etc. are auras, not castable spells — they
+            -- aura-id (55078/55095 etc. are auras, not castable spells - they
             -- NEVER have a Spell.dbc range). Throttle to once per 10s per id;
             -- the noise was thousands of lines/session and added I/O churn on
             -- top of the per-tick evaluation.
@@ -1233,20 +1233,20 @@ Conditions.register("aura_search", {
                 local lt = W._range_unknown_log_t[id]
                 if not lt or (tnow - lt) > 10 then
                     W._range_unknown_log_t[id] = tnow
-                    W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — using configured "
+                    W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d - using configured "
                         .. "range %d (spell_max decode unavailable)", id, search_range)
                 end
             end
             -- 2026-08-02 (23:48): RANGE_UNKNOWN must NOT silently kill the
             -- search. The hard-fail left the rotation stuck in "wait no_target"
             -- for every aura-search slot whenever the runtime SpellMeleeInfo
-            -- max= decode was unavailable — "aura search not working at all".
+            -- max= decode was unavailable - "aura search not working at all".
             -- The condition's own `range` param is explicit USER intent (not a
             -- silent malformed fallback), so use it as the search bound; the
             -- cast-side range gate + the client are still the final authority
             -- on reachability (and the native path now reports nrc cleanly).
             -- We only clamp DOWN when the spell's real max IS known.
-            -- Do NOT set ctx.aura_search_hit yet — fall through to search.
+            -- Do NOT set ctx.aura_search_hit yet - fall through to search.
         elseif search_range > spell_max then
             search_range = spell_max
         end
@@ -1292,7 +1292,7 @@ Conditions.register("aura_search", {
 
         -- 2026-08-02 (MAIN-TARGET PREFERENCE): the list is closest-first, but
         -- when the player's CURRENT target is also a valid match (alive,
-        -- attackable, aura-missing) it MUST be the head — the rotation should
+        -- attackable, aura-missing) it MUST be the head - the rotation should
         -- refresh the main target before spreading dots to adds. This is what
         -- "wasn't using Icy Touch on the main target" was about: the runtime
         -- distance sort can put a closer add first while the main target sits
@@ -1447,7 +1447,7 @@ Conditions.register("is_stealthed", {
 Conditions.register("is_stunned", {
     name = "Is Stunned / Disarmed / Confused / Fleeing",
     category = "Self",
-    description = "Player is under a movement-impairing crowd control (stunned, disarmed, confused, or fleeing). Runtime UnitMovementImpairing reads UNIT_FIELD_FLAGS from descriptor — no Blizzard API. Use Invert for 'not impaired'.",
+    description = "Player is under a movement-impairing crowd control (stunned, disarmed, confused, or fleeing). Runtime UnitMovementImpairing reads UNIT_FIELD_FLAGS from descriptor - no Blizzard API. Use Invert for 'not impaired'.",
     params = {
         { key = "kind", type = "string", default = "stunned", label = "Impair type", cycle = { "stunned", "disarmed", "confused", "fleeing", "any" } },
     },
@@ -1462,7 +1462,7 @@ Conditions.register("is_stunned", {
         local mask = tonumber(packed) or 0
         if mask < 0 then return false end
         local kind = string.lower(tostring((args and args.kind) or "stunned"))
-        -- Use bit.band (Lua 5.1 compat) — no & operator on WoW 3.3.5
+        -- Use bit.band (Lua 5.1 compat) - no & operator on WoW 3.3.5
         local function has_bit(m, b) return (math.floor(m / b) % 2) ~= 0 end
         if kind == "stunned"  then return has_bit(mask, 1) end
         if kind == "disarmed" then return has_bit(mask, 2) end
@@ -1484,7 +1484,7 @@ Conditions.register("is_silenced", {
         if ctx.is_silenced ~= nil then return bool(ctx.is_silenced, false) end
 
         -- Dynamically scan player debuffs for silence/school-lock interrupts.
-        -- No hardcoded spell IDs — works on any client including Ascension.
+        -- No hardcoded spell IDs - works on any client including Ascension.
         local pid = tonumber(args and args.spell_id) or tonumber(ctx.slot_spell_id) or 0
         if pid <= 0 then return false end
 
@@ -1729,7 +1729,7 @@ _legacy("target_is_alive", {
     end,
 })
 
--- Old auto-attack family (ROUND 49: runtime-native only — the Lua
+-- Old auto-attack family (ROUND 49: runtime-native only - the Lua
 -- IsCurrentSpell/IsAutoRepeatSpell are PROTECTED and taint the client).
 local function _rt_auto_state()
     if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime

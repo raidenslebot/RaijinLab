@@ -16,7 +16,7 @@ local function is_our_version(ver)
     return false
 end
 
--- Positive probe cache only (~0.2s). Never cache failure — recover the frame
+-- Positive probe cache only (~0.2s). Never cache failure - recover the frame
 -- after main-thread seal without waiting for a long timer.
 local _bridge_fn, _bridge_ver, _bridge_t = nil, nil, 0
 
@@ -88,7 +88,7 @@ function RL:AssertRuntime(feature)
         print("|cff7ec8e3RaijinLab|r: runtime not detected (" ..
                   tostring(feature or "generic") .. ")")
         print("|cff7ec8e3RaijinLab|r: " .. tostring(self:RuntimeDetectDiag()))
-        print("|cff7ec8e3RaijinLab|r: inject IN-WORLD, wait for BRIDGE ONLINE in inject log, then /raijin status — avoid /reload right after inject")
+        print("|cff7ec8e3RaijinLab|r: inject IN-WORLD, wait for BRIDGE ONLINE in inject log, then /raijin status - avoid /reload right after inject")
     end
     return false
 end
@@ -144,7 +144,11 @@ function RL.should_arm(has_runtime, armed, online_t, now, player_ready, settle)
     if not RL._world_entered then
         RL._world_entered = true
     end
-    settle = settle or 0
+    -- Default = the PRODUCTION settle, not 0. A forgotten argument must err on
+    -- the safe side: arming early is the world-load AV / post-reload crash
+    -- window (#132), so the deliberate act is passing a SHORTER settle, never
+    -- getting one by omission.
+    settle = settle or 6
     if type(now) ~= "number" or type(online_t) ~= "number" then
         return true
     end
@@ -191,7 +195,7 @@ function RL:ArmRuntimeSystems()
     pcall(function()
         -- Soft list discovery works with om.enable 0; enable for full path.
         -- Runtime defers EnumVisibleObjects until list-warm after rebind
-        -- (g_firstPlayerMs reset on OnLuaReload — 1.10.34). Safe to enable.
+        -- (g_firstPlayerMs reset on OnLuaReload - 1.10.34). Safe to enable.
         self:RuntimeCall("SetSystemVar", "om.enable", "1")
     end)
     -- NEVER InitObjectManager on arm frame (GetObjectCount fan mid-load = crash).
@@ -257,11 +261,47 @@ do
         -- A 6s settle after bridge-online ensures the freeze has fully
         -- expired AND the world is stable before OM discovery begins.
         local settle = 6
+        local was_armed = RL._runtime_armed
         if RL.ArmRuntimeSystems and RL.should_arm(
                 has, RL._runtime_armed,
                 RL._runtime_online_t or 0, GetTime and GetTime() or 0,
                 UnitName and UnitName("player") and true or false, settle) then
             RL:ArmRuntimeSystems()
+        end
+        -- THE LUA PUMP IS A STATE TO MAINTAIN, NOT AN EVENT TO FIRE.
+        --
+        -- The blind-engine symptom described above happened AGAIN, one level up
+        -- (live 2026-08-03: bridge=179 objects, om npcs=0 players=0 gos=0, the
+        -- OnUpdate frame simply absent). Events.lua removed its
+        -- InitObjectManager call because "ArmRuntimeSystems already starts it";
+        -- Runtime.lua removed its own because "NEVER on arm frame". Both
+        -- deletions were locally correct and together they deleted the startup
+        -- path entirely - the only remaining callers were the /raijin om and
+        -- quest-givers CHAT COMMANDS, which is why aura search and the rotation
+        -- "sometimes" worked: they worked after a command happened to
+        -- side-start the OM, and starved otherwise.
+        --
+        -- So the pump gets the same treatment as arm: every half second, if
+        -- the state we want (armed AND pumping) does not hold, restore it.
+        -- Constraints honoured:
+        --   * was_armed, not _runtime_armed: on the tick that arms, was_armed
+        --     is still false, so the first init happens >=0.5s AFTER the arm
+        --     frame - "NEVER InitObjectManager on arm frame" stays true.
+        --   * suite-warm window: fail closed here AND in InitObjectManager.
+        --   * idempotent: InitObjectManager returns when the frame exists, so
+        --     the steady-state cost is one nil-check per 0.5s.
+        -- Self-healing follows for free: anything that ever tears the frame
+        -- down (Master teardown, a /reload edge) gets it back within 0.5s.
+        if was_armed and has and RL.InitObjectManager then
+            local f = RL.GetObjManagerFrame and RL:GetObjManagerFrame()
+            local Mw = RL.Master
+            if not f and not (Mw and Mw.in_suite_warm and Mw.in_suite_warm()) then
+                local ok = pcall(function() RL:InitObjectManager() end)
+                local DL = RL.DevLog
+                if DL and DL.log then
+                    DL.log("runtime", "om pump restored ok=%s", tostring(ok))
+                end
+            end
         end
         had = has
     end)

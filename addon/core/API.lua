@@ -623,7 +623,7 @@ end
 
 function RaijinLab:UnlockMovement()
     -- 2026-08-02 (TAINT FIX): no-op. Previously this RESTORED the stock
-    -- protected movement globals (MoveForwardStart etc.) — but saving and
+    -- protected movement globals (MoveForwardStart etc.) - but saving and
     -- re-assigning a PROTECTED global from addon Lua marks it tainted, and the
     -- game's secure code later calling it pops "RailinLab has been blocked
     -- from an action only available to the Blizzard UI". Movement is routed
@@ -1314,7 +1314,7 @@ function RaijinLab:ObjectPosition(object)
             local g2 = UnitGUID and UnitGUID(object)
             if g2 then raw = RLCall("ObjectPosition", tostring(g2)) end
         end
-        -- Hostiles pack snapshot (NearbyHostiles) — same frame positions for
+        -- Hostiles pack snapshot (NearbyHostiles) - same frame positions for
         -- multi-dot GUIDs when ObjectPtr is cold. Measurement, not a guess.
         if (type(raw) ~= "string" or raw == "0.000|0.000|0.000") then
             local W = RaijinLab.World
@@ -1539,7 +1539,7 @@ RaijinLab._norm_pi = norm_pi
 
 function RaijinLab:ObjectIsFacing(object1, object2, delta)
     if not object1 or not object2 then return end
-    -- delta = HALF-angle (default π/2). Matches WotLK HasInArc(M_PI) full width.
+    -- delta = HALF-angle (default pi/2). Matches WotLK HasInArc(M_PI) full width.
     local f = RaijinLab.ValidFacing(RaijinLab:ObjectFacing(object1))
     local ax, ay = RaijinLab:ObjectPosition(object1)
     local bx, by = RaijinLab:ObjectPosition(object2)
@@ -2161,7 +2161,7 @@ end
 -- world->screen projection. Runtime packs "px|py|pz|fx|fy|fz|rx|ry|rz|ux|uy|uz|fov".
 --
 -- 2026-08-02 (CRASH / bridge-storm FIX): the comment promised a frame cache but
--- there was none — every call hit the bridge, and PlausiblePlayerPos called
+-- there was none - every call hit the bridge, and PlausiblePlayerPos called
 -- this TWICE per ObjectPosition("player"), so the rotation's combat tick issued
 -- dozens of GetCameraData bridge round-trips per frame (~2500 bridge calls/sec
 -- in the crash forensics, inside the game's Lua VM). Cache ~100ms: the camera

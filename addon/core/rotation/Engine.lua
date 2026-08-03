@@ -173,7 +173,7 @@ function Engine.slot_target_policy(slot)
     local policy = "require"
     if not slot then return policy end
     -- Auto Attack: the Executor handles StartAttack specially (on-next-swing).
-    -- Never enter the normal CastSpellEx path with no GUID — that would call
+    -- Never enter the normal CastSpellEx path with no GUID - that would call
     -- Spell_C_CastSpell(6603, 0) which is wrong for auto-attack mechanics.
     for _, c in ipairs(slot.conditions or {}) do
         if c then
@@ -188,10 +188,10 @@ function Engine.slot_target_policy(slot)
                     if policy ~= "forbid" then policy = "optional" end
                 end
             end
-            -- 2026-08-03 (AUTO SEARCH — user feature): an Auto Attack slot with
+            -- 2026-08-03 (AUTO SEARCH - user feature): an Auto Attack slot with
             -- the auto_repeat condition's "Auto Search" toggle engages the
             -- nearest hostile within auto-attack range even with NO current
-            -- client target — the executor searches (runtime NearbyHostiles)
+            -- client target - the executor searches (runtime NearbyHostiles)
             -- and engages it itself via A.AttackEngage (zero selection touch).
             -- Make the policy optional so the slot is reachable without a target.
             if c.id == "auto_repeat" and c.args then
@@ -222,7 +222,7 @@ function Engine.slot_target_policy(slot)
 end
 
 -- Slot policy: 2026-08-02 (NO AUTO-FACE, user directive). The rotation NEVER
--- turns the character — for ANY spell, melee OR ranged. This function is
+-- turns the character - for ANY spell, melee OR ranged. This function is
 -- retained only so callers that read `slot_wants_auto_face` keep working; it
 -- ALWAYS returns false. The "Auto Face" condition is inert. Facing is
 -- detection-only: a cast wires only when the player ALREADY faces the target
@@ -333,13 +333,13 @@ function Engine.spell_ready(ctx, spell_id)
     local rem = cds[spell_id]
     if rem == nil then rem = cds[tostring(spell_id)] end
     rem = tonumber(rem) or 0
-    -- 2026-08-03 (ROUND 47 — "Spell is not ready yet" SPAM FIX): the old gate
+    -- 2026-08-03 (ROUND 47 - "Spell is not ready yet" SPAM FIX): the old gate
     -- fired when `rem <= 0.04 + lag` where lag scaled with GetNetStats up to
-    -- 0.24s — i.e. it cast UP TO 0.24s BEFORE the local cooldown bar cleared.
+    -- 0.24s - i.e. it cast UP TO 0.24s BEFORE the local cooldown bar cleared.
     -- The client judges readiness from its OWN local state, so a cast while
-    -- the bar still shows cooldown → the "Spell is not ready yet" refusal
+    -- the bar still shows cooldown -> the "Spell is not ready yet" refusal
     -- (and the user's spam). Fire only when the bar is essentially cleared
-    -- (rem <= 0.05 = 50ms — imperceptible, not a pause). A residual server
+    -- (rem <= 0.05 = 50ms - imperceptible, not a pause). A residual server
     -- "not ready" is ONE phantom recovered by the refuse floor (0.6s), never
     -- a spam. The GCD gate below still governs the global cooldown.
     if rem > 0.05 then
@@ -390,7 +390,7 @@ function Engine.spell_ready(ctx, spell_id)
     -- try if impossible").
     -- ------------------------------------------------------------------
     -- Multi-dot / optional / ground AoE: GUID or feet cast does not require
-    -- client target; IsUsableSpell greys without one — never unusable then.
+    -- client target; IsUsableSpell greys without one - never unusable then.
     local search_hit = ctx.aura_search_hit and ctx.aura_search_hit.guid
     local policy = ctx.slot_target_policy
     if not policy then
@@ -431,14 +431,24 @@ function Engine.spell_ready(ctx, spell_id)
                 return false, "los"
             end
             -- (3) Real combat protection only (not no_target/friendly/cannot_attack).
+            -- A CLASSIFIED reason decides; an UNCLASSIFIED protected=true still
+            -- blocks. The reason allowlist exists so NON-blocking reasons
+            -- (no_target / friendly / cannot_attack) pass through - it must not
+            -- also swallow the plain boolean when no reason was recorded, which
+            -- is what "elseif Protection is missing" did: with the module
+            -- loaded, target_protected[sid]=true and no reason fell through to
+            -- ALLOWED, and the wire ate a guaranteed client refusal.
             local reasons = ctx.target_protected_reason
             local r = type(reasons) == "table"
                 and (reasons[spell_id] or reasons[tostring(spell_id)]) or nil
             local Prot = RaijinLab and RaijinLab.Protection
-            if Prot and Prot.blocks_cast and Prot.blocks_cast(r) then
-                local why = (Prot.cast_block_why and Prot.cast_block_why(r)) or "immune"
-                return false, why
-            elseif (not Prot or not Prot.blocks_cast) then
+            if r ~= nil and Prot and Prot.blocks_cast then
+                if Prot.blocks_cast(r) then
+                    local why = (Prot.cast_block_why and Prot.cast_block_why(r)) or "immune"
+                    return false, why
+                end
+                -- classified as non-blocking (e.g. friendly): allowed
+            else
                 local prot = ctx.target_protected
                 if type(prot) == "table"
                     and (prot[spell_id] == true or prot[tostring(spell_id)] == true) then
@@ -458,7 +468,7 @@ function Engine.spell_ready(ctx, spell_id)
 end
 
 -- Evaluate: strict slot priority (slot 1 highest). For each enabled slot:
---   1) BasicRules (physical / client capability) — BEFORE user conditions so
+--   1) BasicRules (physical / client capability) - BEFORE user conditions so
 --      expensive discovery (aura_search) never runs when GCD/CD/range already deny.
 --   2) User conditions (Conditions.evaluate_all)
 --   3) First fully-confirmed ready slot wins; denied slots fall through immediately.

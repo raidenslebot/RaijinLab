@@ -94,18 +94,18 @@ function A.CastSpell(spellId, unitOrGuid)
     spellId = tonumber(spellId) or 0
     if spellId <= 0 then return false end
     -- FUNDAMENTAL: if a unit/GUID was requested, NEVER fall through to
-    -- CastSpell(id) with no GUID (that hits current target — melee multi-dot bug).
+    -- CastSpell(id) with no GUID (that hits current target - melee multi-dot bug).
     local had_unit = (unitOrGuid ~= nil and unitOrGuid ~= "" and unitOrGuid ~= 0)
     local g = guid_of(unitOrGuid)
     if had_unit and not g then
         return false
     end
     -- Native Spell_C_CastSpell only (no ExecSecure - re-enters Lua and crashed client).
-    -- GUID path: Spell_C(guid) only — runtime does NOT TargetUnit / pin-select
+    -- GUID path: Spell_C(guid) only - runtime does NOT TargetUnit / pin-select
     -- (acquire-off multi-dot). NO_TARGET_CHANGE restores if Spell_C stuck victim.
     local res
     if g then
-        -- Acquire-off multi-dot: NO_TARGET_CHANGE only. Do NOT force SKIP/LOS —
+        -- Acquire-off multi-dot: NO_TARGET_CHANGE only. Do NOT force SKIP/LOS -
         -- that made every unit cast refuse (face/los false-positives) while
         -- Consecration (guid=0) still fired. Lua BasicRules owns soft gates.
         local flags = A.CAST_NO_TARGET_CHANGE or 2
@@ -135,7 +135,7 @@ function A.CastSpellEx(spellId, unitOrGuid, flags)
     if had_unit and not g then
         return false, "bad_guid"
     end
-    -- Omit guid arg when none (do not pass 0 — lua may tostring to "0" and
+    -- Omit guid arg when none (do not pass 0 - lua may tostring to "0" and
     -- older runtimes treated that as bad_guid, blocking Consecration).
     local res
     if g then
@@ -166,7 +166,7 @@ function A.CanCast(spellId, unitOrGuid, flags)
     return parse_cast_result(res)
 end
 
--- Native-frame cast queue (2026-08-02, FINAL — user ABSOLUTE DIRECTIVE):
+-- Native-frame cast queue (2026-08-02, FINAL - user ABSOLUTE DIRECTIVE):
 -- STAGE a cast. Spell_C is NEVER called from the Lua bridge. The native frame
 -- hook (NativeHook.cpp TickHookBody, main thread, no Lua on the stack) drains
 -- the queue and runs Spell_C from pure native context. This is the structural
@@ -232,7 +232,7 @@ function A.CastSpellByName(name, unitOrGuid)
     -- and casting NATIVELY via Spell_C (no ExecSecure). GetSpellInfo is a
     -- read-only query (never HW-gated / protected) and returns the spell ID as
     -- its 7th value on 3.3.5. The old name path used runtime ExecSecure
-    -- (FrameScript_Execute from inside the bridge) — a nested-VM re-entry crash
+    -- (FrameScript_Execute from inside the bridge) - a nested-VM re-entry crash
     -- surface AND the "Tainted call to a secure function" source.
     local id = tonumber(name)
     if not id and GetSpellInfo then
@@ -335,7 +335,7 @@ end
 function A.Attack()
     if not A.ensure() then return false end
     -- 2026-08-02 (NO BLOCKED ACTION): the runtime's "Attack" now STAGES the
-    -- 6603 engage — the native frame hook runs Spell_C(6603) (no Lua on the
+    -- 6603 engage - the native frame hook runs Spell_C(6603) (no Lua on the
     -- stack). Calling it from the bridge origin was the client's protected
     -- "StartAttack" taint (blocked-action dialog; live "Attack engage nrc=0").
     return not not rt("Attack")

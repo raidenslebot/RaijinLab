@@ -44,7 +44,7 @@ end
         and not mods.quest and not mods.grind and not mods.gather
         and not _want_quest_tie
     -- All per-object field probes now come from the runtime snapshot (2026-08-02)
-    -- — no per-object bridge calls / ObjectPtr game calls. Only the quest-tie
+    -- - no per-object bridge calls / ObjectPtr game calls. Only the quest-tie
     -- probe stays a bridge call, gated behind quest/tracker mode.
     local UNIT_HIDE = (RaijinLab.enums and RaijinLab.enums.UnitDynamicFlags
         and RaijinLab.enums.UnitDynamicFlags.UNIT_DYNFLAG_HIDE_MODEL) or 0x20000
@@ -214,7 +214,7 @@ local function RunObjectManager()
     -- object-manager authority (2026-08-02): this replaces the old per-object
     -- bridge calls (GetObjectWithIndex + ObjectTypeFlags + ObjectDynamicFlags
     -- + ObjectId + ObjectGUID per object = ~5 bridge calls/object/tick, each an
-    -- ObjectPtr game call — the lag + Guard-recovery crash vector, live 1.10.68
+    -- ObjectPtr game call - the lag + Guard-recovery crash vector, live 1.10.68
     -- RVA 0x785A). 1 call + 1 string parse per tick instead. The snapshot packs
     -- every field the Lua OM consumed: guid/type-mask/entry/flags/dynflags/
     -- level/hp/mhp/pos/facing/faction/target/scale/goBytes1/npcFlags.
@@ -286,7 +286,7 @@ local function RunObjectManager()
                     end
                 end
                 if struct then
-                    -- Snapshot fields (runtime authority — no per-object calls).
+                    -- Snapshot fields (runtime authority - no per-object calls).
                     struct.Id = tonumber(id) or 0
                     struct.DynamicFlags.value = tonumber(df) or 0
                     struct._typeFlags = tonumber(tf) or 0
@@ -438,8 +438,8 @@ local function ObjectManagerOnUpdate(self, elapsed)
     if M and M.in_suite_warm and M.in_suite_warm() then
         return
     end
-    -- 2026-08-02 (idle power ~zero): when NOTHING consumes the Lua OM lists —
-    -- master off and no tracker and no quest-object tracking — skip entirely.
+    -- 2026-08-02 (idle power ~zero): when NOTHING consumes the Lua OM lists -
+    -- master off and no tracker and no quest-object tracking - skip entirely.
     -- The rotation uses runtime NearbyHostiles/AuraSearch, not these lists.
     -- One OmSnapshot call is cheap, but zero calls when idle is cheaper.
     if M and M.suppressed and M.suppressed()
@@ -464,7 +464,7 @@ function RaijinLab:InitObjectManager()
         return
     end
     if RaijinLab.om.frames.object_manager then
-        -- Already running — do not double-create frames.
+        -- Already running - do not double-create frames.
         RaijinLab.om.running = true
         return
     end

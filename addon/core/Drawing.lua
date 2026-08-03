@@ -200,7 +200,7 @@ end
 function RaijinLab.drawing:GroundCircle(x, y, z, size)
     local lx, ly, nx, ny, fx, fy, fz = false, false, false, false, false, false, false
     for v = 0, full_circle, small_circle_step do
-        -- ROUND 49 (TAINT): raw FrameScript TraceLine is PROTECTED — always
+        -- ROUND 49 (TAINT): raw FrameScript TraceLine is PROTECTED - always
         -- through the runtime (RaijinLab:TraceLine -> native raycast).
         if RaijinLab and RaijinLab.TraceLine then
             fx, fy, fz = RaijinLab:TraceLine( (x + cos(v) * size), (y + sin(v) * size), z + 100, (x + cos(v) * size), (y + sin(v) * size), z - 100, flags )

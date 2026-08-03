@@ -19,7 +19,7 @@
 
 local SelfTest = {}
 
-SelfTest.EXPECT_VERSION = "1.10.3-thru"
+SelfTest.EXPECT_VERSION = "1.10.108-aa"
 
 local function approx(a, b, eps)
     if type(a) ~= "number" or type(b) ~= "number" then return false end

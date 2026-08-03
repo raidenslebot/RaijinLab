@@ -3311,17 +3311,25 @@ ac("no runtime -> never arm", A(false, false, 0, 100, true) == false)
 ac("already armed -> do not re-arm", A(true, true, 0, 100, true) == false)
 ac("player not ready -> wait (the #132 in-world gate)",
    A(true, false, 0, 100, false) == false)
-ac("inside the settle -> wait", A(true, false, 100, 101.0, true) == false)
+-- The settle is 6s (post-reload AV: om.enable=1 ~1s after BRIDGE ONLINE while
+-- FrameXML was still settling). These rows once pinned a 1.25s default that no
+-- longer exists; they now test the REAL boundary, including that a forgotten
+-- settle argument defaults SAFE (6s), not to zero.
+ac("inside the settle -> wait", A(true, false, 100, 105.9, true) == false)
+ac("default settle is the production settle, not 0",
+   A(true, false, 100, 101.0, true) == false)
 ac("past the settle with everything ready -> ARM",
-   A(true, false, 100, 101.5, true) == true)
+   A(true, false, 100, 106.1, true) == true)
+ac("explicit shorter settle is honoured (deliberate act)",
+   A(true, false, 100, 101.5, true, 1.25) == true)
 
 -- THE REGRESSION ITSELF: an attempt that failed because the player was not
 -- ready must be retried on a LATER tick. Edge-triggered code answered "arm"
 -- exactly once and then never again.
 local armed = false
-local first = A(true, armed, 100, 101.6, false)   -- player not ready yet
+local first = A(true, armed, 100, 106.6, false)   -- player not ready yet
 ac("first attempt correctly declines", first == false)
-local second = A(true, armed, 100, 102.0, true)   -- player ready now
+local second = A(true, armed, 100, 107.0, true)   -- player ready now
 ac("a later tick RETRIES rather than giving up", second == true)
 
 -- and once it succeeds it must stop asking

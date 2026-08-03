@@ -3,7 +3,7 @@
 -- Order of authority for every rotation tick (per slot, top-down priority):
 --   1. Slot priority (Engine walks slot 1..N; nothing lower runs until this
 --      slot fully cycles: basic deny OR conditions deny OR cast attempt).
---   2. BasicRules.check  (this module — physical / client capability)
+--   2. BasicRules.check  (this module - physical / client capability)
 --   3. User conditions   (Conditions.evaluate_all)
 --   4. Cast wire         (Executor.attempt_action)
 --
@@ -149,13 +149,13 @@ local function check_gcd_cd(ctx, sid, slot)
     end
     -- Pending OTHER spell: only hard-block when a REAL cast is in flight.
     -- Multi-dot / no_gcd pending must NOT starve the rest of the list
-    -- (that invented a 100–180ms rotation delay after every PS/IT wire).
+    -- (that invented a 100-180ms rotation delay after every PS/IT wire).
     if ctx and ctx.pending_sid and not off and not ctx.pending_no_gcd then
         if tonumber(ctx.pending_sid) ~= sid then
             return false, "pending_other"
         end
     end
-    -- Per-spell CD from live snapshot. Awareness only — no lag pads.
+    -- Per-spell CD from live snapshot. Awareness only - no lag pads.
     local cds = ctx and ctx.cooldowns or {}
     local rem = cds[sid]
     if rem == nil then rem = cds[tostring(sid)] end
@@ -176,19 +176,19 @@ end
 
 local function check_resources(ctx, sid, name, slot)
     -- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): the client's IsUsableSpell is
-    -- hardware-gated — calling it from addon Lua taints the client ("tainted
-    -- the call of the secure function", live 14:36/14:57) — and it misses rune
+    -- hardware-gated - calling it from addon Lua taints the client ("tainted
+    -- the call of the secure function", live 14:36/14:57) - and it misses rune
     -- costs on custom spells. World.resource_ok uses ONLY runtime natives
     -- (RuneState for rune spells, UnitPower for mana spells) and FAILS OPEN on
     -- unknown. Genuine refusals the gate cannot foresee are bounded by the
-    -- client-refusal floor (0.6s) — never a storm.
+    -- client-refusal floor (0.6s) - never a storm.
     local W = RaijinLab and RaijinLab.World
     if W and W.resource_ok then
         local rok, rwhy = W.resource_ok(sid)
         if not rok then return false, rwhy or "no_resource" end
     end
     -- Ground self-AoE (Consecration) and optional-policy slots used to grey
-    -- on IsUsableSpell with no target — no longer relevant (no IsUsableSpell).
+    -- on IsUsableSpell with no target - no longer relevant (no IsUsableSpell).
     local policy = policy_of(slot, ctx)
     if slot_has_aura_search(slot) or policy == "optional" or policy == "forbid"
         or is_ground_self_aoe(sid, name) then
@@ -217,7 +217,7 @@ local function check_target_relationship(ctx, sid, slot, name)
         return true
     end
     -- require living attackable unit (search GUID counts without client target).
-    -- aura_search slots discover a unit during conditions — do not require a
+    -- aura_search slots discover a unit during conditions - do not require a
     -- client target yet (BasicRules runs BEFORE conditions).
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
     if not bool(ctx and ctx.target_exists, false) and not search then
@@ -247,7 +247,7 @@ local function check_range(ctx, sid, slot, name)
     if is_ground_self_aoe(sid, name) then
         return true
     end
-    -- Multi-dot: range is validated vs the discovered GUID later — never vs
+    -- Multi-dot: range is validated vs the discovered GUID later - never vs
     -- client target. spell_in_range is often false with no target selected.
     if slot_has_aura_search(slot) then return true end
     local search = ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid
@@ -264,7 +264,7 @@ end
 -- Facing: unit-targeted casts only. NEVER hard-block at BasicRules level.
 -- Facing is handled at the wire path (attempt_action try_list) where auto-face
 -- can turn the player before measuring. BasicRules runs before conditions and
--- has no access to auto-face — blocking here makes auto-face dead code.
+-- has no access to auto-face - blocking here makes auto-face dead code.
 -- Instead, always pass; the wire path gates with full auto-face support.
 -- Also fix: is_facing_guid returns nil when position data is unavailable.
 -- 'not nil' = true was blocking spells when we couldn't even measure facing.
@@ -305,7 +305,7 @@ local function check_immunity(ctx, sid)
     -- Only the client-target protection map, and only REAL combat blocks.
     -- aura_search GUID casts are re-checked against the search unit later.
     -- Relationship (no_target / dead / friendly / cannot_attack) is handled
-    -- by check_target_relationship — never renamed to "immune" here.
+    -- by check_target_relationship - never renamed to "immune" here.
     if not bool(ctx.target_exists, false) then
         return true
     end
@@ -375,7 +375,7 @@ function BasicRules.check(ctx, spell_id, slot, opts)
         if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="los", why=why}; return false, why end
     end
 
-    -- Immunity map is for current client target — skip until search resolves.
+    -- Immunity map is for current client target - skip until search resolves.
     if not slot_has_aura_search(slot) then
         ok, why = check_immunity(ctx, sid)
         if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="immune", why=why}; return false, why end
@@ -389,7 +389,7 @@ end
 -- FACING (2026-08-01): NEVER hard-refuse here. The measurement can disagree
 -- with the client's real facing (+0x7AC lags visual; Lua GetPlayerFacing
 -- no-ops to 0.0). Refusing here starved the wire path (which TURNS the player
--- toward the GUID then wires) — the rotation reported "wait facing:Blood
+-- toward the GUID then wires) - the rotation reported "wait facing:Blood
 -- Strike" forever while the user faced the target. Facing is the wire path's
 -- job: turn, re-measure, wire regardless (client is final authority). LOS
 -- stays: only a confident block refuses pre-wire.

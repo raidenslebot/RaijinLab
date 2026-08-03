@@ -321,7 +321,7 @@ function RL:MigrateLegacyRotationsToCharacter()
     return moved
 end
 
--- Mirror character → account WITHOUT destroying real account configs.
+-- Mirror character -> account WITHOUT destroying real account configs.
 -- Empty shells must never clobber a populated account-level rotation.
 function RL:SyncActiveCharacterToLegacy()
     local c = self:CharacterDB()

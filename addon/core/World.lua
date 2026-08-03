@@ -55,7 +55,7 @@ end
 -- 2026-08-02 (bridge-storm cut): combat reach / bounding of the PLAYER are
 -- constant for a fight; cache ~250ms so per-hostile scans (unit_distances)
 -- stop issuing a bridge round-trip for the same "player" value every time.
--- Other refs (targets) are cached ~120ms — enough for the hitbox model.
+-- Other refs (targets) are cached ~120ms - enough for the hitbox model.
 local _reach_cache = { t = 0, player = 1.5 }
 local _bound_cache = { t = 0, player = 0 }
 local function combat_reach_of(ref)
@@ -148,7 +148,7 @@ end
 -- GUID -> unit token map for Unit* queries (attackable, dead, health).
 -- Nameplates are discovery only; they do not supply yards.
 -- On Ascension, nameplateN often does NOT exist unless the unit is under the
--- cursor — so this map may only contain target/focus/mouseover. Combat scans
+-- cursor - so this map may only contain target/focus/mouseover. Combat scans
 -- MUST fall back to OM GUID + ObjectUnitFlags (see om_unit_is_hostile).
 function World.guid_token_map()
     local map = {}
@@ -167,7 +167,7 @@ end
 -- ============================================================================
 -- RUNTIME-FIRST hostiles (no nameplates, no UnitCanAttack spam).
 --
--- Authority: RaijinLabRuntime NearbyHostiles — one C++ Refresh + snapshot walk,
+-- Authority: RaijinLabRuntime NearbyHostiles - one C++ Refresh + snapshot walk,
 -- returns packed hostiles with positions/flags/hp already computed.
 -- Lua NEVER loops GetUnitWithIndex + ObjectHealth/Flags (that crashed + lagged).
 -- ============================================================================
@@ -216,7 +216,7 @@ local function parse_nearby_hostiles(packed)
             end
             if guid then
                 -- 2026-08-02 (NO FALLBACKS): a unit the runtime cannot PLACE
-                -- (center unparseable / 0 / >=999) is excluded right here —
+                -- (center unparseable / 0 / >=999) is excluded right here -
                 -- never a silent 999 that later surfaces as "edge=999.0 ->
                 -- Out of range" casts.
                 center = tonumber(center)
@@ -254,10 +254,10 @@ local function parse_nearby_hostiles(packed)
 end
 
 -- WotLK 3.3.5 / Trinity Spell::CheckCast unit-target face rule:
---   caster->HasInArc(M_PI, target)  where M_PI is FULL cone width (180°).
--- Our API takes the HALF-angle: π/2 (90°) so |heading_error| <= 90°
---   => front HEMISPHERE (180° total), matching the client "not in front of you".
--- This is NOT "only a 90° slice" — that would be wrong and too tight.
+--   caster->HasInArc(M_PI, target)  where M_PI is FULL cone width (180deg).
+-- Our API takes the HALF-angle: pi/2 (90deg) so |heading_error| <= 90deg
+--   => front HEMISPHERE (180deg total), matching the client "not in front of you".
+-- This is NOT "only a 90deg slice" - that would be wrong and too tight.
 --
 -- Applies ONLY to unit-targeted player casts that the client face-checks.
 -- Ground self-AoE / self / no-unit-target spells never call this path.
@@ -265,7 +265,7 @@ World.CAST_FACE_HALF_ARC = math.pi / 2   -- half-angle radians
 World.CAST_FACE_FULL_ARC = math.pi       -- full cone (documentation / Trinity M_PI)
 
 -- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): the client's IsUsableSpell is
--- hardware-gated — calling it from addon Lua taints the client ("tainted the
+-- hardware-gated - calling it from addon Lua taints the client ("tainted the
 -- call of the secure function", live 14:36/14:57), AND it misses rune costs
 -- on custom spells. This gate uses ONLY runtime natives and FAILS OPEN on
 -- unknown:
@@ -300,7 +300,7 @@ function World.resource_ok(sid)
         if not rb then return true end
         local ready = { tonumber(rb) or 0, tonumber(rf) or 0, tonumber(ru) or 0 }
         local total = ready[1] + ready[2] + ready[3]
-        -- FAIL-OPEN (round 51): only block with POSITIVE evidence — some runes
+        -- FAIL-OPEN (round 51): only block with POSITIVE evidence - some runes
         -- ready but not this spell's type. All-zero (regenerating / unreadable)
         -- does NOT block; the client is the final referee and a genuine refusal
         -- is bounded by the 0.6s resource floor. Blocking on all-zero was the
@@ -340,8 +340,8 @@ local function _live_player_facing()
         end
     end
     -- CRITICAL (2026-08-01): Lua GetPlayerFacing() NO-OPs from insecure addon
-    -- code AND is PROTECTED — ROUND 49 (TAINT): it is NEVER called from addon
-    -- Lua anymore. Without the runtime the facing is UNDETERMINED (nil) — fail
+    -- code AND is PROTECTED - ROUND 49 (TAINT): it is NEVER called from addon
+    -- Lua anymore. Without the runtime the facing is UNDETERMINED (nil) - fail
     -- open; the runtime ObjectFacing below is the only fallback.
     if RaijinLab and RaijinLab.ObjectFacing then
         return RaijinLab:ObjectFacing("player")
@@ -350,7 +350,7 @@ local function _live_player_facing()
 end
 
 -- Heading error (signed rad) from player facing to GUID. nil if unmeasurable.
--- Positive ≈ target is to the left (CCW from facing) — matches TurnByDelta +.
+-- Positive ~ target is to the left (CCW from facing) - matches TurnByDelta +.
 function World.heading_error_to_guid(guid)
     if not guid or not (RaijinLab and RaijinLab.ObjectPosition) then return nil end
     local px, py = RaijinLab:ObjectPosition("player")
@@ -378,7 +378,7 @@ function World.heading_to_guid(guid)
 end
 
 -- Face toward GUID without changing unit selection.
--- Uses TurnByDelta (real client turn) — raw FaceDirection memory write is
+-- Uses TurnByDelta (real client turn) - raw FaceDirection memory write is
 -- ignored for movement/cast on this Ascension build.
 function World.face_guid(guid)
     local err = World.heading_error_to_guid(guid)
@@ -407,16 +407,16 @@ function World.face_guid(guid)
     return false
 end
 
--- Facing check. Returns true / false / nil (nil = undetermined — cannot measure).
+-- Facing check. Returns true / false / nil (nil = undetermined - cannot measure).
 -- Multi-dot MUST cast when nil (client is last authority). Only skip when false.
 --
--- 2026-08-02 (RUNTIME-AUTHORITY REORDER — user directive "runtime and hooks are
+-- 2026-08-02 (RUNTIME-AUTHORITY REORDER - user directive "runtime and hooks are
 -- all we should be using"): the runtime's ObjectIsFacing is the PRIMARY authority.
--- It resolves the player EXACTLY like the client's GetPlayerFacing (camera →
--- GUID → ObjectPtr → [obj+0x7AC], native frame-hook cached), so it cannot
+-- It resolves the player EXACTLY like the client's GetPlayerFacing (camera ->
+-- GUID -> ObjectPtr -> [obj+0x7AC], native frame-hook cached), so it cannot
 -- disagree with what the client will refuse. The Lua math path below was
 -- running FIRST and could return a confident-but-WRONG answer (the runtime
--- PlayerFacing() read 0 → every cast blocked with "facing"). Runtime first;
+-- PlayerFacing() read 0 -> every cast blocked with "facing"). Runtime first;
 -- Lua math only when the runtime is absent.
 --
 -- 2026-08-02 (POINT-BLANK / 0yd): when the target occupies the player's own
@@ -425,7 +425,7 @@ end
 -- mob the player was standing on and fighting ("wait facing:Blood Strike
 -- x161" at edge=0yd). The runtime path handles this; the Lua fallback below
 -- treats a point-blank target as facing (the client's own arc check passes a
--- target at zero distance — you cannot be "behind" something inside you).
+-- target at zero distance - you cannot be "behind" something inside you).
 function World.is_facing_guid(guid, half_arc)
     if not guid then return false end
     half_arc = tonumber(half_arc) or World.CAST_FACE_HALF_ARC
@@ -491,7 +491,7 @@ function World.is_los_guid(guid)
     local tx, ty, tz = RaijinLab:ObjectPosition(guid)
     if not px or not tx then return nil end
     -- Melee / point-blank: unit model geometry often false-blocks TraceLine.
-    -- Live 1.10.36: edge=0yd still los:Icy_Touch — rotation only Consecration.
+    -- Live 1.10.36: edge=0yd still los:Icy_Touch - rotation only Consecration.
     local dx, dy = (px - tx), (py - ty)
     local center = math.sqrt(dx * dx + dy * dy)
     if center < 8.0 then
@@ -507,7 +507,7 @@ function World.is_los_guid(guid)
 end
 
 -- Authoritative: is the current client target targeting the local player?
--- Used by target_targeting_you condition. Multiple witnesses — Ascension
+-- Used by target_targeting_you condition. Multiple witnesses - Ascension
 -- UnitIsUnit("targettarget","player") is often false-negative.
 function World.target_is_targeting_you()
     if not (UnitExists and UnitExists("target")) then return false end
@@ -540,11 +540,11 @@ end
 -- This is the ONLY condition under which the rotation may let the game's
 -- natural targeting acquire a target (Prompt.md rule: acquire OFF must never
 -- manually target; auto-target is allowed ONLY when a hostile/neutral is
--- targeting / casting / damaging the player — heals/buffs excluded).
+-- targeting / casting / damaging the player - heals/buffs excluded).
 -- Signals (any): (a) current target is hostile/neutral AND targeting the
 -- player (targettarget == player, witnessed by Lua + runtime UnitTarget);
 -- (b) casting/channeling a spell at the player; (c) a hostile in combat with
--- the player (damage proxy — a hostile that is fighting is damaging us).
+-- the player (damage proxy - a hostile that is fighting is damaging us).
 -- Friendly units (reaction >= 5) are NEVER a threat (healers/buffers).
 function World.hostile_or_neutral_attacking_me()
     if not (UnitExists and UnitExists("target")) then return false end
@@ -557,13 +557,13 @@ function World.hostile_or_neutral_attacking_me()
     if not hostile and UnitReaction then
         local r = UnitReaction("target", "player")
         if r == nil then return false end
-        if r >= 5 then return false end        -- friendly — healers/buffers, never threat
+        if r >= 5 then return false end        -- friendly - healers/buffers, never threat
         hostile = (r <= 2)                     -- hated/hostile
     end
     -- Actively targeting the player.
     if World.target_is_targeting_you() then return true end
     -- Casting / channeling a spell AT the player (harmful by construction: a
-    -- friendly would never be attackable — heals/buffs are excluded by the
+    -- friendly would never be attackable - heals/buffs are excluded by the
     -- hostile/neutral gate above).
     if UnitGUID then
         local pg = UnitGUID("player")
@@ -589,7 +589,7 @@ end
 
 -- True when unit (token or GUID) is actively attacking the local player
 -- (targets player, or is casting a harmful spell at player). Used for natural
--- target acquisition only — never for multi-dot GUID casts.
+-- target acquisition only - never for multi-dot GUID casts.
 function World.unit_is_attacking_player(token_or_guid)
     if not token_or_guid then return false end
     if token_or_guid == "target" then
@@ -636,7 +636,7 @@ end
 
 -- SINGLE authority for combat hostiles. Runtime NearbyHostiles only.
 -- NEVER cache empty packs (that zeroed enemies_in_range for 100ms+ forever
--- when OM was still warming — condition looked permanently broken).
+-- when OM was still warming - condition looked permanently broken).
 function World.collect_nearby_enemies(max_range)
     -- 2026-08-02 (NO FALLBACKS): a required search range must not silently
     -- become 40yd. Unknown range = no enemies = the enemies_in_range
@@ -729,7 +729,7 @@ function World.collect_units_from_tokens()
     local out = {}
     local seen = {}
     if not UnitExists then return out end
-    -- Only stable tokens — never nameplateN (forbidden / mouseover-only here).
+    -- Only stable tokens - never nameplateN (forbidden / mouseover-only here).
     local tokens = { "target", "focus", "pet", "mouseover" }
     for _, token in ipairs(tokens) do
         if UnitExists(token) then
@@ -793,7 +793,7 @@ function World.collect_from_om()
             if g and not seen[g] then
                 seen[g] = true
                 -- 2026-08-02 (CRITTER FILTER): creature type 8 = CREATURE_TYPE_
-                -- CRITTER — never a combat target (the runtime already excludes
+                -- CRITTER - never a combat target (the runtime already excludes
                 -- them from AuraSearch/NearbyHostiles; this is defense in depth
                 -- for any Lua-side hostile iteration over the full snapshot).
                 if tonumber(ct) == 8 then
@@ -939,7 +939,7 @@ function World.note_unit_died(guid)
     if not guid then return end
     local now = (GetTime and GetTime()) or 0
     -- 2026-08-02 (CRASH FIX): this runs from the CLEU event handler
-    -- (World.on_combat_log). NO bridge call from an event dispatch — the
+    -- (World.on_combat_log). NO bridge call from an event dispatch - the
     -- synchronous ObjectPosition here was another VM re-entry surface. Use the
     -- already-cached position only; the corpse resolver fills a pending entry
     -- from the snapshot on the next tick. A pending corpse without a position
@@ -1162,7 +1162,7 @@ function World.collect_corpses(max_range)
     --    2026-08-02: ONE OmSnapshot call (runtime IS the OM authority) replaces
     --    the old per-object GetUnitCount/GetUnitWithIndex/GetObjectCount/
     --    GetObjectWithIndex/ObjectTypeFlags/ObjectDynamicFlags/ObjectPosition
-    --    loops — each was an ObjectPtr game call = the Guard-recovery crash
+    --    loops - each was an ObjectPtr game call = the Guard-recovery crash
     --    vector (live 1.10.69 RVA 0x788A crash during this exact loop).
     if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
@@ -1190,7 +1190,7 @@ function World.collect_corpses(max_range)
                         hp = tonumber(hp) or 0
                         mhp = tonumber(mhp) or 0
                         -- 2026-08-02 (CRITTER): creature type 8 is never a
-                        -- corpse/cast target — skip (defense in depth).
+                        -- corpse/cast target - skip (defense in depth).
                         local isCritter = (tonumber(ct) or -1) == 8
                         if _has_flag(tf, corpseFlag) then
                             local cx, cy, cz = tonumber(x), tonumber(y), tonumber(z)
@@ -1292,14 +1292,14 @@ local function _aura_key(spellId, spellName)
     return nil
 end
 
--- Cast spell id → disease / multi-dot search aura id (WotLK + common ranks).
+-- Cast spell id -> disease / multi-dot search aura id (WotLK + common ranks).
 -- SPELL_CAST_SUCCESS notes the disease immediately so AuraSearch never re-casts
 -- on a unit that just took Plague Strike / Icy Touch while AURA_APPLIED lags.
 local _CAST_TO_DISEASE = {
-    -- Plague Strike ranks → Blood Plague
+    -- Plague Strike ranks -> Blood Plague
     [45462] = 55078, [49917] = 55078, [49918] = 55078, [49919] = 55078,
     [49920] = 55078, [49921] = 55078, [45513] = 55078,
-    -- Icy Touch ranks → Frost Fever
+    -- Icy Touch ranks -> Frost Fever
     [45477] = 55095, [49896] = 55095, [49903] = 55095, [49904] = 55095,
     [49909] = 55095, [49910] = 55095,
 }
@@ -1330,14 +1330,14 @@ local function _prune_aura_bags(now)
     end
 end
 
--- 2026-08-02 (CRASH FIX — persistent 0x512B07 Lua-VM corruption): the combat-
+-- 2026-08-02 (CRASH FIX - persistent 0x512B07 Lua-VM corruption): the combat-
 -- log handler (World.on_combat_log) fires the INSTANT a cast lands
 -- (SPELL_AURA_APPLIED) and called NoteUnitAura SYNCHRONOUSLY from inside the
 -- game's CLEU event dispatch. That bridge re-entry corrupted the game's Lua
 -- VM (live forensics: NoteUnitAura was the last bridge call before the crash
 -- 6ms later at 0x512B07 reading a garbage closure). ALL runtime aura-note
 -- bridge calls are now queued and flushed on the next frame via C_Timer.After(0)
--- — a normal Lua execution context, NEVER inside an event dispatch. The Lua
+-- - a normal Lua execution context, NEVER inside an event dispatch. The Lua
 -- side-effect cache stays synchronous (pure Lua, safe).
 World._pending_aura_notes = {}
 World._pending_aura_flush = false
@@ -1392,7 +1392,7 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     local now = (GetTime and GetTime()) or 0
     local key = _aura_key(spellId, spellName)
     -- Only invalidate pack cache when the note is new or meaningfully refreshed.
-    -- Same-guid re-seed every tick was a lag spike (empty cache → full AuraSearch).
+    -- Same-guid re-seed every tick was a lag spike (empty cache -> full AuraSearch).
     local prior = key and World._aura_by_guid[gkey] and World._aura_by_guid[gkey][key]
     local material = true
     if prior and type(prior) == "table" then
@@ -1497,7 +1497,7 @@ function World.seed_visible_aura_notes(spell_id, aura_name)
     end
 end
 
--- has, stacks, remaining — client UnitAura (when visible) + RUNTIME notes + cache.
+-- has, stacks, remaining - client UnitAura (when visible) + RUNTIME notes + cache.
 function World.guid_aura_state(guid, spell_id, aura_name)
     if not guid then return false, 0, 0 end
     local gkey = _guid_key(guid) or tostring(guid)
@@ -1507,7 +1507,7 @@ function World.guid_aura_state(guid, spell_id, aura_name)
         local ok, n = pcall(GetSpellInfo, sid)
         if ok and n then nm = tostring(n) end
     end
-    -- Client-visible: target/focus/mouseover only (NOT nameplate1..40 — that
+    -- Client-visible: target/focus/mouseover only (NOT nameplate1..40 - that
     -- fan at 50Hz mid-combat was a crash surface). UnitDebuff is authoritative
     -- when the unit is the current selection.
     if UnitDebuff and UnitGUID then
@@ -1525,7 +1525,7 @@ function World.guid_aura_state(guid, spell_id, aura_name)
                         if expirationTime and GetTime then
                             rem = math.max(0, (tonumber(expirationTime) or 0) - GetTime())
                         end
-                        -- Do NOT note_aura_on_guid here every eval — that was a
+                        -- Do NOT note_aura_on_guid here every eval - that was a
                         -- gen-bump / pack-cache thrash under multi-dot. Seeding
                         -- is throttled in seed_visible_aura_notes only.
                         return true, math.max(1, tonumber(count) or 1), rem
@@ -1538,7 +1538,7 @@ function World.guid_aura_state(guid, spell_id, aura_name)
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
         -- 2026-08-02 (aura_search speed): the multi-dot second pass calls this
-        -- per candidate per tick — a HasUnitAura BRIDGE ROUND-TRIP each time is
+        -- per candidate per tick - a HasUnitAura BRIDGE ROUND-TRIP each time is
         -- why aura_search felt "criminally slow". The runtime aura notes only
         -- change on CLEU events, so a ~150ms cache is safe and cuts ~3-4x the
         -- bridge calls (2 aura_search slots x up to 8 candidates).
@@ -1658,7 +1658,7 @@ function World.on_combat_log()
             end
         end
         -- Do NOT note SPELL_CAST_SUCCESS with the cast spell id as an "aura"
-        -- key (45513 ≠ 55078). Map known disease appliers → disease aura id so
+        -- key (45513 ~= 55078). Map known disease appliers -> disease aura id so
         -- AuraSearch stops re-casting PS on a unit that just took the disease
         -- while AURA_APPLIED is still in flight.
         if subevent == "SPELL_CAST_SUCCESS" then
@@ -2197,7 +2197,7 @@ function World.build_context(opts)
         nk, sk, ss, tostring(sid0), tostring(sidN), tostring(tguid), combat, sl)
     local cc = World._ctx_frame_cache
     -- Combat: reuse ~16ms (one frame) for identical fingerprint. OOC: 50ms.
-    -- Same-frame always hits. Cuts duplicate build_context work at 40–60Hz.
+    -- Same-frame always hits. Cuts duplicate build_context work at 40-60Hz.
     local ttl = (combat == 1) and 0.016 or 0.05
     if cc and cc.key == cache_key and cc.ctx and (tnow - (cc.t or 0)) <= ttl then
         return cc.ctx
@@ -2529,7 +2529,7 @@ function World.build_context(opts)
     ctx.gcd_remaining = gcd_remaining()
 
     -- Cooldowns + known + usable. Executor.fill live state every tick when
-    -- skip_spell_snapshot is set (rotation hot path) — avoid double work.
+    -- skip_spell_snapshot is set (rotation hot path) - avoid double work.
     if opts.skip_spell_snapshot then
         -- Minimal stubs so conditions never see nil tables.
         for _, id in ipairs(spell_ids) do
@@ -2941,7 +2941,7 @@ local function aura_search_tokens()
     return { "target", "focus", "pet", "targettarget", "focustarget", "pettarget", "mouseover" }
 end
 
--- 2026-08-02 (NO FALLBACKS — user directive): structured logging for the
+-- 2026-08-02 (NO FALLBACKS - user directive): structured logging for the
 -- search/range subsystem (RaijinLab.DevLog convention).
 local function _dlog(cat, ...)
     local DL = RaijinLab and RaijinLab.DevLog
@@ -2949,12 +2949,12 @@ local function _dlog(cat, ...)
 end
 World.dlog = _dlog
 
--- AUTHORITATIVE spell max range (2026-08-02, NO FALLBACKS — the "basic check"
+-- AUTHORITATIVE spell max range (2026-08-02, NO FALLBACKS - the "basic check"
 -- for physical range). Decodes the client's loaded Spell.dbc range entry via
--- the runtime SpellMeleeInfo — the SAME source the rotation's range gates use,
+-- the runtime SpellMeleeInfo - the SAME source the rotation's range gates use,
 -- so the search and the cast can never disagree about what a spell can reach.
 -- Returns the real max range (yards) or nil = HARD UNKNOWN (callers MUST fail
--- the cast/search — never a silent 30/40-yard fallback). Cached 60s/spell
+-- the cast/search - never a silent 30/40-yard fallback). Cached 60s/spell
 -- (spell range is static data).
 local _spell_max_cache = {}
 function World.spell_max_range(sid)
@@ -2979,7 +2979,7 @@ end
 -- Find nearby units matching aura present/missing.
 -- RUNTIME-FIRST: discovery, hostility, face, and aura notes all live in the
 -- inject DLL. Lua never uses mouseover/UnitExists/UnitCanAttack for multi-dot
--- (that made Icy Touch instant only while hovering and 10–20s otherwise).
+-- (that made Icy Touch instant only while hovering and 10-20s otherwise).
 -- Returns list of {guid, dist, face_err, facing} sorted best-first.
 function World.find_aura_search_targets(opts)
     opts = opts or {}
@@ -2995,14 +2995,14 @@ function World.find_aura_search_targets(opts)
         -- Without id, fall back to empty (cannot key aura table by name alone).
         return {}
     end
-    -- 2026-08-02 (NO FALLBACKS — user directive): a search range is REQUIRED.
+    -- 2026-08-02 (NO FALLBACKS - user directive): a search range is REQUIRED.
     -- A missing/invalid range is a bug to surface, never a silent 40-yard
     -- search. The runtime AuraSearch filters by this exact number, so garbage
     -- here = casting at targets beyond any sane distance.
     local range = tonumber(opts.range)
     if not range or range ~= range or range <= 0 or range > 100 then
         if World.dlog then
-            World.dlog("search", "aura_search RANGE_REQUIRED (opts.range=%s) — "
+            World.dlog("search", "aura_search RANGE_REQUIRED (opts.range=%s) - "
                 .. "refusing to search at an unknown range", tostring(opts.range))
         end
         return {}
@@ -3018,19 +3018,19 @@ function World.find_aura_search_targets(opts)
         return {}
     end
 
-    -- (2026-08-02) OOC gate REMOVED — aura_search has NO combat restriction.
+    -- (2026-08-02) OOC gate REMOVED - aura_search has NO combat restriction.
     -- The runtime OM now epoch-caches the snapshot (zero-cost repeat reads),
     -- AuraSearch packs cache ~120ms, and the soft list refresh throttles to
     -- ~280ms OOC. Out-of-combat discovery is safe and free; aura_search must
     -- fire without a target or combat, per spec.
 
-    -- Lua-side cache (~50ms) — 2026-08-02 (18:16 user: "aura search extremely
+    -- Lua-side cache (~50ms) - 2026-08-02 (18:16 user: "aura search extremely
     -- slow/not reactive"): reduced from 120ms so a new target is picked up
     -- within ~1-2 frames. Engine evaluates aura_search every tick per slot.
     local tnow = (GetTime and GetTime()) or 0
     local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
     local ac = World._aura_search_cache
-    -- ROUND 48 (CHURN FIX): empty results cache 250ms (not 50ms) — a search
+    -- ROUND 48 (CHURN FIX): empty results cache 250ms (not 50ms) - a search
     -- that found nothing re-issues the bridge round-trip far less often
     -- during downtime / single-target fights. Populated results stay 50ms
     -- for fast multi-dot reaction.
@@ -3039,7 +3039,7 @@ function World.find_aura_search_targets(opts)
         return ac.list
     end
 
-    -- Seed only on cache miss (throttled inside). Never before cache hit —
+    -- Seed only on cache miss (throttled inside). Never before cache hit -
     -- that forced NoteUnitAura + gen-bump every frame (1.10.34 lag regression).
     if World.seed_visible_aura_notes then
         pcall(World.seed_visible_aura_notes, spell_id, aura_name)
@@ -3073,13 +3073,13 @@ function World.find_aura_search_targets(opts)
                 if not (Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid)) then
                     -- 2026-08-02 (NO FALLBACKS): a target the runtime cannot
                     -- PLACE (center unparseable / 0 / >=999) is NOT a valid cast
-                    -- target — casting at it was exactly the "edge=999.0 -> Out
+                    -- target - casting at it was exactly the "edge=999.0 -> Out
                     -- of range" spam. Exclude it outright; never default to 999.
                     local d = tonumber(center)
                     if not d or d ~= d or d <= 0 or d >= 999 then
                         if World.dlog then
                             World.dlog("search", "aura_search UNPLACEABLE guid=%s "
-                                .. "(center=%s) — excluded", tostring(guid), tostring(center))
+                                .. "(center=%s) - excluded", tostring(guid), tostring(center))
                         end
                         d = nil
                     end
@@ -3123,7 +3123,7 @@ function World.find_aura_search_target(opts)
     return best.token, best.guid, best.dist
 end
 
--- 2026-08-03 (AUTO SEARCH — user feature): nearest hostile within auto-attack
+-- 2026-08-03 (AUTO SEARCH - user feature): nearest hostile within auto-attack
 -- range for the Auto Attack slot's "Auto Search" toggle. Uses the runtime
 -- NearbyHostiles pack (epoch-cached snapshot math, NO client target needed,
 -- zero selection touch). Returns the closest living hostile whose CENTER is

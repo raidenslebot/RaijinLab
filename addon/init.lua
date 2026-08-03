@@ -7,7 +7,7 @@ frame:RegisterEvent("VARIABLES_LOADED")
 -- call that pops "RaijinLab has been blocked from an action only available to
 -- the Blizzard UI" is logged with the exact function name in the dev log.
 -- ADDON_ACTION_FORBIDDEN is the other protected-call signal (in-combat,
--- different arg shape) — capture both.
+-- different arg shape) - capture both.
 frame:RegisterEvent("ADDON_ACTION_BLOCKED")
 frame:RegisterEvent("ADDON_ACTION_FORBIDDEN")
 -- PLAYER_LOGOUT fires right before WoW writes SavedVariables; we flush + sanitize

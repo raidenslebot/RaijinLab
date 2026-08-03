@@ -8,7 +8,7 @@ if not RaijinLabDB.looter then
     }
 end
 
--- Distance-first loot pick. NEVER TraceLine every object — that was the loot
+-- Distance-first loot pick. NEVER TraceLine every object - that was the loot
 -- lag spike (LoS fan across full interactable + NPC lists every 0.5s).
 -- Sort by distance, then LoS only the nearest few candidates.
 local function dist_player(object)
@@ -18,7 +18,7 @@ local function dist_player(object)
     return nil
 end
 
--- No TraceLine on loot scan. Interact at feet (≤5yd) is always attempted;
+-- No TraceLine on loot scan. Interact at feet (<=5yd) is always attempted;
 -- longer-range LoS was the walk/loot FPS spike.
 local function pick_nearest(cands)
     if not cands or #cands == 0 then return nil end
@@ -29,7 +29,7 @@ end
 local function GetLootableUnit()
     local cands = {}
 
-    -- 1) Interactable list (GO / quest) — distance only, no LoS yet.
+    -- 1) Interactable list (GO / quest) - distance only, no LoS yet.
     local interactable_units = RaijinLab.GetInteractableObjects
         and RaijinLab:GetInteractableObjects() or {}
     for i = 1, #interactable_units do
@@ -57,7 +57,7 @@ local function GetLootableUnit()
         return
     end
 
-    -- 2) Dead lootable NPCs from OM list — distance only (no TraceLine).
+    -- 2) Dead lootable NPCs from OM list - distance only (no TraceLine).
     cands = {}
     local npcs = RaijinLab.om and RaijinLab.om.object_list and RaijinLab.om.object_list.npcs
     if npcs then

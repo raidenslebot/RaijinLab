@@ -2690,7 +2690,7 @@ function Suite.start()
     local master_on = not (M and M.suppressed and M.suppressed())
     print("|cff7ec8e3RaijinLab|r questing |cff55ff55ON|r  master="
         .. (master_on and "|cff55ff55ON|r" or "|cffff5555OFF|r")
-        .. "  (OM warms ~6s — empty world is normal until then)")
+        .. "  (OM warms ~6s - empty world is normal until then)")
     print("|cff7ec8e3RaijinLab|r /raijin quest status  |  log: Logs/raijinlab_dev.log")
     Suite._starting = false
 end

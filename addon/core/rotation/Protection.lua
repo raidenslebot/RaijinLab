@@ -408,7 +408,7 @@ end
 -- Cast-gate filter: is_protected() returns protected=true for relationship
 -- states (no_target / dead / friendly / cannot_attack) so CONDITIONS like
 -- target_can_take_damage stay correct. CAST GATES must not treat those as
--- "immune" — that froze non-aura_search slots and mislabeled live targets.
+-- "immune" - that froze non-aura_search slots and mislabeled live targets.
 -- Only real combat protection blocks a cast attempt.
 function Protection.blocks_cast(reason)
     if reason == nil or reason == false then return false end

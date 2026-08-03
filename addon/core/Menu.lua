@@ -452,8 +452,8 @@ function Menu:BuildHome(parent)
         end
     end
 
-    -- Rotation keybind hint (Esc → Key Bindings → RaijinLab).
-    local kb = fs(mods, "Rotation keybind: Esc → Key Bindings → RaijinLab → Toggle rotation module  |  /rjrot",
+    -- Rotation keybind hint (Esc -> Key Bindings -> RaijinLab).
+    local kb = fs(mods, "Rotation keybind: Esc -> Key Bindings -> RaijinLab -> Toggle rotation module  |  /rjrot",
         "GameFontDisableSmall")
     kb:SetPoint("BOTTOMLEFT", mods, "BOTTOMLEFT", 14, 10)
     kb:SetPoint("BOTTOMRIGHT", mods, "BOTTOMRIGHT", -14, 10)

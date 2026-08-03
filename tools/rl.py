@@ -341,7 +341,9 @@ def gate_magicindex(paths=None) -> list[str]:
     if not src.is_dir():
         return []
     bad = []
-    pat = re.compile(r"name\s*\[\s*\d+\s*\]\s*==")
+    # `name[0] == '\0'` is an emptiness check and states its intent; the
+    # coin-flip is a MID-STRING index compared against a real character.
+    pat = re.compile(r"name\s*\[\s*\d+\s*\]\s*==\s*'(?!\\0')")
     for f in sorted(list(src.rglob("*.cpp")) + list(src.rglob("*.h"))):
         rel = f.relative_to(src).as_posix()
         if rel.startswith("archive/"):
@@ -447,8 +449,15 @@ def cmd_patch(a) -> int:
 # --------------------------------------------------------------------------
 
 def _run(cmd, timeout=1800):
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout + r.stderr
+    # encoding is pinned because the DEFAULT is the console codepage (GBK on
+    # this box), and one 0x92 smart-quote byte in a child's output made decode
+    # throw inside the reader thread - stdout became None, `None + stderr`
+    # raised, and EVERY gate died before running. The harness being down is
+    # exactly how 51 ungated rounds shipped; it must never be killable by a
+    # byte in the output it is reading.
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                       timeout=timeout, encoding="utf-8", errors="replace")
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
 def gate_harness(paths=None) -> list[str]:

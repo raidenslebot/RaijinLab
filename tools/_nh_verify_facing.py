@@ -8,4 +8,4 @@ print('VER  :', rl('return tostring(RaijinLab:RuntimeCall("GetRuntimeVersion"))'
 print('PF   :', rl('return tostring(RaijinLab.Actions.PlayerFacing())'))
 print('LUA  :', rl('return tostring(GetPlayerFacing())'))
 print('TGT  :', rl('return tostring(UnitGUID and UnitGUID("target"))'))
-print('VEREXPECTED: 1.10.96-gateprobe')
+print('VEREXPECTED: 1.10.97-selprobe')

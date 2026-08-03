@@ -109,6 +109,12 @@ static thread_local lua_State* g_currentL = nullptr;
 // Spell_C gate diagnostic that lives before them).
 static uintptr_t ObjectPtr3(uint64_t guid, int mask);
 static uintptr_t PlayerPtr();
+// Pure-read spell-table lookup (defined later in this anon ns) used by
+// SafeNativeCast's gate probe — reads the same table 0x4cfd20 uses with ZERO
+// side effects (0x4cfd20 could touch action/busy state right before the cast
+// and skew canCast's [0xD4139C] gate).
+static int SpellTableEntryRead(uint32_t spellId, uint8_t* flagByteOut,
+                               uint32_t* attr28Out, uint32_t* entryPtrOut);
 
 static fnVoid At(uintptr_t addr) {
     return addr ? reinterpret_cast<fnVoid>(addr) : nullptr;
@@ -441,36 +447,102 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
                 uint32_t desc40 = descPtr ? Mem::Read<uint32_t>(descPtr + 0x40) : 0;
                 uintptr_t r8 = OM::ObjectPtr3Guid(lo, hi, 8);
                 uintptr_t r1 = OM::ObjectPtr3Guid(lo, hi, 1);
+                // ROUND 32: use the PURE-READ spell-table lookup (no 0x4cfd20
+                // call — it could touch action/busy state right before fn and
+                // skew the canCast [0xD4139C] gate we are measuring).
                 int entryFound = 0;
-                uint32_t attr10 = 0;
+                uint32_t attr0 = 0, attr10 = 0, attr28 = 0, fam = 0;
                 uint32_t gate = 0;
                 {
-                    Guard::Scope g2;
-                    if (!g2.Caught()) {
-                        using fnGS = int(__thiscall*)(uintptr_t, int, void*);
-                        // 0x4cfd20 writes a 0x2B8-byte spell struct — give it
-                        // 0x400 (round 29's crash was a 0x40 buffer overflow).
-                        unsigned char out[0x400];
-                        memset(out, 0, sizeof(out));
-                        if (reinterpret_cast<fnGS>(0x4cfd20)(0xad49d0, spellId, out)) {
-                            entryFound = 1;
-                            attr10 = *(uint32_t*)(out + 0x10);
-                            gate = (attr10 & 0x40u) != 0;
-                        }
+                    uint8_t fb = 0; uint32_t a28 = 0; uint32_t eptr = 0;
+                    int sr = SpellTableEntryRead(spellId, &fb, &a28, &eptr);
+                    if (sr == 1 && eptr) {
+                        entryFound = 1;
+                        attr0  = Mem::Read<uint32_t>(eptr + 0x00);
+                        attr10 = Mem::Read<uint32_t>(eptr + 0x10);
+                        attr28 = a28;
+                        fam    = Mem::Read<uint32_t>(eptr + 0x11C);
+                        gate   = (attr10 & 0x40u) != 0;
                     }
                 }
                 uint32_t bd078c = Mem::Read<uint32_t>(0xBD078C);
-                uint32_t bd124c = 0;
-                if (bd078c >= 0x10000u) bd124c = Mem::Read<uint32_t>(bd078c + 0x124C);
-                RL::Log::Warn("CastProbe id=%d desc40=%08X r8=0x%lX r1=0x%lX "
-                              "entry=%d attr10=%08X gate=%d bd078c=%08X bd124c=%08X",
-                              spellId, (unsigned)desc40,
+                uint32_t bd124c = 0, bd1250 = 0;
+                if (bd078c >= 0x10000u) {
+                    bd124c = Mem::Read<uint32_t>(bd078c + 0x124C);
+                    bd1250 = Mem::Read<uint32_t>(bd078c + 0x1250);
+                }
+                uint32_t d4139c = Mem::Read<uint32_t>(0xD4139C);
+                uint32_t d413a4 = Mem::Read<uint32_t>(0xD413A4);
+                // canCast mode (0x80D03C): fam==0x2f or attr0&0x20 -> mode 6
+                // (case 1: fails iff [obj+0x1250]==0); else mode 2 (case 0:
+                // ALWAYS fails when [0xD4139C]!=0). When [0xD4139C]==0
+                // canCast returns 1 unconditionally (0x519239 pass path).
+                int mode = ((attr0 & 0x20u) || fam == 0x2f) ? 6 : 2;
+                // 0x80CD81 busy gate: 0x74BA40(edi)!=0 -> silent al=0. edi is
+                // the sync victim if the sync path ran (attr28 & 0x40000),
+                // else the player object. 0x74BA40 checks [unit+0xa30] bit
+                // 0x400, [unit+0xf60] active-cast state, and the target's
+                // cast record. All VEH-guarded.
+                int busyV = -1, busyP = -1;
+                uint32_t a30V = 0, f60V = 0, a30P = 0, f60P = 0;
+                {
+                    Guard::Scope g2;
+                    if (!g2.Caught()) {
+                        using fnBusy = int(__thiscall*)(uintptr_t);
+                        if (r8) {
+                            a30V = Mem::Read<uint32_t>(r8 + 0xa30);
+                            f60V = Mem::Read<uint32_t>(r8 + 0xf60);
+                            busyV = reinterpret_cast<fnBusy>(0x74BA40)(r8);
+                        }
+                        if (vp2) {
+                            a30P = Mem::Read<uint32_t>(vp2 + 0xa30);
+                            f60P = Mem::Read<uint32_t>(vp2 + 0xf60);
+                            busyP = reinterpret_cast<fnBusy>(0x74BA40)(vp2);
+                        }
+                    }
+                }
+                RL::Log::Warn("CastProbe id=%d mode=%d desc40=%08X r8=0x%lX r1=0x%lX "
+                              "entry=%d a0=%08X a10=%08X a28=%08X fam=%X gate=%d "
+                              "d4139c=%08X a4=%08X obj1250=%08X busyV=%d busyP=%d "
+                              "a30V=%08X f60V=%08X a30P=%08X f60P=%08X",
+                              spellId, mode, (unsigned)desc40,
                               (unsigned long)r8, (unsigned long)r1,
-                              entryFound, (unsigned)attr10, (int)gate,
-                              (unsigned)bd078c, (unsigned)bd124c);
+                              entryFound, (unsigned)attr0, (unsigned)attr10,
+                              (unsigned)attr28, (unsigned)fam, (int)gate,
+                              (unsigned)d4139c, (unsigned)d413a4,
+                              (unsigned)bd1250, busyV, busyP,
+                              (unsigned)a30V, (unsigned)f60V,
+                              (unsigned)a30P, (unsigned)f60P);
             }
         }
+        // ROUND 32 — TRANSIENT SELECTION (0xBD07B0) for acquire-off casts.
+        // Round-13 matrix PROVED register(0x524BF0)+Spell_C(GUID) = casts
+        // land; rounds 28-31 (no register) = al=0. 0x524BF0's only observable
+        // difference vs our desc+0x40 write is the client selection pair
+        // 0xBD07B0/0xBD07B4 — which the game's cast commit state ALSO uses
+        // (kPendingCastLo/Hi). The user requires acquire-off to NEVER change
+        // the visible target — so instead of the real register (which fires
+        // selection events), write the victim into the selection pair for the
+        // SYNCHRONOUS duration of Spell_C and restore the user's previous
+        // selection immediately after. No frame update runs inside this
+        // native call, so the unitframe never renders the intermediate value
+        // and no UNIT_TARGET event fires. Desc+0x40 is written above (feeds
+        // the sync resolution); this write feeds selection/commit paths.
+        uint32_t selLo = Mem::Read<uint32_t>(0x00BD07B0);
+        uint32_t selHi = Mem::Read<uint32_t>(0x00BD07B4);
+        bool wroteSel = false;
+        if (registerTarget == 0 && (selLo != lo || selHi != hi)) {
+            Mem::Write<uint32_t>(0x00BD07B0, lo);
+            Mem::Write<uint32_t>(0x00BD07B4, hi);
+            wroteSel = true;
+        }
         int rc = fn(spellId, 0, guidPtr, 0, 0);
+        if (wroteSel) {
+            // Restore the user's selection — invisible to the unitframe (no
+            // frame rendered between the write and this restore).
+            Mem::Write<uint32_t>(0x00BD07B0, selLo);
+            Mem::Write<uint32_t>(0x00BD07B4, selHi);
+        }
         if (descPtr) {
             // Restore the player's UNIT_FIELD_TARGET (invisible field) after
             // the cast. 0xBD07B0 was never touched for acquire-off.
@@ -515,14 +587,13 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
 // Lua bridge (0x53BD10 known, 0x8009B0 usable, 0x5191C0 canCast, 0x809610 /
 // 0x739650 / 0x80C790 gates, 0x4CFD20 spell lookup, 0x74BA40 "unit busy").
 // Two hard problems (verified 2026-08-02):
-//   1) 0x74BA40 is NOT a function — a dump of Ascension.exe shows a wide-char
-//      XML/UI string at that RVA (" />..." = 22 00 20 00 2F 00 3E 00 ...).
-//      Calling it EXECUTES the string as code: `00 00` = add [eax],al writes
-//      zeros wherever eax points, silently corrupting memory until a stray
-//      0xC3 returns. Live crash (1.10.67, 12:50:32): eip=0x68D4785A = our
-//      Guard::Scope longjmp-recovery (RVA 0x785A), fault=0x48, stack-saved
-//      `this` clobbered to 0 — the garbage write corrupted our frame, the VEH
-//      guard caught a later AV, and the recovery itself faulted.
+//   1) 0x74BA40 IS a function (verified 2026-08-02 by disassembly:
+//      `56 8B F1 E8 78 90 FC FF 84 C0 75 04 33 C0 5E C3` — the "is unit busy"
+//      gate Spell_C calls at 0x80CD81; non-zero return = SILENT al=0). The
+//      earlier "it's a string" claim was WRONG (that dump was another RVA).
+//      It checks [unit+0xa30] bit 0x400, [unit+0xf60] (active cast record,
+//      state != 3) and the target's cast record. We call it directly in the
+//      CastProbe under the VEH guard.
 //   2) The real gates have SIDE EFFECTS: 0x5191C0 pops "can't do that" on its
 //      fail path; 0x80C790 WRITES [0xD3F4E0] (commit state). Calling them from
 //      diagnostics alters client state and costs the main thread.
@@ -534,8 +605,10 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
 //
 // Verified state mappings (RE 2026-08-02):
 //   canCast(2) (0x5191C0)      -> returns 0 iff [0xD4139C] != 0 (PROVEN gate)
-//   unit busy (0x74BA40 proxy) -> unit+0xA6C casting spell id (UnitCastingInfo
-//                                  handler 0x611DF0 reads the same field)
+//   unit busy (0x74BA40)        -> [unit+0xa30] bit 0x400 && (active cast
+//                                  record [unit+0xf60] state != 3, or the
+//                                  target's cast record); called at 0x80CD81,
+//                                  non-zero => silent al=0
 //   commit state (0x80C790)    -> [0xD3F4E0] + pending [0xBD07B0/B4] + [0xD3F4E4]
 //   spell known (0x53BD10)     -> spell-table slot present (0x4CFD20 source)
 //   spell usable (0x8009B0)    -> entry present + flag 0x40 clear

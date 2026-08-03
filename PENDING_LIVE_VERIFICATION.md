@@ -1462,3 +1462,68 @@ crash was a 0x40 buffer overflow; 0x400 is safe). All game calls VEH-guarded.
    - `gate=1` → the 0x80CD11 spell-attribute gate fails → spell-level;
    - `gate=0 entry=1` → the spell entry is fine → the failure is AFTER the sync
      resolution (target object check / CC state) → next fix is data-driven.
+
+---
+
+## 2026-08-02 (31st round, 22:15 session) — probe NAMES the gate family + RE of canCast/busy → 1.10.97-selprobe
+
+1.10.96 live (22:15) delivered the expanded probe:
+```
+CastProbe id=45477 desc40=E900753E r8=0x5607D038 r1=0x5607D038
+           entry=1 attr10=00050000 gate=0 bd078c=6D01E9D8 bd124c=00000001
+SafeNativeCast rc=0x4C658800 al=0
+```
+- `entry=1`, `gate=0` → the spell IS found and the 0x80CD11 spell-attribute
+  gate PASSES. The failing gate is NOT GetSpellEntry and NOT attr 0x40.
+- `desc40` lands + `r8` resolves → the sync path has a resolvable victim.
+- `bd124c=00000001` looked suspicious but RE PROVED IT IS A RED HERRING.
+
+### RE findings (this round, all disasm-verified):
+1. **canCast (0x5191C0) fully decoded**:
+   - `[0xD4139C]==0` → jump 0x519239 (PASS path): returns 1 unconditionally,
+     never reads +0x124C/+0x1250.
+   - `[0xD4139C]!=0` → jump table by mode: mode 2 → case 0 (0x5191E7)
+     → **return 0 ALWAYS**; mode 6 → case 1 (0x519218) → fail iff
+     `[obj+0x1250]==0`; modes 9/10/16 → case 2 (0x5191F7) → reads
+     `[obj+0x124C]`. **+0x124C is only read for modes 9/10/16 — NOT 2/6.**
+2. **Spell_C real logic (0x80CCE0) has ZERO direct 0xBD07B0 reads.** The two
+   SILENT al=0 gates (no error UI — matches "nothing happened"):
+   - **0x80CD88**: `0x74BA40(edi) != 0` → fail. edi = sync victim if the sync
+     ran (`[entry+0x28] & 0x40000`), else the PLAYER object.
+   - **0x80D063**: `canCast(2/6) == 0` → fail.
+3. **0x74BA40 IS a function** (earlier "it's a string" claim was WRONG):
+   `56 8B F1 E8 78 90 FC FF 84 C0 75 04 33 C0 5E C3` — "is unit busy": checks
+   `[unit+0xa30]` bit 0x400, `[unit+0xf60]` active-cast record (state != 3),
+   and the target's cast record.
+4. **0x524BF0 (register) decoded**: checks `[0xD4139C]` (busy → 0x513530 +
+   return); reads `[player+0xd0]+0x18` = desc+0x40 (UNIT_FIELD_TARGET); **if
+   the player HAS a target it EARLY-RETURNS and never touches 0xBD07B0**. It
+   only writes 0xBD07B0 when the player has NO target — exactly the
+   aura-search/tgt=no case where the user saw the selection change.
+5. **0xBD07B0/0xBD07B4 = kPendingCastLo/Hi — the commit "pending" GUID pair**
+   the game's cast-commit path uses.
+
+### FIX (1.10.97-selprobe)
+- **Transient selection**: for acquire-off casts, write the victim into
+  0xBD07B0/0xBD07B4 for the SYNCHRONOUS duration of Spell_C and restore the
+  user's previous selection immediately after. No frame update runs inside the
+  native call → the unitframe never renders the intermediate value, no
+  UNIT_TARGET event, no target change. desc+0x40 write (sync path) stays.
+- **Definitive probe**: reads mode (computed from attr0/fam), attr0/attr10/
+  attr28/fam via the PURE-READ SpellTableEntryRead (NO 0x4cfd20 call — it
+  could touch action/busy state right before the cast and skew the [0xD4139C]
+  gate we measure), plus d4139c, d413a4, obj1250, busyV/busyP (calls 0x74BA40
+  on victim AND player under VEH), a30V/f60V/a30P/f60P.
+
+### Live watchlist (1.10.97-selprobe)
+1. VER reads `1.10.97-selprobe`.
+2. `al=1` → **THE TRANSIENT SELECTION FIX WORKS — casts land with no target
+   change** (the 0xBD07B0 commit-pending pair was the missing registration
+   input).
+3. `busyV=1` → victim busy gate (0x80CD88) fails — the dummy/unit reads busy.
+4. `busyP=1` → player busy gate fails.
+5. `mode=2 d4139c!=0` → canCast gate (0x80D063) fails — force-zero
+   [0xD4139C] at cast time.
+6. `gate=0 entry=1 busyV=0 busyP=0 d4139c=0` but still al=0 → the failure is
+   in the POST-canCast checks (0x50f4d0(2) at 0x80D077, or the 0x80D087+
+   target checks) — next probe target.

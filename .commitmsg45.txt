@@ -1,0 +1,30 @@
+fix(addon): REVERT the round-44 facing gates — live-proven they were STILL unreliable (lockup + attempt storm + UI-error flood + aura-search inconsistency)
+
+User: "still getting ui error flood. and now aura search is even more
+inconsistent and buggy. and the rotation is locking up again."
+
+LIVE-PROVEN (13:42-13:43 log, 1.10.105-aa):
+- `wait facing:Icy Touch` with NO target (tgt=no) — a 30yd RANGED spell
+  blocked on "not facing".
+- `wait facing:Blood Strike xN` at edge=0yd/1yd point-blank, repeated five
+  times — the runtime ObjectIsFacing STILL returns confident `false` for an
+  engaged player (the exact round-40/41 failure mode).
+- Every facing-blocked slot re-evaluated EVERY frame (denials set no wait)
+  -> the `attempt` storm (~50 logs/sec) -> a UNIT_SPELLCAST/UI_ERROR EVENT
+  FLOOD -> XPerl ("bad argument #1 to 'lower', got nil") and GatherMate2
+  ("PerformAutoUpdate nil") crash cascades = the user's UI error flood. The
+  same gate blocked aura-search candidates (`facing:Icy Touch` for a search
+  hit) = "aura search more inconsistent".
+
+FIX (addon-only): REMOVED both round-44 facing gates (candidate path +
+target-relative path) — restored round-41 FINAL exactly: facing is
+DETECTION-ONLY, the client is the sole determinate authority, casts ALWAYS
+wire, an al=0 refusal is ONE recovered phantom (never a hold). Removed the
+now-unused skip_face_cast. KEPT:
+- LoS gate (reliable, user-requested "out of line of sight" prevention)
+- distance gates (oor / oor_unknown — round-44 user request, never wires a
+  candidate with unknown distance when the spell max range is known)
+- round-42 per-candidate last_why reset (fallthrough)
+- round-43 0x-prefix auto-attack detection + round-44 Auto Search feature
+
+Deployed 197 files (hash-verified). /reload to pick up.

@@ -2180,3 +2180,46 @@ attack condition. call it 'Auto Search'."
 3. NO "out of range" casts from unknown-distance candidates (oor_unknown
    falls through).
 4. Casts still land (al=1); no regression.
+
+---
+
+## 2026-08-03 (round 45) — REVERT the round-44 facing gates (live-proven regression)
+
+User: "still getting ui error flood. and now aura search is even more
+inconsistent and buggy. and the rotation is locking up again."
+
+### LIVE-PROVEN ROOT CAUSE — the round-44 "confident not-facing" gates were STILL wrong
+The 13:42-13:43 log (1.10.105-aa) shows:
+- wait facing:Icy Touch with **NO target** (	gt=no) — a 30yd RANGED spell
+  blocked on "not facing".
+- wait facing:Blood Strike xN at **edge=0yd/1yd point-blank**, repeated five
+  times — the runtime ObjectIsFacing STILL returns confident alse for an
+  engaged player (the exact round-40/41 failure mode).
+Every blocked slot re-evaluated EVERY frame (denials set no wait) → the
+ttempt storm (~50 lines/sec in the log) → a UNIT_SPELLCAST/UI_ERROR event
+flood → **XPerl** ("bad argument #1 to 'lower', got nil") and **GatherMate2**
+("PerformAutoUpdate nil") crash cascades = the user's UI error flood. The
+same gate blocked aura-search candidates (acing:Icy Touch for a search
+hit) = "aura search more inconsistent".
+
+### FIX (addon-only)
+REMOVED both facing gates (candidate path + target-relative path) — restored
+round-41 FINAL exactly: facing is DETECTION-ONLY, the client is the sole
+determinate authority, casts ALWAYS wire, an al=0 refusal is ONE recovered
+phantom (never a hold). Removed the now-unused skip_face_cast. KEPT:
+- LoS gate (reliable, user-requested "out of line of sight" prevention)
+- distance gates (oor / oor_unknown — the round-44 user request, never wires
+  a candidate with unknown distance when the spell max range is known)
+- round-42 per-candidate last_why reset (fallthrough)
+- round-43 0x-prefix auto-attack detection + Auto Search (round 44 feature)
+- round-41 shield / resolver AV dynamic page-commit
+
+### Live watchlist (after /reload)
+1. NO wait facing:X at ANY range/state (melee point-blank, ranged, no
+   target) — casts wire immediately.
+2. NO ttempt storm (the rotation enters gcd/cooldown waits after one
+   successful wire, not ~50 attempts/sec).
+3. XPerl / GatherMate2 errors stop (the event flood that triggered them is
+   gone); casts still land (al=1).
+4. Aura search wires the closest search candidate immediately (no facing
+   pre-block) and multi-dots the top-N.

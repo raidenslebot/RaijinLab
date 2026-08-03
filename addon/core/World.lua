@@ -3088,6 +3088,64 @@ function World.find_aura_search_target(opts)
     return best.token, best.guid, best.dist
 end
 
+-- 2026-08-03 (AUTO SEARCH — user feature): nearest hostile within auto-attack
+-- range for the Auto Attack slot's "Auto Search" toggle. Uses the runtime
+-- NearbyHostiles pack (epoch-cached snapshot math, NO client target needed,
+-- zero selection touch). Returns the closest living hostile whose CENTER is
+-- within `range` (default 6.0 = the runtime AttackTargetFor melee gate), or
+-- nil. Cache ~100ms so the executor's per-tick evaluation stays cheap.
+World._auto_attack_search_cache = nil
+function World.find_auto_attack_target(range)
+    range = tonumber(range) or 6.0
+    if range < 3 then range = 3 end
+    if range > 12 then range = 12 end
+    local tnow = (GetTime and GetTime()) or 0
+    local ac = World._auto_attack_search_cache
+    if ac and ac.range == range and (tnow - (ac.t or 0)) < 0.10 then
+        return ac.target
+    end
+    local target = nil
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "NearbyHostiles", range, 16)
+        if ok and type(packed) == "string" and packed ~= "" and packed ~= "0" then
+            local Ex = RaijinLab and RaijinLab.RotationExecutor
+            local idx = 0
+            local best_c = nil
+            -- Format: n|0xGUID:entry:x:y:z:center:edge:flags:hp:mhp:face|...
+            for part in string.gmatch(packed, "[^|]+") do
+                idx = idx + 1
+                if idx > 1 then
+                    local guid, entry, x, y, z, center, edge, flags, hp, mhp = string.match(part,
+                        "^(0[xX]%x+):(-?%d+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):(-?%d+):(-?%d+):(-?%d+):(-?%d+)$")
+                    if not guid then
+                        guid, entry, x, y, z, center, edge, flags, hp, mhp = string.match(part,
+                            "^(%x+):(-?%d+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):(-?%d+):(-?%d+):(-?%d+):(-?%d+)$")
+                        if guid then guid = "0x" .. guid end
+                    end
+                    if guid then
+                        guid = _guid_key(guid) or guid
+                        if not (Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid)) then
+                            local c = tonumber(center)
+                            local h = tonumber(hp)
+                            -- center must be real and within auto-attack range;
+                            -- dead units (hp <= 0) are not applicable.
+                            if c and c > 0 and c < 900 and c <= range and (h == nil or h > 0) then
+                                if not best_c or c < best_c then
+                                    best_c = c
+                                    target = { guid = guid, center = c, entry = tonumber(entry), hp = h }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    World._auto_attack_search_cache = { t = tnow, range = range, target = target }
+    return target
+end
+
 -- Actively target a unit for the rotation.
 -- NEVER call FrameScript TargetUnit from addon Lua (taints secure path and
 -- pops "RaijinLab tainted UNKNOWN()"). Always go through Actions -> runtime

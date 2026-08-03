@@ -2115,3 +2115,68 @@ session (1.10.105-aa):
    engage id=6603 ... ok`) and the swing starts.
 2. NO refused 6603 (`SafeNativeCast rc=... id=6603 al=0`) while the client is
    already auto-attacking the current target.
+---
+
+## 2026-08-03 (round 44 - addon-only, "Auto Search" feature + reliable distance/facing gates)
+
+User: "the target distance, and target facing basic checks seem to be
+inconsistent and allowing some casts that shouldnt be allowed. additionally the
+aura search is still extremely slow and inconsistent. and the rotation is
+locking up, i assume due to it still. i want an additional toggle for the auto
+attack condition. call it 'Auto Search'."
+
+### NEW FEATURE - "Auto Search" toggle on the Auto Attack condition
+- Conditions.lua `auto_repeat` gained a bool param `auto_search` (checkbox in
+  the Editor). Used with Invert ON ("not autoing"), the Auto Attack slot now
+  engages the current target OR the NEAREST HOSTILE within auto-attack range
+  when the player is not currently auto-attacking.
+- Engine.lua `slot_target_policy`: an auto_search slot becomes "optional" so
+  the slot is reachable with NO client target.
+- World.lua `find_auto_attack_target(range)`: parses the runtime
+  NearbyHostiles pack (n|0xGUID:entry:x:y:z:center:edge:flags:hp:mhp:face),
+  filters alive + center<=range + not blacklisted, closest-first, 100ms cache.
+- Executor.lua auto-attack branch: reads auto_search/invert from the slot;
+  with no usable current target it finds the nearest hostile (6.0yd) and
+  engages via `A.AttackEngage(guid)` - a ZERO-selection-touch engage, so
+  acquire-off is preserved (the client target/unitframe is never changed).
+  The "already autoing" gate uses the client IsAttacking flag (attacking
+  ANYTHING = skip, client is the authority).
+- Parser unit-tested with a realistic pack (closest alive in-range hostile
+  selected; dead + out-of-range excluded).
+
+### FIX - distance + facing basic-check inconsistency
+- FACING: the round 40/41 removal is REVERSED but with the now-RELIABLE
+  runtime: the runtime rejects |f|<0.0001 as UNDETERMINED (ObjectIsFacing ->
+  nil -> fail-open -> wire), so a CONFIDENT `false` (World.is_facing_guid ==
+  false) is a real "player faces away". The gate now blocks ONLY confident-
+  false in BOTH the candidate (try_list) path and the target-relative path
+  (last_why="facing"; the round-42 try_list falls through to the next
+  candidate). This stops the "target needs to be in front of you" red spam
+  WITHOUT the round-40 lockup (undetermined never blocks).
+- DISTANCE: the per-candidate range gate now NEVER wires a candidate whose
+  distance is unknown/unplaceable (nil/0/>=999) when the spell max range is
+  known (last_why="oor_unknown" -> next candidate). Only a measured center is
+  compared to the spell's real max range (NO tolerance, client-measures-center
+  rule preserved). When the spell max range is itself unknown, fail-open
+  (client is the final authority) - round-38 decision preserved.
+
+### AURA SEARCH SLOW/INCONSISTENT + LOCKUP - investigation
+- Runtime AuraSearch cache is already 50ms (reduced 18:16 for the same
+  complaint); Lua cache 50ms; aura-state cache 150ms; seed throttle 0.45s.
+- The "wait cooldown x83" holds in the 13:26-13:28 log are mostly REAL: all
+  melee abilities on their 6s CDs + the aura-search slots finding no NEW dot
+  target (nothing castable) -> the rotation correctly waits. The perceived
+  "lockup" is amplified when auto attack is also not engaging - the Auto
+  Search feature + the 0x-prefix/latch fixes address that path.
+- NEEDS LIVE: if the lockup persists with a specific example, capture the
+  `[rot] wait` + `/raijin why` + runtime log around it.
+
+### Deployed (197 files, addon-only). Live watchlist:
+1. Editor: the Auto Attack condition shows "Auto Search" checkbox; enabling it
+   + Invert ON makes the slot engage a nearby hostile (log `auto-attack search
+   tgt=0x...`) even with no client target.
+2. NO "target needs to be in front of you" red spam for casts where the player
+   genuinely faces away (confident-false skip) and NO lockup when undetermined.
+3. NO "out of range" casts from unknown-distance candidates (oor_unknown
+   falls through).
+4. Casts still land (al=1); no regression.

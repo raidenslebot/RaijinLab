@@ -188,6 +188,19 @@ function Engine.slot_target_policy(slot)
                     if policy ~= "forbid" then policy = "optional" end
                 end
             end
+            -- 2026-08-03 (AUTO SEARCH — user feature): an Auto Attack slot with
+            -- the auto_repeat condition's "Auto Search" toggle engages the
+            -- nearest hostile within auto-attack range even with NO current
+            -- client target — the executor searches (runtime NearbyHostiles)
+            -- and engages it itself via A.AttackEngage (zero selection touch).
+            -- Make the policy optional so the slot is reachable without a target.
+            if c.id == "auto_repeat" and c.args then
+                local as = (c.args.auto_search == true or c.args.auto_search == 1
+                    or c.args.auto_search == "true")
+                if as and policy ~= "forbid" then
+                    policy = "optional"
+                end
+            end
         end
     end
     -- Ground self-AoE (Consecration, DnD, ...) never requires a living target

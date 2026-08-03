@@ -449,9 +449,10 @@ Conditions.register("form_equals", {
 Conditions.register("auto_repeat", {
     name = "Auto-Attack / Auto-Shot",
     category = "Self",
-    description = "Melee auto-attack (Attack) or ranged auto-repeat (Auto Shot / wand Shoot) is currently active. Pick Melee, Ranged, or Any. Toggle Invert for 'not attacking' (e.g. to fire an opener that starts the swing).",
+    description = "Melee auto-attack (Attack) or ranged auto-repeat (Auto Shot / wand Shoot) is currently active. Pick Melee, Ranged, or Any. Toggle Invert for 'not attacking'. Auto Search (with Invert ON): when not autoing, engage the current target OR the nearest hostile within auto-attack range — zero target acquisition (the client's selection is never changed).",
     params = {
         { key = "mode", type = "string", default = "melee", label = "Repeat type", cycle = AUTO_MODE_CYCLE },
+        { key = "auto_search", type = "bool", default = false, label = "Auto Search" },
     },
     eval = function(ctx, args)
         local mode = string.lower(tostring(args.mode or "melee"))

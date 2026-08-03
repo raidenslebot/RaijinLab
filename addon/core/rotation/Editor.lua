@@ -234,7 +234,11 @@ local COND_SUMMARY = {
         return s
     end,
     auto_repeat = function(a)
-        return "auto-repeat: " .. prettyValue("auto_mode", a.mode or "melee")
+        local s = "auto-repeat: " .. prettyValue("auto_mode", a.mode or "melee")
+        if a.auto_search == true or a.auto_search == 1 or a.auto_search == "true" then
+            s = s .. " + Auto Search"
+        end
+        return s
     end,
     is_casting = function(a)
         local ic = a.include_channel

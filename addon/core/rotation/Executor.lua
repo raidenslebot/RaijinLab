@@ -2058,6 +2058,29 @@ function Executor.attempt_action(action, ctx)
 
     -- Auto Attack: engage once if needed; never CastSpell spam / never GCD.
     if is_auto_attack(sid, name) then
+        -- 2026-08-03 (AUTO SEARCH — user feature): the auto_repeat condition's
+        -- "Auto Search" toggle (used with Invert ON = "not autoing") engages a
+        -- nearby hostile within auto-attack range — the current target OR the
+        -- nearest applicable mob — when the player is not currently auto-
+        -- attacking. A.AttackEngage(guid) is a zero-selection-touch engage, so
+        -- acquire-off is preserved (the client's target/unitframe is never
+        -- changed). Read the flag from this slot's conditions.
+        local auto_search = false
+        local auto_search_invert = false
+        if action and action.slot and action.slot.conditions then
+            for _, c in ipairs(action.slot.conditions) do
+                if c and c.id == "auto_repeat" and c.args then
+                    if c.args.auto_search == true or c.args.auto_search == 1
+                        or c.args.auto_search == "true" then
+                        auto_search = true
+                    end
+                    if c.args.invert == true or c.args.invert == 1
+                        or c.args.invert == "true" then
+                        auto_search_invert = true
+                    end
+                end
+            end
+        end
         -- HARD RULE (Prompt.md): NEVER manually acquire a target here. When
         -- acquire is off the rotation must not change/acquire selection at all.
         -- Auto-targeting is permitted ONLY when a hostile/neutral unit is
@@ -2065,7 +2088,45 @@ function Executor.attempt_action(action, ctx)
         -- excluded) — and even then we let the GAME's natural targeting select
         -- it; we never TargetUnit. Act.Attack is a no-op without a selected
         -- target (runtime reads the client's selection), so it cannot acquire.
-        if not (UnitExists and UnitExists("target")) then
+        -- 2026-08-03 (AUTO SEARCH PATH): searching a nearby hostile and calling
+        -- A.AttackEngage(guid) does NOT acquire either — the runtime engages
+        -- the explicit GUID with zero selection writes (acquire-off safe).
+        local tgt_exists = (UnitExists and UnitExists("target"))
+        local tgt_ok = tgt_exists
+            and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target"))
+            and (UnitCanAttack and UnitCanAttack("player", "target"))
+        -- AUTO SEARCH: with no usable current target, engage the nearest hostile
+        -- within auto-attack range directly (zero selection touch).
+        if auto_search and auto_search_invert and not tgt_ok then
+            local WW = RaijinLab and RaijinLab.World
+            local aa = WW and WW.find_auto_attack_target and WW.find_auto_attack_target(6.0)
+            if aa and aa.guid then
+                -- Already autoing? The client's IsAttacking flag is the
+                -- authority: if it is attacking ANYTHING, never re-engage.
+                local already2 = false
+                if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+                    local okc2, cur2 = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsAttacking")
+                    if okc2 and type(cur2) == "string" then
+                        local flag2 = cur2:match("^([01])")
+                        if flag2 == "1" then already2 = true end
+                    end
+                end
+                if not already2 and Act and Act.AttackEngage then
+                    local okg = pcall(Act.AttackEngage, aa.guid)
+                    if okg then
+                        Executor._last_cast = { sid = 6603, name = "Auto Attack", via = "AttackEngage", t = now(), evidence = "attack_search" }
+                        Executor._recent = Executor._recent or {}
+                        Executor._recent[sid] = now() + 0.35
+                        Executor._recent[6603] = now() + 0.35
+                        dlog("cast", "auto-attack search tgt=%s c=%.1f", tostring(aa.guid), tonumber(aa.center) or 0)
+                        return true, "ok:attack_search", cast_snapshot(sid)
+                    end
+                end
+            end
+            -- No applicable nearby hostile found (or the engage was refused):
+            -- fall through to the no-target path for a clean wait. Never spins.
+        end
+        if not tgt_exists then
             if Act.Attack then pcall(Act.Attack) end
             -- Re-check after the (no-op) engage attempt.
             if not (UnitExists and UnitExists("target")) then
@@ -2101,22 +2162,20 @@ function Executor.attempt_action(action, ctx)
                 local flag, atk = cur:match("^([01])|0x([0-9a-fA-F]+)$")
                 if flag == "1" and atk then
                     local tgt = (UnitGUID and UnitGUID("target")) or ""
-                    if tgt ~= "" then
-                        -- 2026-08-03 (0x-PREFIX BUG — the "auto attack casts
-                        -- are not working" root cause, live-proven): the
-                        -- runtime returns "1|0xGUID" (hex WITHOUT the 0x
-                        -- prefix) but UnitGUID("target") returns "0xGUID"
-                        -- (WITH the 0x prefix). The old `atk:lower() ==
-                        -- tgt:lower()` was ALWAYS false → `already` was never
-                        -- true → the addon fired 6603 every 0.35s → the client
-                        -- refused EVERY cast ("already attacking", its
-                        -- AttackTargetGuid IS set) — live: every 6603 al=0 in
-                        -- the 13:16/13:19 sessions. Normalize the target GUID
-                        -- (strip 0x) before comparing.
-                        local tn = tgt:gsub("^0x", ""):lower()
-                        if atk:lower() == tn then
-                            already = true
-                        end
+                    -- 2026-08-03 (0x-PREFIX BUG — the "auto attack casts
+                    -- are not working" root cause, live-proven): the
+                    -- runtime returns "1|0xGUID" (hex WITHOUT the 0x
+                    -- prefix) but UnitGUID("target") returns "0xGUID"
+                    -- (WITH the 0x prefix). Normalize the target GUID
+                    -- (strip 0x) before comparing.
+                    local tn = tgt:gsub("^0x", ""):lower()
+                    if auto_search then
+                        -- Auto Search: the client is autoing ANYTHING — never
+                        -- re-engage (the client is the authority and would
+                        -- refuse a duplicate engage anyway).
+                        already = true
+                    elseif tgt ~= "" and atk:lower() == tn then
+                        already = true
                     end
                 end
             end
@@ -2644,25 +2703,25 @@ function Executor.attempt_action(action, ctx)
             --     genuine 1-tick skip, and the moment the player's facing is
             --     sufficient the native cache flips and this slot wires.
             if not last_why and not skip_face_cast and needs_enemy then
-                -- 2026-08-03 (ROUND 40 — facing is DETECTION-ONLY; the CLIENT is
-                -- the sole determinate authority; the rotation NEVER locks on a
-                -- facing guess). The developer-facing read on this Ascension
-                -- build is unreliable ([obj+0x7AC] intermittently returns 0.0),
-                -- so it misreport an engaged player as "not facing" and hard-
-                -- blocked every cast with 'wait facing:X x80+' (00:11: Blood
-                -- Strike + RANGED Icy Touch at edge=0yd). Full deterministic
-                -- behavior: WIRE and let the client decide — al=1 accepted or
-                -- al=0 refused ('not in front', recovered as one phantom),
-                -- never a multi-second hold. The client NEVER refuses a cast it
-                -- can accept based on a measurement we can't trust; a false
-                -- pre-block was the source of every lockup. Facing is still
-                -- used for candidate ORDERING (closest + facing-first in
-                -- AuraSearchPacked) but never holds the wire.
-                --
-                -- (Removed: the earlier point-blank exemption and the
-                -- 'if facing == false then last_why="facing" end' block — both
-                -- were band-aids on the unreliable read; the fixed behavior is
-                -- to not gate on it at all and let the client be the referee.)
+                -- 2026-08-03 (FACING GATE RE-ADDED — RELIABLE): round 40/41
+                -- removed the facing pre-block because the [obj+0x7AC] read
+                -- intermittently returned 0.0 (misread as a real facing of
+                -- north) → false "not facing" → the "wait facing:X x80+"
+                -- lockup. The runtime NOW rejects |f|<0.0001 as UNDETERMINED
+                -- (ObjectIsFacing → nil → fail-open → the cast wires), so a
+                -- CONFIDENT `false` (is_facing_guid == false) is a genuine
+                -- "the player faces away from the target" — the client WILL
+                -- refuse with "target needs to be in front of you" (the red
+                -- error the user reported). Gate on confident-false ONLY:
+                --   * is_facing_guid == false → skip this candidate (the
+                --     round-42 try_list falls through to the next candidate)
+                --   * true / nil (undetermined) → wire (client is the final
+                --     authority; undetermined never locks up)
+                -- This stops the "target needs to be in front of you" spam
+                -- without ever freezing on an unreliable measurement.
+                if W and W.is_facing_guid and W.is_facing_guid(cg) == false then
+                    last_why = "facing"
+                end
             end
             -- WIRE (range was already validated in live_castable; facing gate above)
             -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
@@ -2687,24 +2746,41 @@ function Executor.attempt_action(action, ctx)
                 local _, cmaxR = spell_range_info(cast_sid)
                 local rt_melee, rt_maxR = runtime_spell_melee(cast_sid)
                 if rt_maxR and rt_maxR > 0 then cmaxR = rt_maxR end
-                if cdist and cdist > 0 and cdist < 900 and cmaxR and cmaxR > 0 then
-                    -- 2026-08-02 (14:09 RANGE GATE FIX — the client measures
-                    -- CENTER, not edge): the OLD gate subtracted combat reaches
-                    -- (cedge = cdist - pr - tr) and compared THAT to maxR+0.5.
-                    -- The client refuses on CENTER distance (live: a 5yd melee
-                    -- at edge=2.5 / center=5.5 got "Out of range"; edge=2.0 /
-                    -- center=5.0 too). The old gate allowed center up to
-                    -- maxR+0.5+pr+tr ≈ 8.5yd for a 5yd spell — every far add
-                    -- passed the gate and the client refused "too far away".
-                    -- Compare the CENTER distance directly against the spell's
-                    -- real max range — NO tolerance (2026-08-02, user
-                    -- directive: perfect range). The old ranged +1.5yd slack
-                    -- let a 20yd spell wire at 21.5yd center -> client "Out
-                    -- of range" refusal. A spell never casts beyond maxR.
-                    if cdist > cmaxR then
-                        last_why = "oor"
+                if cmaxR and cmaxR > 0 then
+                    if cdist and cdist > 0 and cdist < 900 then
+                        -- 2026-08-02 (14:09 RANGE GATE FIX — the client measures
+                        -- CENTER, not edge): the OLD gate subtracted combat reaches
+                        -- (cedge = cdist - pr - tr) and compared THAT to maxR+0.5.
+                        -- The client refuses on CENTER distance (live: a 5yd melee
+                        -- at edge=2.5 / center=5.5 got "Out of range"; edge=2.0 /
+                        -- center=5.0 too). The old gate allowed center up to
+                        -- maxR+0.5+pr+tr ≈ 8.5yd for a 5yd spell — every far add
+                        -- passed the gate and the client refused "too far away".
+                        -- Compare the CENTER distance directly against the spell's
+                        -- real max range — NO tolerance (2026-08-02, user
+                        -- directive: perfect range). The old ranged +1.5yd slack
+                        -- let a 20yd spell wire at 21.5yd center -> client "Out
+                        -- of range" refusal. A spell never casts beyond maxR.
+                        if cdist > cmaxR then
+                            last_why = "oor"
+                        end
+                    else
+                        -- 2026-08-03 (NO BLIND WIRES — "target distance ...
+                        -- allowing some casts that shouldnt be allowed"): a
+                        -- candidate whose distance is unknown/unplaceable
+                        -- (nil/0/>=999) with a KNOWN spell max range is NEVER
+                        -- wired blind — that was the "edge=999 -> Out of range"
+                        -- spam. The runtime/World search already excludes
+                        -- unplaceable units, so reaching here is an edge; skip
+                        -- to the next candidate (round-42 fallthrough) rather
+                        -- than cast at an unverified distance.
+                        last_why = "oor_unknown"
                     end
                 end
+                -- When cmaxR is unknown (both GetSpellInfo and the runtime
+                -- decode failed): fail-open — the client is the final authority
+                -- (round-38 decision for spell-range-unknown; a hard refuse
+                -- here would be a silent "never casts" for custom spells).
             end
             -- 2026-08-02 (PER-CANDIDATE LOS): live_castable/Engine check LoS on
             -- the HEAD candidate only; the try_list loop wires candidates #2+ with
@@ -2843,25 +2919,27 @@ function Executor.attempt_action(action, ctx)
                         _c_los = false
                     end
                 end
-                -- 2026-08-03 (ROUND 40 — facing is DETECTION-ONLY, never a hard
-                -- block; the CLIENT is the sole determinate authority). The
-                -- developer-facing read on this Ascension build is unreliable:
-                -- [obj+0x7AC] intermittently returns 0.0, so an engaged player
-                -- staring at a mob was misreported as "not facing" and the
-                -- rotation hard-blocked the cast with 'wait facing:X x80+"
-                -- (00:11 session: Blood Strike at edge=0yd, and even RANGED
-                -- Icy Touch at edge=0yd). User directive (repeated): facing is
-                -- detection-only, NO single ability may lock up the rotation,
-                -- and nothing may be a guess. The fully deterministic answer is
-                -- to WIRE the cast and let the client be the referee: it
-                -- returns al=1 (accepted) or al=0 (refused 'not in front',
-                -- recovered as one phantom, logged) — a determinate outcome
-                -- either way, NEVER a multi-second stall. We keep only the LoS
-                -- confident-block (a real, reliable measurement the user has
-                -- always accepted). Facing is surfaced for tuning but never
-                -- holds the wire.
+                -- 2026-08-03 (FACING GATE RE-ADDED — RELIABLE): same as the
+                -- candidate path. Round 40/41 removed the pre-block because the
+                -- [obj+0x7AC] read intermittently returned 0.0 → false "not
+                -- facing" → the "wait facing:X x80+" lockup. The runtime now
+                -- rejects |f|<0.0001 as UNDETERMINED (ObjectIsFacing → nil →
+                -- fail-open → wire), so a CONFIDENT false (is_facing_guid ==
+                -- false) is a real "player faces away" — the client WILL refuse
+                -- with "target needs to be in front of you" (the red error the
+                -- user reported). Gate on confident-false ONLY; true/nil wire
+                -- (client is the final authority; undetermined never locks up).
+                local _c_face = true
+                if W and W.is_facing_guid and needs_enemy
+                    and not is_ground_self_aoe(sid, name) then
+                    if W.is_facing_guid(cg2) == false then
+                        _c_face = false
+                    end
+                end
                 if not _c_los then
                     last_why = "los"
+                elseif not _c_face then
+                    last_why = "facing"
                 else
                     if Act.CastQueued then
                         cok, creason = Act.CastQueued(cast_sid, cg2, NOTGT)

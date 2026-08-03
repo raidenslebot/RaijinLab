@@ -451,12 +451,33 @@ local function apply_pending_refuse(reason, fail_name)
         -- (round 47's distrust was earned; trust must be too).
         local fw = Executor._face_wire
         if fw and fw.sid == sid and (now() - (fw.t or 0)) < 3.0 then
+            -- THREE OUTCOMES, NOT TWO. The first version only counted a wire
+            -- that claimed "facing" and was then refused. Live evidence shows
+            -- the dominant case is neither: the runtime facing cache sits at
+            -- 1e9 (UNDETERMINED) on most frames - FacingLive logs face=1e9 with
+            -- a valid object pointer - so `cand.facing` is nil, the pre-wire
+            -- gate (which only blocks a CONFIDENT false) never fires, and the
+            -- wire goes out blind into a guaranteed client refusal.
+            --
+            -- Counting them apart is the whole diagnosis: `lied` indicts the
+            -- READ, `unknown` indicts the CACHE never being populated. Guessing
+            -- between those from a screenshot is how three previous rounds of
+            -- facing work went in the wrong direction.
+            local DL = RaijinLab and RaijinLab.DevLog
             if fw.verdict == true then
                 Executor._face_audit_lied = (Executor._face_audit_lied or 0) + 1
-                local DL = RaijinLab and RaijinLab.DevLog
                 if DL and DL.log then
                     DL.log("rotation", "FACING READ LIED: wired %s verdict=facing, client refused (lied=%d)",
                         tostring(sid), Executor._face_audit_lied)
+                end
+            elseif fw.verdict == nil then
+                Executor._face_audit_unknown = (Executor._face_audit_unknown or 0) + 1
+                if DL and DL.log then
+                    DL.log("rotation",
+                        "FACING UNDETERMINED at wire: %s had no facing verdict, client refused "
+                        .. "(unknown=%d lied=%d) - the runtime facing cache is not being populated",
+                        tostring(sid), Executor._face_audit_unknown,
+                        Executor._face_audit_lied or 0)
                 end
             end
         end
@@ -2878,7 +2899,12 @@ function Executor.attempt_action(action, ctx)
                     if nf == true then
                         Executor._face_wire = {
                             t = now(), sid = cast_sid,
-                            verdict = (cand and cand.facing == true) or false,
+                            -- THREE-VALUED, deliberately. `or false` collapsed
+                            -- nil (undetermined) into false and made the audit
+                            -- unable to tell "the read lied" from "there was no
+                            -- read" - which is the case that actually dominates
+                            -- live. Keep nil as nil.
+                            verdict = (cand and cand.facing),
                         }
                     end
                 end

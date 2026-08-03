@@ -567,7 +567,53 @@ do
         (BasicRules.check(base({ player_aura_has = { [77] = true } }), 904)) == true)
   check("forbidden aura present blocks",
         (BasicRules.check(base({ player_aura_has = { [88] = true } }), 905)) == false)
+  -- INTENT vs TARGET RELATIONSHIP (checklist 2/7/8). A harmful ability on a
+  -- friendly unit and a heal on a hostile one are guaranteed client refusals.
+  RaijinLab.World.spell_target_class = function(sid)
+    if sid == 910 then return "enemy" end
+    if sid == 911 then return "ally" end
+    if sid == 912 then return "self" end
+    if sid == 913 then return "any" end
+    return nil
+  end
+  local function ictx(isEnemy, extra)
+    local c = base(extra); c.target_is_enemy = isEnemy; return c
+  end
+  check("harmful on a FRIENDLY target blocks",
+        (BasicRules.check(ictx(false), 910)) == false)
+  check("harmful on a hostile target passes",
+        (BasicRules.check(ictx(true), 910)) == true)
+  check("helpful on a HOSTILE target blocks",
+        (BasicRules.check(ictx(true), 911)) == false)
+  check("helpful on a friendly target passes",
+        (BasicRules.check(ictx(false), 911)) == true)
+  check("self-targeted ignores the relationship",
+        (BasicRules.check(ictx(true), 912)) == true)
+  check("any-target ignores the relationship",
+        (BasicRules.check(ictx(false), 913)) == true)
+  check("unknown intent -> pass (client referees)",
+        (BasicRules.check(ictx(false), 914)) == true)
+  check("unknown relationship -> pass",
+        (BasicRules.check(base(), 910)) == true)
+  -- WHERE check_intent IS THE ONLY GATE. With policy "require",
+  -- check_target_relationship already refuses a friendly target, so the
+  -- harmful branch below never runs. An "optional"-policy slot skips that
+  -- gate entirely - a mutation of the harmful branch was caught by ZERO
+  -- checks until this case existed, which is the definition of dead cover.
+  do
+    local c = ictx(false)
+    c.slot_target_policy = "optional"
+    local ok2, why2 = BasicRules.check(c, 910)
+    check("harmful on friendly blocks even when policy skips target_rel", ok2 == false)
+    check("and it is the INTENT gate that says so", why2 == "harmful_on_friendly")
+    local c2 = ictx(true)
+    c2.slot_target_policy = "optional"
+    check("helpful on hostile blocks under optional policy too",
+          (BasicRules.check(c2, 911)) == false)
+  end
+  RaijinLab.World.spell_target_class = nil
   RaijinLab.World.spell_req = nil
 end
+
 
 return 0

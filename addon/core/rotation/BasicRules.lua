@@ -348,6 +348,36 @@ end
 -- Player-death / ghost is checked in check_caster_busy via UnitIsDeadOrGhost.
 -- Everything else in this module now reads through `rt` only.
 
+-- INTENT vs TARGET RELATIONSHIP (checklist items 2, 7 and 8).
+--
+-- A harmful ability aimed at a friendly unit, or a heal aimed at a hostile
+-- one, is a GUARANTEED client refusal - exactly the class of red error that is
+-- supposed to be structurally impossible. Until the spell record was decoded
+-- there was no way to know a spell's intent, so this could only be inferred
+-- from ctx.target_is_enemy, which cannot tell a heal from a nuke. Now
+-- EffectImplicitTargetA[0] says who the spell is for.
+--
+-- Both sides need POSITIVE evidence: an unknown intent or an unknown
+-- relationship passes and lets the client referee. Nothing here guesses.
+local function check_intent(ctx, sid, slot)
+    local W = RaijinLab and RaijinLab.World
+    local cls = W and W.spell_target_class and W.spell_target_class(sid)
+    if cls == nil or cls == "any" or cls == "self" then return true end
+    -- aura_search resolves its own unit later and is re-gated there.
+    if slot_has_aura_search(slot) then return true end
+    if ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid then return true end
+    if not bool(ctx and ctx.target_exists, false) then return true end
+    local is_enemy = ctx and ctx.target_is_enemy
+    if is_enemy == nil then return true end          -- relationship unknown
+    if cls == "enemy" and is_enemy == false then
+        return false, "harmful_on_friendly"
+    end
+    if cls == "ally" and is_enemy == true then
+        return false, "helpful_on_hostile"
+    end
+    return true
+end
+
 local function check_target_relationship(ctx, sid, slot, name)
     local policy = policy_of(slot, ctx)
     if policy == "optional" or policy == "forbid" or policy == "corpse" then
@@ -376,6 +406,17 @@ local function check_target_relationship(ctx, sid, slot, name)
         if ctx.target_is_enemy == false then
             -- Multi-dot may cast on a different GUID while a friendly is selected.
             if slot_has_aura_search(slot) then return true end
+            -- HEAL/BUFF AUTOMATIC FRIENDLY ALLOWANCE (checklist item 4).
+            -- "require a target" means a target is REQUIRED, not that it must
+            -- be hostile. A friendly selection is exactly right for an
+            -- ally-targeted spell, and this gate used to refuse every one of
+            -- them - a heal or friendly buff could not be cast at all under the
+            -- default policy. Only a spell the record says is ENEMY-targeted is
+            -- refused here; check_intent then adjudicates the reverse case.
+            local W = RaijinLab and RaijinLab.World
+            local cls = W and W.spell_target_class and W.spell_target_class(sid)
+            if cls == "ally" or cls == "any" or cls == "self" then return true end
+            if cls == nil then return true end   -- intent unknown: client referees
             return false, "not_enemy"
         end
     end
@@ -515,6 +556,9 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 
     ok, why = check_target_relationship(ctx, sid, slot, name)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="target_rel", why=why}; return false, why end
+
+    ok, why = check_intent(ctx, sid, slot)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="intent", why=why}; return false, why end
 
     ok, why = check_range(ctx, sid, slot, name)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="range", why=why}; return false, why end

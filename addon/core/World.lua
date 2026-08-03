@@ -3096,6 +3096,34 @@ function World.spell_is_self_area(sid)
     return a0 == 18 or a0 == 22
 end
 
+-- WHO THIS SPELL IS FOR, from EffectImplicitTargetA[0].
+--
+-- 3.3.5 implicit-target ids: 1 UNIT_CASTER, 6 UNIT_TARGET_ENEMY,
+-- 15/16/17 area-enemy, 18 DEST_CASTER, 21 UNIT_TARGET_ALLY, 22 SRC_CASTER,
+-- 25 UNIT_TARGET_ANY, 26 gameobject, 27 area-ally, 31/32 area-ally,
+-- 57 raid, 20/37 party/raid ally.
+--
+-- Returns "enemy" | "ally" | "self" | "any" | nil(unknown). This is the data
+-- the "harmful ability on a friendly target" and "heal on a hostile target"
+-- checks need; before it, intent was inferred from ctx.target_is_enemy alone,
+-- which cannot tell a heal from a nuke and so let both classes of guaranteed
+-- client refusal through.
+local ENEMY_T = { [6]=1, [15]=1, [16]=1, [17]=1, [24]=1, [28]=1, [53]=1, [54]=1, [77]=1 }
+local ALLY_T  = { [21]=1, [20]=1, [27]=1, [31]=1, [32]=1, [37]=1, [41]=1, [43]=1,
+                  [46]=1, [56]=1, [57]=1 }
+local SELF_T  = { [1]=1, [18]=1, [22]=1, [38]=1, [39]=1, [40]=1, [61]=1 }
+function World.spell_target_class(sid)
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local a0 = tonumber(r.ta0) or 0
+    if a0 == 0 then return nil end
+    if ENEMY_T[a0] then return "enemy" end
+    if ALLY_T[a0] then return "ally" end
+    if SELF_T[a0] then return "self" end
+    if a0 == 25 then return "any" end
+    return nil                        -- unmapped: unknown, never guessed
+end
+
 function World.spell_needs_facing(sid)
     -- The client enforces the front arc exactly when FacingCasterFlags bit 1
     -- is set. This is per-spell truth: Ascension relaxed it on some standard

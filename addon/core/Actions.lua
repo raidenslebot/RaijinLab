@@ -70,6 +70,7 @@ A.CAST_FACE_IF_NEEDED    = 1
 A.CAST_NO_TARGET_CHANGE  = 2
 A.CAST_SKIP_IF_NOT_FACING = 4
 A.CAST_CHECK_LOS         = 8
+A.CAST_NO_ACQUIRE        = 16
 
 local function parse_cast_result(res)
     if res == true or res == 1 or res == "true" then
@@ -165,6 +166,49 @@ function A.CanCast(spellId, unitOrGuid, flags)
     return parse_cast_result(res)
 end
 
+-- Native-frame cast queue (2026-08-02, FINAL — user ABSOLUTE DIRECTIVE):
+-- STAGE a cast. Spell_C is NEVER called from the Lua bridge. The native frame
+-- hook (NativeHook.cpp TickHookBody, main thread, no Lua on the stack) drains
+-- the queue and runs Spell_C from pure native context. This is the structural
+-- fix for the 0x512B07 Lua-VM corruption (Spell_C's cast-feedback re-enters
+-- FrameScript/Lua, which corrupts the VM when a bridge C-closure is on the
+-- stack). The caller (Executor) has already done the Lua-side gates
+-- (cooldown / facing / range / LoS); this path only queues.
+-- Returns ok, reason ("ok"|"queue_full"|"bad_guid"|"no_spell"|"no_runtime").
+function A.CastQueued(spellId, unitOrGuid, flags)
+    if not A.ensure() then return false, "no_runtime" end
+    spellId = tonumber(spellId) or 0
+    if spellId <= 0 then return false, "no_spell" end
+    flags = tonumber(flags) or 0
+    local had_unit = (unitOrGuid ~= nil and unitOrGuid ~= "" and unitOrGuid ~= 0)
+    local g = guid_of(unitOrGuid)
+    if had_unit and not g then
+        return false, "bad_guid"
+    end
+    local res
+    if g then
+        res = rt("CastQueued", spellId, g, flags)
+    else
+        res = rt("CastQueued", spellId, nil, flags)
+        if type(res) ~= "string" then
+            res = rt("CastQueued", spellId, 0, flags)
+        end
+    end
+    if type(res) ~= "string" then
+        return false, "no_runtime"
+    end
+    local ok = res:match("^1|") ~= nil
+    local reason = res:match("^%d+|(.*)$") or "?"
+    return ok, reason
+end
+
+-- Number of casts currently staged in the native queue (diagnostics; 0 = idle).
+function A.CastQueueStatus()
+    if not A.ensure() then return 0 end
+    local res = rt("CastQueueStatus")
+    return tonumber(res) or 0
+end
+
 function A.FaceTowardGuid(unitOrGuid)
     if not A.ensure() then return false end
     local g = guid_of(unitOrGuid)
@@ -184,27 +228,26 @@ end
 
 function A.CastSpellByName(name, unitOrGuid)
     if not name or name == "" then return false end
-    local id = nil
-    if GetSpellInfo then
-        -- reverse lookup not stock; try known book id if provided as number-string
-        id = tonumber(name)
-    end
-    if not id and GetSpellLink then
-        -- leave name path to ExecSecure cast by name ONLY via runtime
-        if not A.ensure() then return false end
-        local g = guid_of(unitOrGuid)
-        local code
-        if g then
-            -- still prefer id if GetSpellInfo from name via link scan fails
-            code = string.format("CastSpellByName(%q)", name)
-        else
-            code = string.format("CastSpellByName(%q)", name)
+    -- 2026-08-02 (TAINT + CRASH FIX): prefer resolving the spell NAME to an ID
+    -- and casting NATIVELY via Spell_C (no ExecSecure). GetSpellInfo is a
+    -- read-only query (never HW-gated / protected) and returns the spell ID as
+    -- its 7th value on 3.3.5. The old name path used runtime ExecSecure
+    -- (FrameScript_Execute from inside the bridge) — a nested-VM re-entry crash
+    -- surface AND the "Tainted call to a secure function" source.
+    local id = tonumber(name)
+    if not id and GetSpellInfo then
+        local ok, _, _, _, _, _, sid = pcall(GetSpellInfo, tostring(name))
+        if ok then
+            local n = tonumber(sid)
+            if n and n > 0 then id = n end
         end
-        -- Prefer resolving spell id from name via GetSpellInfo reverse is hard;
-        -- use runtime ExecSecure which is C-origin "*"
-        return not not rt("ExecSecure", code)
     end
-    if id then return A.CastSpell(id, unitOrGuid) end
+    if id then
+        return A.CastSpell(id, unitOrGuid)
+    end
+    -- Last resort for an unresolvable custom name: runtime ExecSecure. The
+    -- runtime refuses this from the bridge (SetCurrentLuaState guard) so it
+    -- can only run on non-bridge paths.
     if not A.ensure() then return false end
     return not not rt("ExecSecure", string.format("CastSpellByName(%q)", tostring(name)))
 end
@@ -291,7 +334,19 @@ end
 
 function A.Attack()
     if not A.ensure() then return false end
+    -- 2026-08-02 (NO BLOCKED ACTION): the runtime's "Attack" now STAGES the
+    -- 6603 engage — the native frame hook runs Spell_C(6603) (no Lua on the
+    -- stack). Calling it from the bridge origin was the client's protected
+    -- "StartAttack" taint (blocked-action dialog; live "Attack engage nrc=0").
     return not not rt("Attack")
+end
+
+-- 2026-08-02: stage an explicit-GUID auto-attack engage (native hook runs it).
+function A.AttackEngage(guid)
+    if not A.ensure() then return false end
+    local g = guid_of(guid)
+    if not g then return false end
+    return not not rt("AttackEngage", g)
 end
 
 function A.StopAttack()
@@ -406,6 +461,17 @@ function A.StopMoving()
     return not not rt("StopMoving")
 end
 
+-- 2026-08-02 (NO BLOCKED ACTION): stage a NATIVE halt. The runtime's frame
+-- hook (main thread, no Lua on the stack) releases every held movement key +
+-- stops + commits. Calling MoveForward(false)/MouselookStop/StopMoving from
+-- this Lua-dispatched RuntimeCall pops the "blocked from an action only
+-- available to the Blizzard UI" dialog (client taint on bridge-origin calls to
+-- protected APIs). The suite disable path uses this.
+function A.HaltMovement()
+    if not A.ensure() then return false end
+    return not not rt("HaltMovement")
+end
+
 function A.MoveForward(start)
     if not A.ensure() then return false end
     return not not rt(start and "MoveForwardStart" or "MoveForwardStop")
@@ -517,6 +583,7 @@ if RaijinLab then
     function RaijinLab:ObjectInteract(obj) return A.Interact(obj) end
     function RaijinLab:MoveTo(x, y, z) return A.MoveTo(x, y, z) end
     function RaijinLab:FaceDirection(a) return A.Face(a) end
+    function RaijinLab:CastQueued(id, unit, flags) return A.CastQueued(id, unit, flags) end
 end
 
 return A

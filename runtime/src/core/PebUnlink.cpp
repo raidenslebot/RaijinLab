@@ -1,4 +1,6 @@
 #include "PebUnlink.h"
+#include "core/Log.h"
+#include <atomic>
 
 // Fully local PEB/LDR layout for x86 — do not depend on incomplete winternl PEB_LDR_DATA.
 namespace RL::Stealth {
@@ -137,6 +139,32 @@ bool ApplyLoadStealth(HMODULE self) {
     if (doWipe)
         ok = WipePeHeaders(self) && ok;
     return ok;
+}
+
+// ---- Deferred stealth (2026-08-01) ---------------------------------------
+// DllMain only remembers the module; the worker applies unlink+wipe after the
+// world is fully loaded. This keeps absolute stealth while never mutating the
+// process LDR lists / our headers during the game's fragile world-load Lua VM
+// window (which crashes the game's Lua VM — see ApplyLoadStealth docs).
+namespace {
+HMODULE g_deferredSelf = nullptr;
+std::atomic<bool> g_deferredApplied{false};
+} // namespace
+
+void RequestDeferredApply(HMODULE self) {
+    g_deferredSelf = self;
+    // Note: we deliberately do NOT apply here. ApplyDeferredStealth() does.
+}
+
+void ApplyDeferredStealth() {
+    if (g_deferredApplied.load(std::memory_order_acquire)) return;
+    if (!g_deferredSelf) return;
+    bool expected = false;
+    if (!g_deferredApplied.compare_exchange_strong(expected, true))
+        return; // another thread won the race
+    bool ok = ApplyLoadStealth(g_deferredSelf);
+    if (!ok)
+        RL::Log::Warn("stealth: deferred apply returned false (unlink/wipe skipped?)");
 }
 
 } // namespace RL::Stealth

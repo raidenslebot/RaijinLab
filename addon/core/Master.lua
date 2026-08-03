@@ -188,18 +188,19 @@ function M.halt_movement()
     if R.Nav and R.Nav.cancel then pcall(R.Nav.cancel) end
     local A = R.Actions
     if A then
-        -- Explicitly release each key as well as StopMoving: a held key survives
-        -- StopMoving on this client, which is exactly how a "stopped" bot keeps
-        -- walking. These take a boolean (false = release), NOT a *Stop name.
-        for _, fn in ipairs({ "MoveForward", "StrafeLeft", "StrafeRight",
-                              "TurnLeft", "TurnRight" }) do
-            if A[fn] then pcall(A[fn], false) end
+        -- 2026-08-02 (NO BLOCKED ACTION — user directive): calling the
+        -- client's PROTECTED movement APIs (MoveForward(false), MouselookStop,
+        -- StopMoving, CommitMovement) from this Lua-dispatched RuntimeCall pops
+        -- "RaijinLab has been blocked from an action only available to the
+        -- Blizzard UI" — the client treats bridge-origin calls as addon taint
+        -- regardless of the HW-gate patch. STAGE one native halt instead: the
+        -- runtime's frame hook (main thread, no Lua on the stack) releases
+        -- every held key + stops + commits. This is the native-carrier rule.
+        if A.HaltMovement then
+            pcall(A.HaltMovement)
+            return
         end
-        -- Mouselook is a held state of its own; leaving it engaged keeps the
-        -- camera driving the character's yaw after everything else has let go.
-        if A.MouselookStop then pcall(A.MouselookStop) end
-        if A.StopMoving then pcall(A.StopMoving) end
-        if A.CommitMovement then pcall(A.CommitMovement) end
+        -- Fallback (runtime offline): nothing we can safely do without taint.
     end
 end
 

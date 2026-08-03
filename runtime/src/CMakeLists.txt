@@ -19,8 +19,12 @@ add_library(RaijinLabRuntime SHARED
   game/GameTime.cpp
   game/ObjectManager.cpp
   game/Actions.cpp
+  game/GameState.cpp
   game/MainThread.cpp
   game/TaintPatch.cpp
+  game/LiveScan.cpp
+  game/SpellDB.cpp
+  game/NativeHook.cpp
   lua/Lua.cpp
   bridge/Dispatch.cpp
   bridge/Ipc.cpp

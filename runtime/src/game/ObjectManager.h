@@ -21,6 +21,9 @@ struct Object {
     int faction = 0;          // UNIT_FIELD_FACTIONTEMPLATE
     uint64_t unitTarget = 0;  // UNIT_FIELD_TARGET (who they are attacking)
     float scale = 1.f;
+    uint32_t goBytes1 = 0;    // GAMEOBJECT_BYTES_1 (state/type/artKit/animProgress)
+    uint32_t npcFlags = 0;    // UNIT_FIELD_NPC_FLAGS (quest giver / vendor / trainer)
+    int creatureType = -1;    // CREATURE_TYPE_* (8 = CRITTER); -1 unknown / non-unit
     std::string name; // optional, expensive
 };
 
@@ -31,6 +34,17 @@ void OnLuaReload();
 // om.enable config AND post-rebind hard freeze cleared (SoftRefresh/enum gate).
 bool IsEnabled();
 void Refresh(bool force = false);
+// ---- Lua-context gate (2026-08-01, 0x512B07 crash fix) ---------------------
+// PERMANENT RULE (documented in ObjectManager.cpp): object enumeration
+// (Refresh/SoftRefresh -> BuildUnitSnapshotLocked -> EnumVisibleObjects) must
+// NEVER run inside the game's Lua VM call chain. It WRITES to every visible
+// object mid-walk and, under the deep Lua_IsLinuxClient -> Dispatch -> OM
+// stack, the VM's stack/TValues get corrupted -> later "Lua calls 0x512B00
+// with garbage" crash. The bridge therefore calls SetInLuaContext(true) around
+// every RuntimeCall; enumeration is deferred when the flag is set and the
+// cached snapshot is served instead. SetInLuaContext(false) after the call.
+void SetInLuaContext(bool inLua);
+bool InLuaContext();
 // True after EnumVisibleObjects AVed once this inject — enumvis stays off;
 // linked-list walk continues (list-only mode). Full OM is NOT killed.
 bool EnumIsDead();
@@ -56,6 +70,16 @@ bool HasUnitAura(uint64_t guid, int spellId, int* outStacks = nullptr);
 // living attackable units in range matching aura missing (wantMissing) or present.
 // "n|0xGUID:entry:center:edge:face:hp:mhp|..." sorted face then dist.
 std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN = 8);
+
+// WHOLE-OM SNAPSHOT (2026-08-02): one call returns the entire cached object
+// list packed as ONE string. This is the shared-memory / zero-copy pattern —
+// the runtime IS the OM authority; the addon's Lua OM parses this instead of
+// making ~5 bridge calls per object per tick (each an ObjectPtr game call =
+// the lag + Guard-recovery crash vector). Pack format per object:
+//   "0xGUID:TYPE:ENTRY:FLAGS:DYNFLAGS:LVL:HP:MHP:X:Y:Z:FACE:FACTION:0xTARGET:SCALE:GOBYTES1:NPCFLAGS"
+// TYPE is the same bitmask ObjectTypeFlags returns (Object=1, Unit=32, ...).
+std::string OmSnapshotPacked();
+
 size_t Count();
 size_t Count(ObjectType type);
 const Object* At(size_t index1based);
@@ -78,6 +102,14 @@ Vec3 PositionLocalFromPtr(uintptr_t ptr);
 // Pack cached position-layout discovery into buf (for PosProbe).
 void PosLayoutDiag(char* buf, size_t bufN);
 float Facing(uint64_t guid);
+// Live local-player facing via the client's exact resolution path (camera →
+// GUID → ObjectPtr → +0x7AC). 1e9 on fail. This is the RE-correct source —
+// LocalPtr()+0x7AC returns 0 on this build while the client's own GetPlayerFacing
+// returns a real value (verified live 2026-08-02).
+float FacingLiveLocal();
+// Native frame-hook refresh of the live-facing cache (main thread, no Lua on
+// stack). The Lua reader prefers this cache; no game call from the VM.
+void RefreshLiveFacingCache();
 // Combat reach / bounding radius in yards (0 if unreadable).
 // Multi-path: unit field 0x7D4/0x7D0 + descriptor UNIT_FIELD_* (0x10C/0x108).
 float CombatReach(uint64_t guid);

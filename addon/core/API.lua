@@ -622,24 +622,20 @@ function RaijinLab:SetNoClipModes(modes)
 end
 
 function RaijinLab:UnlockMovement()
-    if RaijinLab.movement_locked then
-        MoveForwardStart = RaijinLab.oMoveForwardStart
-        MoveBackwardStart = RaijinLab.oMoveBackwardStart
-        StrafeLeftStart = RaijinLab.oStrafeLeftStart
-        StrafeRightStart = RaijinLab.oStrafeRightStart
-        CameraOrSelectOrMoveStart = RaijinLab.oCameraOrSelectOrMoveStop
-        JumpOrAscendStart = RaijinLab.oJumpOrAscendStart
-        RaijinLab.movement_locked = false
-    end
+    -- 2026-08-02 (TAINT FIX): no-op. Previously this RESTORED the stock
+    -- protected movement globals (MoveForwardStart etc.) — but saving and
+    -- re-assigning a PROTECTED global from addon Lua marks it tainted, and the
+    -- game's secure code later calling it pops "RailinLab has been blocked
+    -- from an action only available to the Blizzard UI". Movement is routed
+    -- through the runtime (RaijinLab.Actions.*) everywhere; these globals are
+    -- never needed. Never write them.
+    RaijinLab.movement_locked = false
 end
 
 function RaijinLab:LockMovement()
-    MoveForwardStart = function() end
-    MoveBackwardStart = function() end
-    StrafeLeftStart = function() end
-    StrafeRightStart = function() end
-    JumpOrAscendStart = function() end
-    CameraOrSelectOrMoveStart = function() end
+    -- 2026-08-02 (TAINT FIX): no-op. Overwriting the protected movement
+    -- globals with no-ops is a taint source (see UnlockMovement). Movement is
+    -- fully controlled via the runtime; no global patching required.
     RaijinLab.movement_locked = true
 end
 
@@ -2163,20 +2159,32 @@ end
 
 -- Raw camera fields (position, 3x3 view matrix rows, FOV) for a Lua-side
 -- world->screen projection. Runtime packs "px|py|pz|fx|fy|fz|rx|ry|rz|ux|uy|uz|fov".
--- Cached for one frame so a whole draw pass shares one read.
+--
+-- 2026-08-02 (CRASH / bridge-storm FIX): the comment promised a frame cache but
+-- there was none — every call hit the bridge, and PlausiblePlayerPos called
+-- this TWICE per ObjectPosition("player"), so the rotation's combat tick issued
+-- dozens of GetCameraData bridge round-trips per frame (~2500 bridge calls/sec
+-- in the crash forensics, inside the game's Lua VM). Cache ~100ms: the camera
+-- barely moves that fast and the addon never needs fresher data.
+local _cam_cache = { t = 0, v = nil }
 function RaijinLab:GetCameraData()
+    local now = (GetTime and GetTime()) or 0
+    local c = _cam_cache
+    if c and c.v and (now - c.t) < 0.1 then return c.v end
     local r = RaijinLab.RuntimeCall and RaijinLab:RuntimeCall("GetCameraData")
     if type(r) ~= "string" then return nil end
     local p = {}
     for tok in r:gmatch("([%-%d%.eE]+)") do p[#p + 1] = tonumber(tok) end
     if #p < 13 then return nil end
-    return {
+    local v = {
         px = p[1], py = p[2], pz = p[3],
         fx = p[4], fy = p[5], fz = p[6],       -- view-matrix row 0 (forward)
         rx = p[7], ry = p[8], rz = p[9],       -- row 1 (right)
         ux = p[10], uy = p[11], uz = p[12],    -- row 2 (up)
         fov = p[13],
     }
+    _cam_cache = { t = now, v = v }
+    return v
 end
 
 -- Calibration knobs for the projection (adjusted live once /raijin cam confirms

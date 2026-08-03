@@ -52,9 +52,24 @@ local function sanitize_reach(v, default, cap)
     return v
 end
 
+-- 2026-08-02 (bridge-storm cut): combat reach / bounding of the PLAYER are
+-- constant for a fight; cache ~250ms so per-hostile scans (unit_distances)
+-- stop issuing a bridge round-trip for the same "player" value every time.
+-- Other refs (targets) are cached ~120ms — enough for the hitbox model.
+local _reach_cache = { t = 0, player = 1.5 }
+local _bound_cache = { t = 0, player = 0 }
 local function combat_reach_of(ref)
     if not ref or not (RaijinLab and RaijinLab.ObjectCombatReach) then
         return 1.5
+    end
+    local tnow = (GetTime and GetTime()) or 0
+    if ref == "player" then
+        local c = _reach_cache
+        if (tnow - c.t) < 0.25 then return c.player end
+        local ok, v = pcall(RaijinLab.ObjectCombatReach, RaijinLab, ref)
+        local r = (ok and sanitize_reach(v, 1.5, 100)) or 1.5
+        _reach_cache = { t = tnow, player = r }
+        return r
     end
     local ok, v = pcall(RaijinLab.ObjectCombatReach, RaijinLab, ref)
     if not ok then return 1.5 end
@@ -64,6 +79,15 @@ end
 local function bounding_of(ref)
     if not ref or not (RaijinLab and RaijinLab.ObjectBoundingRadius) then
         return 0
+    end
+    local tnow = (GetTime and GetTime()) or 0
+    if ref == "player" then
+        local c = _bound_cache
+        if (tnow - c.t) < 0.25 then return c.player end
+        local ok, v = pcall(RaijinLab.ObjectBoundingRadius, RaijinLab, ref)
+        local r = (ok and sanitize_reach(v, 0, 80)) or 0
+        _bound_cache = { t = tnow, player = r }
+        return r
     end
     local ok, v = pcall(RaijinLab.ObjectBoundingRadius, RaijinLab, ref)
     if not ok then return 0 end
@@ -251,9 +275,20 @@ local function _live_player_facing()
             return f
         end
     end
-    if GetPlayerFacing then
+    -- CRITICAL (2026-08-01): Lua GetPlayerFacing() NO-OPs from insecure addon
+    -- code — the handler's player lookup fails and it returns 0.0 (facing EAST)
+    -- as the "no player" sentinel. Treating 0.0 as a real facing made every
+    -- facing check compare against EAST → "facing" spam while the user was
+    -- clearly facing the target. Only use Lua when the runtime is ABSENT, and
+    -- even then reject the 0.0 no-op sentinel (a real facing of exactly 0 is
+    -- vanishingly rare and always self-corrects next tick).
+    local runtime_loaded = RaijinLab and RaijinLab.HasRuntime
+        and pcall(RaijinLab.HasRuntime, RaijinLab)
+    if not runtime_loaded and GetPlayerFacing then
         local f = GetPlayerFacing()
-        if type(f) == "number" then return f end
+        if type(f) == "number" and f ~= 0 and f == f and f > -0.01 and f < 6.30 then
+            return f
+        end
     end
     if RaijinLab and RaijinLab.ObjectFacing then
         return RaijinLab:ObjectFacing("player")
@@ -270,7 +305,10 @@ function World.heading_error_to_guid(guid)
     if not px or not tx then return nil end
     local face = _live_player_facing()
     if not face then return nil end
-    local ang = math.atan2(ty - py, tx - px)
+    -- 2026-08-02 (18:16 FACING CONVENTION FIX): atan2 is 0=+X/east CCW; the
+    -- client's facing (0x7AC / GetPlayerFacing) is 0=+Y/north CW. Convert the
+    -- heading the same way the runtime does: facing_wow = pi/2 - atan2(dy,dx).
+    local ang = (math.pi / 2) - math.atan2(ty - py, tx - px)
     local diff = ang - face
     while diff > math.pi do diff = diff - 2 * math.pi end
     while diff < -math.pi do diff = diff + 2 * math.pi end
@@ -318,11 +356,48 @@ end
 
 -- Facing check. Returns true / false / nil (nil = undetermined — cannot measure).
 -- Multi-dot MUST cast when nil (client is last authority). Only skip when false.
+--
+-- 2026-08-02 (RUNTIME-AUTHORITY REORDER — user directive "runtime and hooks are
+-- all we should be using"): the runtime's ObjectIsFacing is the PRIMARY authority.
+-- It resolves the player EXACTLY like the client's GetPlayerFacing (camera →
+-- GUID → ObjectPtr → [obj+0x7AC], native frame-hook cached), so it cannot
+-- disagree with what the client will refuse. The Lua math path below was
+-- running FIRST and could return a confident-but-WRONG answer (the runtime
+-- PlayerFacing() read 0 → every cast blocked with "facing"). Runtime first;
+-- Lua math only when the runtime is absent.
+--
+-- 2026-08-02 (POINT-BLANK / 0yd): when the target occupies the player's own
+-- position the heading is geometrically degenerate (atan2 of a near-zero
+-- vector is garbage), which made the Lua math path report "not facing" on a
+-- mob the player was standing on and fighting ("wait facing:Blood Strike
+-- x161" at edge=0yd). The runtime path handles this; the Lua fallback below
+-- treats a point-blank target as facing (the client's own arc check passes a
+-- target at zero distance — you cannot be "behind" something inside you).
 function World.is_facing_guid(guid, half_arc)
     if not guid then return false end
     half_arc = tonumber(half_arc) or World.CAST_FACE_HALF_ARC
+    -- RUNTIME PRIMARY (native authority, hook-cached live facing).
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
+        local ok, v = pcall(RaijinLab.RuntimeCall, RaijinLab, "ObjectIsFacing", "player", guid, half_arc)
+        if ok and v ~= nil then
+            return v == true or v == 1 or v == "true"
+        end
+    end
+    -- Lua fallback (only when runtime absent / bridge unavailable).
     local err = World.heading_error_to_guid(guid)
     if err ~= nil then
+        -- Point-blank: heading is degenerate; a target at your feet is facing.
+        local ppx, ppy = false, false
+        local ttx, tty = false, false
+        if RaijinLab and RaijinLab.ObjectPosition then
+            ppx, ppy = RaijinLab:ObjectPosition("player")
+            ttx, tty = RaijinLab:ObjectPosition(guid)
+        end
+        if ppx and ttx then
+            local dx, dy = ttx - ppx, tty - ppy
+            if (dx * dx + dy * dy) < 1.0 then return true end
+        end
         return math.abs(err) <= half_arc
     end
     local c = World._hostiles_cache
@@ -330,13 +405,6 @@ function World.is_facing_guid(guid, half_arc)
         local row = c.by_guid[tostring(guid)]
         if row and row.facing ~= nil and (not c.t or ((GetTime and GetTime()) or 0) - c.t < 0.08) then
             return row.facing and true or false
-        end
-    end
-    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
-        and RaijinLab:HasRuntime() then
-        local ok, v = pcall(RaijinLab.RuntimeCall, RaijinLab, "ObjectIsFacing", "player", guid, half_arc)
-        if ok and v ~= nil then
-            return v == true or v == 1 or v == "true"
         end
     end
     -- Undetermined: not false. Callers that need bool for "can wire" treat nil as allow.
@@ -411,6 +479,57 @@ function World.target_is_targeting_you()
     if pg and tg and RaijinLab and RaijinLab.ObjectTarget then
         local ok, dest = pcall(RaijinLab.ObjectTarget, RaijinLab, tg)
         if ok and dest and tostring(dest) == tostring(pg) then return true end
+    end
+    return false
+end
+
+-- True when a HOSTILE or NEUTRAL unit is ACTIVELY attacking the local player.
+-- This is the ONLY condition under which the rotation may let the game's
+-- natural targeting acquire a target (Prompt.md rule: acquire OFF must never
+-- manually target; auto-target is allowed ONLY when a hostile/neutral is
+-- targeting / casting / damaging the player — heals/buffs excluded).
+-- Signals (any): (a) current target is hostile/neutral AND targeting the
+-- player (targettarget == player, witnessed by Lua + runtime UnitTarget);
+-- (b) casting/channeling a spell at the player; (c) a hostile in combat with
+-- the player (damage proxy — a hostile that is fighting is damaging us).
+-- Friendly units (reaction >= 5) are NEVER a threat (healers/buffers).
+function World.hostile_or_neutral_attacking_me()
+    if not (UnitExists and UnitExists("target")) then return false end
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then return false end
+    -- Hostile / neutral gate (UnitReaction: 1-2 hostile, 3-4 neutral, >=5 friendly).
+    local hostile = false
+    if UnitCanAttack then
+        hostile = UnitCanAttack("player", "target")
+    end
+    if not hostile and UnitReaction then
+        local r = UnitReaction("target", "player")
+        if r == nil then return false end
+        if r >= 5 then return false end        -- friendly — healers/buffers, never threat
+        hostile = (r <= 2)                     -- hated/hostile
+    end
+    -- Actively targeting the player.
+    if World.target_is_targeting_you() then return true end
+    -- Casting / channeling a spell AT the player (harmful by construction: a
+    -- friendly would never be attackable — heals/buffs are excluded by the
+    -- hostile/neutral gate above).
+    if UnitGUID then
+        local pg = UnitGUID("player")
+        if pg then
+            if UnitCastingInfo then
+                local _, _, _, _, _, ct = UnitCastingInfo("target")
+                if ct and tostring(ct):lower() == tostring(pg):lower() then return true end
+            end
+            if UnitChannelInfo then
+                local _, _, _, _, _, ct = UnitChannelInfo("target")
+                if ct and tostring(ct):lower() == tostring(pg):lower() then return true end
+            end
+        end
+    end
+    -- Damaging the player: a hostile/neutral engaged in combat with us.
+    if hostile and UnitAffectingCombat and UnitAffectingCombat("target") then
+        -- Combat alone can be against a group member; require they are in
+        -- combat AND we are in combat (fighting each other).
+        if UnitAffectingCombat and UnitAffectingCombat("player") then return true end
     end
     return false
 end
@@ -581,36 +700,63 @@ end
 
 function World.collect_from_om()
     local out = {}
-    if not RaijinLab or not RaijinLab.RuntimeCall then return out end
-    local n = tonumber(RaijinLab:RuntimeCall("GetObjectCount") or 0) or 0
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime()) then return out end
     local px, py, pz = 0, 0, 0
     if RaijinLab.ObjectPosition then
         px, py, pz = RaijinLab:ObjectPosition("player")
     end
     local pr = combat_reach_of("player")
-    for i = 1, math.min(n, 256) do
-        local guid = RaijinLab:RuntimeCall("GetObjectWithIndex", i)
-        if guid then
-            local typ = tonumber(RaijinLab:RuntimeCall("ObjectTypeFlags", guid) or 0) or 0
-            local x, y, z = RaijinLab:ObjectPosition(guid)
-            local entry = tonumber(RaijinLab:RuntimeCall("ObjectId", guid) or 0) or 0
-            local center = (x and px) and dist2(px, py, x, y) or dist3(px, py, pz, x, y, z)
-            local tr = combat_reach_of(guid)
-            local edge = center - pr - tr
-            if edge < 0 then edge = 0 end
-            out[#out + 1] = {
-                guid = guid,
-                entry = entry,
-                type = typ,
-                x = x or 0, y = y or 0, z = z or 0,
-                dist = center,
-                dist_center = center,
-                dist_edge = edge,
-                p_reach = pr,
-                t_reach = tr,
-                precise = (x ~= nil),
-                source = "om",
-            }
+    -- 2026-08-02: ONE OmSnapshot call (runtime OM authority) instead of the
+    -- per-object GetObjectWithIndex/ObjectTypeFlags/ObjectPosition/ObjectId
+    -- loop (each an ObjectPtr game call = crash + lag vector). Reach uses the
+    -- snapshot scale as a proxy (scale ~= bounding radius for most objects).
+    local ok, snap = pcall(RaijinLab.RuntimeCall, RaijinLab, "OmSnapshot")
+    if not ok or type(snap) ~= "string" or snap == "" or snap == "0" then return out end
+    local first = true
+    local seen = {}
+    for part in string.gmatch(snap, "[^|]+") do
+        if first then
+            first = false
+        else
+            -- 0xGUID:TYPE:ENTRY:FLAGS:DYNFLAGS:LVL:HP:MHP:X:Y:Z:FACE:FACTION:0xTARGET:SCALE:GOBYTES1:NPCFLAGS:CREATURETYPE
+            local g, tf, id, fl, df, lvl, hp, mhp,
+                  x, y, z, face, fac, tg, sc, gb1, npcf, ct =
+                string.match(part,
+                    "^(0[xX]%x+):(%d+):(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+):(-?%d+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):(-?%d+):(0[xX]%x+):([%-%d%.]+):(%d+):(%d+):(-?%d+)$")
+            if g and not seen[g] then
+                seen[g] = true
+                -- 2026-08-02 (CRITTER FILTER): creature type 8 = CREATURE_TYPE_
+                -- CRITTER — never a combat target (the runtime already excludes
+                -- them from AuraSearch/NearbyHostiles; this is defense in depth
+                -- for any Lua-side hostile iteration over the full snapshot).
+                if tonumber(ct) == 8 then
+                    -- skip critters entirely
+                else
+                    local tx, ty, tz = tonumber(x), tonumber(y), tonumber(z)
+                    local center = 999
+                    if tx and px then center = dist2(px, py, tx, ty)
+                    elseif tx then center = dist3(px, py, pz, tx, ty, tz) end
+                    local tr = tonumber(sc) or 1.5
+                    if tr <= 0 then tr = 1.5 end
+                    local edge = center - pr - tr
+                    if edge < 0 then edge = 0 end
+                    out[#out + 1] = {
+                        guid = g,
+                        entry = tonumber(id) or 0,
+                        type = tonumber(tf) or 0,
+                        x = tx or 0, y = ty or 0, z = tz or 0,
+                        dist = center,
+                        dist_center = center,
+                        dist_edge = edge,
+                        p_reach = pr,
+                        t_reach = tr,
+                        precise = (tx ~= nil),
+                        source = "om",
+                        creatureType = tonumber(ct) or -1,
+                    }
+                end
+            end
         end
     end
     return out
@@ -726,18 +872,16 @@ end
 function World.note_unit_died(guid)
     if not guid then return end
     local now = (GetTime and GetTime()) or 0
+    -- 2026-08-02 (CRASH FIX): this runs from the CLEU event handler
+    -- (World.on_combat_log). NO bridge call from an event dispatch — the
+    -- synchronous ObjectPosition here was another VM re-entry surface. Use the
+    -- already-cached position only; the corpse resolver fills a pending entry
+    -- from the snapshot on the next tick. A pending corpse without a position
+    -- is collected only when the OM verifies it (never invented).
+    local last = World._last_unit_pos[guid]
     local x, y, z
-    if RaijinLab and RaijinLab.ObjectPosition then
-        x, y, z = RaijinLab:ObjectPosition(guid)
-    end
+    if last and last.x then x, y, z = last.x, last.y, last.z end
     if not x then
-        local last = World._last_unit_pos[guid]
-        if last and last.x then x, y, z = last.x, last.y, last.z end
-    end
-    if not x then
-        -- Remember GUID only. Do NOT invent a player-position corpse: the client
-        -- will refuse Soul Capture with "no corpses available" if we cast on a
-        -- ghost entry the OM/client cannot see. Collect only when OM verifies.
         World._death_corpses[guid] = { x = nil, y = nil, z = nil, t = now, pending = true }
         return
     end
@@ -854,15 +998,14 @@ function World.user_interaction_state()
                 end
             end
         end
-        if st == "free" then
-            for i = 1, 4 do
-                local f = _G["StaticPopup" .. i]
-                if f and f.IsShown and f:IsShown() then
-                    st = "popup"
-                    break
-                end
-            end
-        end
+        -- DELIBERATELY NOT checking StaticPopup1-4. System dialogs (the
+        -- "addon blocked" / error popups) must NEVER freeze the rotation: the
+        -- 01:34 crash showed the client's Lua protected-call wrapper flagging
+        -- our EnumVisibleObjects fault as a blocked action, which popped a
+        -- StaticPopup and froze every slot on user_busy forever. Real player
+        -- interactions (loot/gossip/quest/trade/...) are already caught above
+        -- via GetNumLootItems + INTERACT_FRAMES, so dropping the popup check
+        -- cannot interrupt legitimate gameplay.
     end
     World._uistate = st
     World._uistate_t = t
@@ -950,69 +1093,59 @@ function World.collect_corpses(max_range)
 
     -- 2) Object manager: Corpse objects + dead Units (health 0 / DEAD dynflag).
     --    Mid-combat, dead NPCs stay in the OM as Unit type long after nameplates drop.
-    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.ObjectPosition then
+    --    2026-08-02: ONE OmSnapshot call (runtime IS the OM authority) replaces
+    --    the old per-object GetUnitCount/GetUnitWithIndex/GetObjectCount/
+    --    GetObjectWithIndex/ObjectTypeFlags/ObjectDynamicFlags/ObjectPosition
+    --    loops — each was an ObjectPtr game call = the Guard-recovery crash
+    --    vector (live 1.10.69 RVA 0x788A crash during this exact loop).
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime() then
         local corpseFlag = (RaijinLab.enums and RaijinLab.enums.ObjectTypeFlags
             and RaijinLab.enums.ObjectTypeFlags.Corpse) or CORPSE_TYPEFLAG
         local unitFlag = (RaijinLab.enums and RaijinLab.enums.ObjectTypeFlags
             and RaijinLab.enums.ObjectTypeFlags.Unit) or UNIT_TYPEFLAG
         local deadFlag = (RaijinLab.enums and RaijinLab.enums.UnitDynamicFlags
             and RaijinLab.enums.UnitDynamicFlags.UNIT_DYNFLAG_DEAD) or UNIT_DYNFLAG_DEAD
-
-        -- Prefer typed unit enum when available (faster + complete).
-        local unit_n = tonumber(RaijinLab:RuntimeCall("GetUnitCount") or 0) or 0
-        if unit_n > 0 then
-            for i = 1, math.min(unit_n, 256) do
-                local guid = RaijinLab:RuntimeCall("GetUnitWithIndex", i)
-                if guid and not seen[guid] then
-                    local x, y, z = RaijinLab:ObjectPosition(guid)
-                    if x then
-                        local dead = false
-                        if RaijinLab.ObjectDynamicFlags then
-                            local ok, flags = pcall(RaijinLab.ObjectDynamicFlags, RaijinLab, guid)
-                            flags = tonumber(flags) or 0
-                            if ok and _has_flag(flags, deadFlag) then dead = true end
-                        end
-                        -- CLEU said this GUID died: treat as corpse even if dynflags lag.
-                        if not dead and World._death_corpses[guid] then dead = true end
-                        if not dead then
-                            _remember_living_pos(guid, x, y, z)
-                        else
-                            -- Refresh death memory with a real OM position.
-                            local info = World._death_corpses[guid]
-                            if info then info.x, info.y, info.z, info.approx, info.pending = x, y, z or 0, nil, false end
-                            push(guid, nil, dist3(px, py, pz, x, y, z), "om_unit", x, y, z, true)
-                        end
-                    end
-                end
-            end
-        end
-
-        local n = tonumber(RaijinLab:RuntimeCall("GetObjectCount") or 0) or 0
-        for i = 1, math.min(n, 256) do
-            local guid = RaijinLab:RuntimeCall("GetObjectWithIndex", i)
-            if guid and not seen[guid] then
-                local typ = tonumber(RaijinLab:RuntimeCall("ObjectTypeFlags", guid) or 0) or 0
-                if _has_flag(typ, corpseFlag) then
-                    local x, y, z = RaijinLab:ObjectPosition(guid)
-                    if x then
-                        push(guid, nil, dist3(px, py, pz, x, y, z), "om_corpse", x, y, z, true)
-                    end
-                elseif _has_flag(typ, unitFlag) then
-                    local x, y, z = RaijinLab:ObjectPosition(guid)
-                    if x then
-                        local dead = false
-                        if RaijinLab.ObjectDynamicFlags then
-                            local ok, flags = pcall(RaijinLab.ObjectDynamicFlags, RaijinLab, guid)
-                            flags = tonumber(flags) or 0
-                            if ok and _has_flag(flags, deadFlag) then dead = true end
-                        end
-                        if not dead and World._death_corpses[guid] then dead = true end
-                        if not dead then
-                            _remember_living_pos(guid, x, y, z)
-                        else
-                            local info = World._death_corpses[guid]
-                            if info then info.x, info.y, info.z, info.approx, info.pending = x, y, z or 0, nil, false end
-                            push(guid, nil, dist3(px, py, pz, x, y, z), "om_unit", x, y, z, true)
+        local okSnap, snap = pcall(RaijinLab.RuntimeCall, RaijinLab, "OmSnapshot")
+        if okSnap and type(snap) == "string" and snap ~= "" and snap ~= "0" then
+            local first = true
+            for part in string.gmatch(snap, "[^|]+") do
+                if first then
+                    first = false
+                else
+                    -- 0xGUID:TYPE:ENTRY:FLAGS:DYNFLAGS:LVL:HP:MHP:X:Y:Z:FACE:FACTION:0xTARGET:SCALE:GOBYTES1:NPCFLAGS:CREATURETYPE
+                    local g, tf, id, fl, df, lvl, hp, mhp,
+                          x, y, z, face, fac, tg, sc, gb1, npcf, ct =
+                        string.match(part,
+                            "^(0[xX]%x+):(%d+):(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+):(-?%d+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):(-?%d+):(0[xX]%x+):([%-%d%.]+):(%d+):(%d+):(-?%d+)$")
+                    if g and not seen[g] then
+                        tf = tonumber(tf) or 0
+                        df = tonumber(df) or 0
+                        hp = tonumber(hp) or 0
+                        mhp = tonumber(mhp) or 0
+                        -- 2026-08-02 (CRITTER): creature type 8 is never a
+                        -- corpse/cast target — skip (defense in depth).
+                        local isCritter = (tonumber(ct) or -1) == 8
+                        if _has_flag(tf, corpseFlag) then
+                            local cx, cy, cz = tonumber(x), tonumber(y), tonumber(z)
+                            if cx then
+                                push(g, nil, dist3(px, py, pz, cx, cy, cz), "om_corpse", cx, cy, cz, true)
+                            end
+                        elseif _has_flag(tf, unitFlag) and not isCritter then
+                            local ux, uy, uz = tonumber(x), tonumber(y), tonumber(z)
+                            if ux then
+                                -- Dead: hp 0 on nonzero max OR DEAD dynflag OR CLEU memory.
+                                local dead = (mhp and mhp > 0 and hp and hp <= 0)
+                                    or _has_flag(df, deadFlag)
+                                    or World._death_corpses[g] ~= nil
+                                if not dead then
+                                    _remember_living_pos(g, ux, uy, uz)
+                                else
+                                    local info = World._death_corpses[g]
+                                    if info then info.x, info.y, info.z, info.approx, info.pending = ux, uy, uz or 0, nil, false end
+                                    push(g, nil, dist3(px, py, pz, ux, uy, uz), "om_unit", ux, uy, uz, true)
+                                end
+                            end
                         end
                     end
                 end
@@ -1131,6 +1264,57 @@ local function _prune_aura_bags(now)
     end
 end
 
+-- 2026-08-02 (CRASH FIX — persistent 0x512B07 Lua-VM corruption): the combat-
+-- log handler (World.on_combat_log) fires the INSTANT a cast lands
+-- (SPELL_AURA_APPLIED) and called NoteUnitAura SYNCHRONOUSLY from inside the
+-- game's CLEU event dispatch. That bridge re-entry corrupted the game's Lua
+-- VM (live forensics: NoteUnitAura was the last bridge call before the crash
+-- 6ms later at 0x512B07 reading a garbage closure). ALL runtime aura-note
+-- bridge calls are now queued and flushed on the next frame via C_Timer.After(0)
+-- — a normal Lua execution context, NEVER inside an event dispatch. The Lua
+-- side-effect cache stays synchronous (pure Lua, safe).
+World._pending_aura_notes = {}
+World._pending_aura_flush = false
+
+function World._flush_pending_aura_notes()
+    World._pending_aura_flush = false
+    local q = World._pending_aura_notes
+    World._pending_aura_notes = {}
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and RaijinLab:HasRuntime()) then return end
+    for i = 1, #q do
+        local n = q[i]
+        if n and n.gkey then
+            if n.op == "note" then
+                pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura",
+                    n.gkey, n.sid, n.stacks or 1, n.dur or 21)
+            else
+                pcall(RaijinLab.RuntimeCall, RaijinLab, "ClearUnitAura", n.gkey, n.sid)
+            end
+        end
+    end
+end
+
+local function queue_aura_note(op, gkey, sid, stacks, dur)
+    if not gkey or not sid or sid <= 0 then return end
+    local q = World._pending_aura_notes
+    q[#q + 1] = { op = op, gkey = gkey, sid = sid, stacks = stacks, dur = dur }
+    if #q > 96 then World._flush_pending_aura_notes() return end -- never unbounded
+    if not World._pending_aura_flush then
+        World._pending_aura_flush = true
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, function()
+                if World._flush_pending_aura_notes then
+                    pcall(World._flush_pending_aura_notes, World)
+                end
+            end)
+        else
+            World._pending_aura_flush = false
+            World._flush_pending_aura_notes()
+        end
+    end
+end
+
 function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     local gkey = _guid_key(guid)
     if not gkey then return end
@@ -1154,10 +1338,11 @@ function World.note_aura_on_guid(guid, spellId, spellName, stacks, duration)
     if material then
         World._aura_search_cache = nil
     end
-    -- RUNTIME is the authority. Lua cache is diagnostic only.
-    if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
-        and RaijinLab:HasRuntime() then
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "NoteUnitAura", gkey, sid, stacks, dur)
+    -- RUNTIME is the authority. Lua cache is diagnostic only. The bridge call
+    -- is DEFERRED (queue_aura_note) so it never runs inside an event dispatch
+    -- (the crash vector above).
+    if sid > 0 then
+        queue_aura_note("note", gkey, sid, stacks, dur)
     end
     if not key then return end
     World._aura_by_guid[gkey] = World._aura_by_guid[gkey] or {}
@@ -1184,9 +1369,8 @@ function World.clear_aura_on_guid(guid, spellId, spellName)
     local gkey = _guid_key(guid)
     if not gkey then return end
     local sid = tonumber(spellId) or 0
-    if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
-        and RaijinLab:HasRuntime() then
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "ClearUnitAura", gkey, sid)
+    if sid > 0 then
+        queue_aura_note("clear", gkey, sid, 0, 0)  -- deferred (event-dispatch safe)
     end
     local bag = World._aura_by_guid[gkey]
     if not bag then return end
@@ -1287,11 +1471,24 @@ function World.guid_aura_state(guid, spell_id, aura_name)
     end
     if sid > 0 and RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
         and RaijinLab:HasRuntime() then
+        -- 2026-08-02 (aura_search speed): the multi-dot second pass calls this
+        -- per candidate per tick — a HasUnitAura BRIDGE ROUND-TRIP each time is
+        -- why aura_search felt "criminally slow". The runtime aura notes only
+        -- change on CLEU events, so a ~150ms cache is safe and cuts ~3-4x the
+        -- bridge calls (2 aura_search slots x up to 8 candidates).
+        local kk = gkey .. ":" .. tostring(sid)
+        local ac = World._aura_state_cache
+        local tnow = (GetTime and GetTime()) or 0
+        if ac and ac.key == kk and (tnow - (ac.t or 0)) < 0.15 then
+            return ac.has, ac.stacks, ac.rem
+        end
         local ok, stacks = pcall(RaijinLab.RuntimeCall, RaijinLab, "HasUnitAura", gkey, sid)
         stacks = (ok and tonumber(stacks)) or 0
         if stacks and stacks > 0 then
+            World._aura_state_cache = { key = kk, t = tnow, has = true, stacks = stacks, rem = 0 }
             return true, stacks, 0
         end
+        World._aura_state_cache = { key = kk, t = tnow, has = false, stacks = 0, rem = 0 }
         -- Runtime missing: fall through to Lua cache (optimistic notes).
     end
     local bag = World._aura_by_guid[gkey] or World._aura_by_guid[tostring(guid)]
@@ -2695,6 +2892,41 @@ local function aura_search_tokens()
     return { "target", "focus", "pet", "targettarget", "focustarget", "pettarget", "mouseover" }
 end
 
+-- 2026-08-02 (NO FALLBACKS — user directive): structured logging for the
+-- search/range subsystem (RaijinLab.DevLog convention).
+local function _dlog(cat, ...)
+    local DL = RaijinLab and RaijinLab.DevLog
+    if DL and DL.log then DL.log(cat, ...) end
+end
+World.dlog = _dlog
+
+-- AUTHORITATIVE spell max range (2026-08-02, NO FALLBACKS — the "basic check"
+-- for physical range). Decodes the client's loaded Spell.dbc range entry via
+-- the runtime SpellMeleeInfo — the SAME source the rotation's range gates use,
+-- so the search and the cast can never disagree about what a spell can reach.
+-- Returns the real max range (yards) or nil = HARD UNKNOWN (callers MUST fail
+-- the cast/search — never a silent 30/40-yard fallback). Cached 60s/spell
+-- (spell range is static data).
+local _spell_max_cache = {}
+function World.spell_max_range(sid)
+    sid = tonumber(sid) or 0
+    if sid <= 0 then return nil end
+    local t = (GetTime and GetTime()) or 0
+    local c = _spell_max_cache[sid]
+    if c and c.until_t and t < c.until_t then return c.maxR end
+    local ok, pack = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellMeleeInfo", sid)
+    local maxR = nil
+    if ok and type(pack) == "string" then
+        local mx = pack:match("max=([%-%d%.]+)")
+        if mx then
+            maxR = tonumber(mx)
+            if not maxR or maxR ~= maxR or maxR <= 0 or maxR > 500 then maxR = nil end
+        end
+    end
+    _spell_max_cache[sid] = { until_t = t + 60, maxR = maxR }
+    return maxR
+end
+
 -- Find nearby units matching aura present/missing.
 -- RUNTIME-FIRST: discovery, hostility, face, and aura notes all live in the
 -- inject DLL. Lua never uses mouseover/UnitExists/UnitCanAttack for multi-dot
@@ -2714,7 +2946,18 @@ function World.find_aura_search_targets(opts)
         -- Without id, fall back to empty (cannot key aura table by name alone).
         return {}
     end
-    local range = tonumber(opts.range) or 40
+    -- 2026-08-02 (NO FALLBACKS — user directive): a search range is REQUIRED.
+    -- A missing/invalid range is a bug to surface, never a silent 40-yard
+    -- search. The runtime AuraSearch filters by this exact number, so garbage
+    -- here = casting at targets beyond any sane distance.
+    local range = tonumber(opts.range)
+    if not range or range ~= range or range <= 0 or range > 100 then
+        if World.dlog then
+            World.dlog("search", "aura_search RANGE_REQUIRED (opts.range=%s) — "
+                .. "refusing to search at an unknown range", tostring(opts.range))
+        end
+        return {}
+    end
     local max_n = tonumber(opts.max_n) or 8
     if max_n < 1 then max_n = 1 end
     if max_n > 16 then max_n = 16 end
@@ -2726,19 +2969,19 @@ function World.find_aura_search_targets(opts)
         return {}
     end
 
-    -- OOC walk without a target: skip SoftRefresh/AuraSearch (FPS spikes).
-    -- Multi-dot packs resume the moment combat starts or a target exists.
-    local in_combat = UnitAffectingCombat and UnitAffectingCombat("player")
-    local has_tgt = UnitExists and UnitExists("target")
-    if not in_combat and not has_tgt then
-        return {}
-    end
+    -- (2026-08-02) OOC gate REMOVED — aura_search has NO combat restriction.
+    -- The runtime OM now epoch-caches the snapshot (zero-cost repeat reads),
+    -- AuraSearch packs cache ~120ms, and the soft list refresh throttles to
+    -- ~280ms OOC. Out-of-combat discovery is safe and free; aura_search must
+    -- fire without a target or combat, per spec.
 
-    -- Lua-side cache (~120ms) — Engine evaluates aura_search every tick per slot.
+    -- Lua-side cache (~50ms) — 2026-08-02 (18:16 user: "aura search extremely
+    -- slow/not reactive"): reduced from 120ms so a new target is picked up
+    -- within ~1-2 frames. Engine evaluates aura_search every tick per slot.
     local tnow = (GetTime and GetTime()) or 0
     local ck = tostring(spell_id) .. ":" .. tostring(state_n) .. ":" .. tostring(range)
     local ac = World._aura_search_cache
-    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.12 and ac.list then
+    if ac and ac.key == ck and (tnow - (ac.t or 0)) < 0.05 and ac.list then
         return ac.list
     end
 
@@ -2774,23 +3017,46 @@ function World.find_aura_search_targets(opts)
                 -- Normalize pack GUID so notes / CLEU / cast paths share one key.
                 guid = _guid_key(guid) or guid
                 if not (Ex and Ex.guid_blacklisted and Ex.guid_blacklisted(guid)) then
-                    local d = tonumber(center) or 999
-                    local facing = (tonumber(face) or 1) ~= 0
-                    out[#out + 1] = {
-                        guid = guid,
-                        token = nil, -- never client tokens for multi-dot
-                        dist = d,
-                        face_err = facing and 0 or 1.6,
-                        facing = facing,
-                        entry = tonumber(entry),
-                        hp = tonumber(hp),
-                        mhp = tonumber(mhp),
-                        edge = tonumber(edge),
-                    }
+                    -- 2026-08-02 (NO FALLBACKS): a target the runtime cannot
+                    -- PLACE (center unparseable / 0 / >=999) is NOT a valid cast
+                    -- target — casting at it was exactly the "edge=999.0 -> Out
+                    -- of range" spam. Exclude it outright; never default to 999.
+                    local d = tonumber(center)
+                    if not d or d ~= d or d <= 0 or d >= 999 then
+                        if World.dlog then
+                            World.dlog("search", "aura_search UNPLACEABLE guid=%s "
+                                .. "(center=%s) — excluded", tostring(guid), tostring(center))
+                        end
+                        d = nil
+                    end
+                    if d then
+                        local facing = (tonumber(face) or 1) ~= 0
+                        out[#out + 1] = {
+                            guid = guid,
+                            token = nil, -- never client tokens for multi-dot
+                            dist = d,
+                            face_err = facing and 0 or 1.6,
+                            facing = facing,
+                            entry = tonumber(entry),
+                            hp = tonumber(hp),
+                            mhp = tonumber(mhp),
+                            edge = tonumber(edge),
+                        }
+                    end
                 end
             end
         end
     end
+    -- 2026-08-02 (closest-first GUARANTEE): the runtime ranks closest-first,
+    -- but the caller's second-pass aura filter can drop entries, and a stale
+    -- pack cache could otherwise surface a non-closest head. Sort by distance
+    -- ascending here so list[1] is ALWAYS the closest living attackable match,
+    -- exactly as the user requires. Distance ties keep runtime FOV order.
+    table.sort(out, function(a, b)
+        local da, db = tonumber(a.dist) or 1e9, tonumber(b.dist) or 1e9
+        if da ~= db then return da < db end
+        return (tonumber(a.facing) or 0) > (tonumber(b.facing) or 0)
+    end)
     World._aura_search_cache = { key = ck, t = tnow, list = out }
     return out
 end

@@ -833,6 +833,34 @@ function RaijinLab:RunCommand(msg)
             SendSystemMessage("  |cff44ff44every link healthy|r")
         end
         return true
+    elseif cmd == "spelldump" or cmd == "sd" then
+        -- LIVE SPELL DATA (2026-08-02): dump the client's decoded Spell.dbc
+        -- record + range entry for one or more spell IDs. Ground truth for the
+        -- runtime's per-ability reader (facing/melee classification, range).
+        -- Usage: /raijin spelldump 45477 45513 6603
+        local function rt(name, ...)
+            if not RaijinLab.HasRuntime or not RaijinLab:HasRuntime() then return nil end
+            local ok, a = pcall(RaijinLab.RuntimeCall, RaijinLab, name, ...)
+            if not ok then return "ERR:" .. tostring(a) end
+            return tostring(a or "")
+        end
+        local ids = {}
+        for tok in tostring(args or ""):gmatch("%d+") do ids[#ids + 1] = tonumber(tok) end
+        if #ids == 0 then ids = { 45477, 45513, 26573, 6603 } end  -- Icy/Plague/Consecration/Attack
+        for _, sid in ipairs(ids) do
+            local melee = rt("SpellMeleeInfo", sid)
+            local live = rt("SpellInfoLive", sid)
+            SendSystemMessage("|cff7ec8e3RaijinLab|r spelldump " .. sid)
+            SendSystemMessage("  melee: " .. (melee or "nil"))
+            local hexOnly = (live or ""):match("|hex=(%x+)")
+            local short = (live or ""):gsub("|hex=%x+", "")
+            SendSystemMessage("  info: " .. short)
+            if hexOnly and #hexOnly > 80 then
+                SendSystemMessage("  hex[:80]: " .. hexOnly:sub(1, 80))
+            end
+        end
+        SendSystemMessage("|cff7ec8e3RaijinLab|r (full hex in dev log)")
+        return true
     elseif cmd == "selftest" or cmd == "st" then
         -- VERIFY THE RUNTIME FROM INSIDE THE GAME, IN ONE COMMAND.
         --

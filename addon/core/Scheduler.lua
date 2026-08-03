@@ -275,6 +275,19 @@ function Scheduler.start()
     if not CreateFrame then return end
     local f = CreateFrame("Frame", nil, UIParent)
     f:SetScript("OnUpdate", function(_, e)
+        -- 2026-08-02 (idle FPS): when the suite is OFF and no jobs are queued,
+        -- this OnUpdate fires every rendered frame but must cost ~nothing. The
+        -- empty-queue path in tick() is cheap, but update_frame() still runs
+        -- the EMA + adaptive-budget math every frame — pointless when nothing
+        -- is being scheduled. Skip both; the heartbeat instrumentation calls
+        -- Scheduler.run, which sets a job, which wakes tick() up naturally.
+        local q1, q2, q3 = #Scheduler._q[1], #Scheduler._q[2], #Scheduler._q[3]
+        if (q1 + q2 + q3) == 0 then
+            local M = RaijinLab and RaijinLab.Master
+            if M and M.suppressed and M.suppressed() then
+                return
+            end
+        end
         Scheduler.update_frame((e or 0) * 1000)     -- adapt the budget to real frame time
         local ok, err = pcall(Scheduler.tick)
         if not ok then Scheduler._last_err = "tick:" .. tostring(err) end

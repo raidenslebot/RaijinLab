@@ -43,12 +43,27 @@ end
     local _light = master_on and mods and mods.rotation
         and not mods.quest and not mods.grind and not mods.gather
         and not _want_quest_tie
+    -- All per-object field probes now come from the runtime snapshot (2026-08-02)
+    -- — no per-object bridge calls / ObjectPtr game calls. Only the quest-tie
+    -- probe stays a bridge call, gated behind quest/tracker mode.
+    local UNIT_HIDE = (RaijinLab.enums and RaijinLab.enums.UnitDynamicFlags
+        and RaijinLab.enums.UnitDynamicFlags.UNIT_DYNFLAG_HIDE_MODEL) or 0x20000
+    local GO_NO_INTERACT = (RaijinLab.enums and RaijinLab.enums.GameObjectDynamicLowFlags
+        and RaijinLab.enums.GameObjectDynamicLowFlags.GO_DYNFLAG_LO_NO_INTERACT) or 0x1
+    local GO_INVERT = RaijinLab.enums and RaijinLab.enums.GameObjectTypesInverted
+    -- Snapshot-derived dead: health 0 on a nonzero max (runtime authority;
+    -- UnitIsDeadOrGhost(GUID) was nil for GUID-keyed objects).
+    local function dead_from(s)
+        local mhp = s and s._mhp or 0
+        local hp = s and s._hp or 0
+        return mhp and mhp > 0 and hp and hp <= 0
+    end
     for i = 1, #object_list do
         local struct = object_list[i]
         local obj = struct.Object
         if obj_type == "players" then
             if not _light then
-                struct.Flags.value = RaijinLab:UnitFlags(obj)
+                struct.Flags.value = struct._flags or 0
                 if struct.Flags.value then
                     struct.Flags.list = decode_flags(struct.Flags.value, UNIT_FLAG_PAIRS)
                 end
@@ -56,11 +71,11 @@ end
                     struct.DynamicFlags.list = decode_flags(struct.DynamicFlags.value, UNIT_DFLAG_PAIRS)
                 end
             end
-            struct.Info.Unit.Dead = UnitIsDeadOrGhost(obj)
+            struct.Info.Unit.Dead = dead_from(struct)
             temp[#temp + 1] = struct
         elseif obj_type == "npcs" then
             if not _light then
-                struct.Flags.value = RaijinLab:UnitFlags(obj)
+                struct.Flags.value = struct._flags or 0
                 if struct.Flags.value then
                     struct.Flags.list = decode_flags(struct.Flags.value, UNIT_FLAG_PAIRS)
                 end
@@ -68,10 +83,11 @@ end
                     struct.DynamicFlags.list = decode_flags(struct.DynamicFlags.value, UNIT_DFLAG_PAIRS)
                 end
                 struct.Info.Unit.Rare = RaijinLab:UnitIsRare(obj)
-                struct.Info.Unit.Hidden = RaijinLab:UnitIsHidden(obj, struct.DynamicFlags.value)
-                struct.Info.Unit.Lootable = RaijinLab:UnitCanBeLooted(obj)
+                struct.Info.Unit.Hidden = bit.band(struct.DynamicFlags.value or 0, UNIT_HIDE) > 0
+                -- Dead unit = lootable (snapshot authority).
+                struct.Info.Unit.Lootable = dead_from(struct)
             end
-            struct.Info.Unit.Dead = UnitIsDeadOrGhost(obj)
+            struct.Info.Unit.Dead = dead_from(struct)
             if _want_quest_tie then
                 struct.Info.Quest.IsTiedToQuest = _tied(RaijinLab:ObjectIsQuestObjective(obj, struct.Id, struct.Guid, false))
             end
@@ -81,9 +97,12 @@ end
             if _light then
                 -- next object
             else
-                struct.Type.sub_type.id = RaijinLab:GameObjectType(obj)
-                struct.Type.sub_type.name = RaijinLab.enums.GameObjectTypesInverted[struct.Type.sub_type.id]
-                struct.Flags.value = RaijinLab:GameObjectFlags(obj)
+                -- GAMEOBJECT_BYTES_1 byte 1 = GO type (runtime snapshot field).
+                local gb1 = struct._goBytes1 or 0
+                local gtype = bit.rshift(bit.band(gb1, 0xFF00), 8)
+                struct.Type.sub_type.id = gtype
+                struct.Type.sub_type.name = GO_INVERT and GO_INVERT[gtype]
+                struct.Flags.value = struct._flags or 0
                 if struct.Flags.value then
                     struct.Flags.list = decode_flags(struct.Flags.value, GO_FLAG_PAIRS)
                 end
@@ -93,7 +112,7 @@ end
                 if _want_quest_tie then
                     struct.Info.Quest.IsTiedToQuest = _tied(RaijinLab:ObjectIsQuestObjective(obj, struct.Id, struct.Guid, false))
                 end
-                struct.Info.GameObject.Interactable = RaijinLab:ObjectIsInteractable(obj, struct.DynamicFlags.value)
+                struct.Info.GameObject.Interactable = bit.band(struct.DynamicFlags.value or 0, GO_NO_INTERACT) == 0
                 temp[#temp + 1] = struct
                 if track and enabled then
                     for list, items in pairs(track) do
@@ -191,13 +210,23 @@ local function new_struct(objectGUID)
 end
 
 local function RunObjectManager()
-    local count, isUpdated = RaijinLab:GetObjectCount()
+    -- ONE runtime call returns the whole cached OM packed. The runtime IS the
+    -- object-manager authority (2026-08-02): this replaces the old per-object
+    -- bridge calls (GetObjectWithIndex + ObjectTypeFlags + ObjectDynamicFlags
+    -- + ObjectId + ObjectGUID per object = ~5 bridge calls/object/tick, each an
+    -- ObjectPtr game call — the lag + Guard-recovery crash vector, live 1.10.68
+    -- RVA 0x785A). 1 call + 1 string parse per tick instead. The snapshot packs
+    -- every field the Lua OM consumed: guid/type-mask/entry/flags/dynflags/
+    -- level/hp/mhp/pos/facing/faction/target/scale/goBytes1/npcFlags.
+    local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "OmSnapshot")
+    if not ok or type(packed) ~= "string" or packed == "" or packed == "0" then
+        RaijinLab.om.updated = false
+        return
+    end
+    RaijinLab.om.updated = true
     if RaijinLab.force_update then
-        isUpdated = true
         RaijinLab.force_update = false
     end
-    if not isUpdated then RaijinLab.om.updated = false return end
-    RaijinLab.om.updated = true
     ensure_flag_pairs()
 
     -- REUSE structs by GUID. Was: allocate ~200 deep tables every 100ms -> GC
@@ -208,7 +237,7 @@ local function RunObjectManager()
     local dynamicobjects, areatriggers, objects = {}, {}, {}
     local objects_by_guid, objects_by_name, objects_by_id = {}, {}, {}
     RaijinLab.om.active = true
-    count = tonumber(count) or 0
+    local count = 0
     local player_name = UnitName and UnitName("player")
     local OT = RaijinLab.enums and RaijinLab.enums.ObjectTypeFlags
     local MASK_PLAYER = OT and OT.Player or 0
@@ -217,23 +246,18 @@ local function RunObjectManager()
     local MASK_DO = OT and OT.DynamicObject or 0
     local MASK_AT = OT and OT.AreaTrigger or 0
 
-    for i = 1, count do
-        local obj = RaijinLab:GetObjectWithIndex(i)
-        if obj then
-            local objectGUID = obj
-            if type(objectGUID) ~= "string" or objectGUID == "" or objectGUID == "0x0" then
-                local via = RaijinLab:ObjectGUID(obj)
-                if type(via) == "string" and via ~= "" and via ~= "0x0" then
-                    objectGUID = via
-                else
-                    objectGUID = nil
-                end
-            end
-            if type(objectGUID) == "string" and not objectGUID:match("^0[xX]")
-                and objectGUID:match("^%x+$") and #objectGUID >= 8 then
-                objectGUID = "0x" .. objectGUID
-            end
-            if type(objectGUID) == "string" and objectGUID ~= "nil" and objectGUID ~= "0x0" then
+    local first = true
+    for part in string.gmatch(packed, "[^|]+") do
+        if first then
+            count = tonumber(part) or 0
+            first = false
+        else
+            -- 0xGUID:TYPE:ENTRY:FLAGS:DYNFLAGS:LVL:HP:MHP:X:Y:Z:FACE:FACTION:0xTARGET:SCALE:GOBYTES1:NPCFLAGS:CREATURETYPE
+            local objectGUID, tf, id, fl, df, lvl, hp, mhp,
+                  x, y, z, face, fac, tg, sc, gb1, npcf, ct =
+                string.match(part,
+                    "^(0[xX]%x+):(%d+):(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+):(-?%d+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):([%-%d%.]+):(-?%d+):(0[xX]%x+):([%-%d%.]+):(%d+):(%d+):(-?%d+)$")
+            if objectGUID then
                 local struct = prev_by_guid[objectGUID]
                 local is_new = not struct
                 if is_new then struct = new_struct(objectGUID) end
@@ -246,35 +270,38 @@ local function RunObjectManager()
                     or struct.Name == "nil"
                     or (type(struct.Name) == "string" and struct.Name:sub(1, 1) == "<")
                 if need_name then
-                    local unitName = nil
-                    if type(obj) == "string" then unitName = UnitName(obj) end
-                    if not unitName then unitName = UnitName(objectGUID) end
-                    if unitName and unitName == player_name then
-                        -- skip self
-                    else
-                        if not unitName then
-                            local QDB = RaijinLab.QuestDB
-                            if QDB and QDB.entry_name and struct.Id and struct.Id ~= 0 then
-                                local okn, nm = pcall(QDB.entry_name, struct.Id, nil)
-                                if okn and nm then unitName = nm end
-                            end
+                    local unitName = UnitName and UnitName(objectGUID)
+                    if not unitName then
+                        local QDB = RaijinLab.QuestDB
+                        if QDB and QDB.entry_name and id and id ~= 0 then
+                            local okn, nm = pcall(QDB.entry_name, id, nil)
+                            if okn and nm then unitName = nm end
                         end
-                        struct.Name = unitName or ("<" .. objectGUID .. ">")
                     end
-                    if unitName == player_name then
+                    if unitName and unitName == player_name then
                         -- do not publish self into lists
                         struct = nil
+                    else
+                        struct.Name = unitName or ("<" .. objectGUID .. ">")
                     end
                 end
                 if struct then
-                    if is_new or not struct.Id or struct.Id == 0 then
-                        struct.Id = RaijinLab:ObjectId(obj) or struct.Id or 0
-                    end
-                    -- Dynamic flags change; type classification is stable per guid.
-                    struct.DynamicFlags.value = RaijinLab:ObjectDynamicFlags(objectGUID) or 0
-                    if is_new or not struct._typeFlags then
-                        struct._typeFlags = RaijinLab:ObjectTypeFlags(objectGUID) or 0
-                    end
+                    -- Snapshot fields (runtime authority — no per-object calls).
+                    struct.Id = tonumber(id) or 0
+                    struct.DynamicFlags.value = tonumber(df) or 0
+                    struct._typeFlags = tonumber(tf) or 0
+                    struct._flags = tonumber(fl) or 0
+                    struct._level = tonumber(lvl) or 0
+                    struct._hp = tonumber(hp) or 0
+                    struct._mhp = tonumber(mhp) or 0
+                    struct._posx, struct._posy, struct._posz = tonumber(x), tonumber(y), tonumber(z)
+                    struct._facing = tonumber(face)
+                    struct._faction = tonumber(fac)
+                    struct._target = tg
+                    struct._scale = tonumber(sc)
+                    struct._goBytes1 = tonumber(gb1) or 0
+                    struct._npcFlags = tonumber(npcf) or 0
+                    struct._creatureType = tonumber(ct) or -1
                     local typeFlags = struct._typeFlags or 0
                     __om_seen = (__om_seen or 0) + 1
                     local __matched = false
@@ -316,11 +343,11 @@ local function RunObjectManager()
                         end
                         bucket[#bucket + 1] = struct
                     end
-                    local id = struct.Id or 0
-                    local ib = objects_by_id[id]
+                    local idn = struct.Id or 0
+                    local ib = objects_by_id[idn]
                     if not ib then
                         ib = {}
-                        objects_by_id[id] = ib
+                        objects_by_id[idn] = ib
                     end
                     ib[#ib + 1] = struct
                 end
@@ -409,6 +436,15 @@ local function ObjectManagerOnUpdate(self, elapsed)
     -- survives, still fail-closed here.
     local M = RaijinLab.Master
     if M and M.in_suite_warm and M.in_suite_warm() then
+        return
+    end
+    -- 2026-08-02 (idle power ~zero): when NOTHING consumes the Lua OM lists —
+    -- master off and no tracker and no quest-object tracking — skip entirely.
+    -- The rotation uses runtime NearbyHostiles/AuraSearch, not these lists.
+    -- One OmSnapshot call is cheap, but zero calls when idle is cheaper.
+    if M and M.suppressed and M.suppressed()
+        and not RaijinLab.tracker_toggle
+        and not (RaijinLabDB and RaijinLabDB.track_quest_objects) then
         return
     end
     if not self.last_time then

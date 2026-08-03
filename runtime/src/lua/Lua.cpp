@@ -3,6 +3,7 @@
 #include "game/Offsets.h"
 #include "game/ObjectManager.h"
 #include "game/Actions.h"
+#include "game/Guard.h"
 #include "core/Log.h"
 #include <Windows.h>
 #include <cstdlib>
@@ -62,6 +63,7 @@ void Init() {
 bool Ready() { return g_ready; }
 
 int gettop(lua_State* L) { return p_gettop ? p_gettop(L) : 0; }
+void settop(lua_State* L, int idx) { if (p_settop) p_settop(L, idx); }
 const char* tolstring(lua_State* L, int idx, size_t* len) {
     return p_tolstring ? p_tolstring(L, idx, len) : nullptr;
 }
@@ -109,73 +111,73 @@ int PushXYZ(lua_State* L, float x, float y, float z) {
 // LUA_GLOBALSINDEX for Lua 5.1
 static constexpr int kGlobals = -10002;
 
+// ---- Internal client function addresses (live-scanned at inject) ----------
+// These are the client's OWN C++ functions that back the Lua handlers:
+//   GetSpellCooldown handler 0x00540E80 calls InternalGetCooldown
+//   GetTime handler          0x006081F0 calls InternalGetTime
+//   GetSpellInfo handler     0x00540A30 calls InternalGetSpellInfo
+// Calling them directly = pure C++, zero Lua, no stack corruption.
+
+using fnGetCooldownInternal = void(__cdecl*)(uint32_t spellId, uint32_t tableType,
+    uint32_t* outDurationMs, uint32_t* outStartMs, uint32_t* outUnk);
+using fnGetTimeInternal = uint32_t(__cdecl*)();
+using fnGetSpellInfoInternal = int(__cdecl*)(uint32_t spellId, void* out);
+
+static uintptr_t s_getCooldown = 0;
+static uintptr_t s_getTime = 0;
+static uintptr_t s_getSpellInfo = 0;
+static bool s_cooldownOk = false;
+static bool s_timeOk = false;
+static bool s_spellInfoOk = false;
+
+void SetResolvedInternals(uintptr_t getCooldownInternal, uintptr_t getTimeInternal,
+                          uintptr_t getSpellInfoInternal,
+                          bool cooldownOk, bool timeOk, bool spellInfoOk) {
+    s_getCooldown = getCooldownInternal;
+    s_getTime = getTimeInternal;
+    s_getSpellInfo = getSpellInfoInternal;
+    s_cooldownOk = cooldownOk;
+    s_timeOk = timeOk;
+    s_spellInfoOk = spellInfoOk;
+    RL::Log::Info("Lua internals: CD=0x%08X(%d) Time=0x%08X(%d) Info=0x%08X(%d)",
+                  (unsigned)s_getCooldown, (int)s_cooldownOk,
+                  (unsigned)s_getTime, (int)s_timeOk,
+                  (unsigned)s_getSpellInfo, (int)s_spellInfoOk);
+}
+
 double SpellCooldownMs(lua_State* L, int spellId) {
-    if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
-        return -1.0; // sentinel: cannot determine
+    (void)L;
+    if (spellId <= 0 || !s_cooldownOk || !s_timeOk) return 0.0;
+    auto pGetCD = reinterpret_cast<fnGetCooldownInternal>(s_getCooldown);
+    auto pGetTime = reinterpret_cast<fnGetTimeInternal>(s_getTime);
 
-    static bool s_first = true;
-    int top = 0;
-    __try {
-        top = p_gettop(L);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (s_first) { RL::Log::Warn("SpellCooldownMs: gettop AV"); s_first = false; }
-        return -1.0;
+    // Query spell-specific cooldown table, then category table.
+    // VEH longjmp guards: a dead __try under stealth let an AV in these
+    // internal client calls propagate into the game's Lua VM.
+    uint32_t durMs = 0, startMs = 0, unk = 0;
+    {
+        RL::Game::Guard::Scope g;
+        if (!g.Caught())
+            pGetCD((uint32_t)spellId, 0, &durMs, &startMs, &unk);
     }
+    if (durMs == 0) {
+        RL::Game::Guard::Scope g;
+        if (!g.Caught())
+            pGetCD((uint32_t)spellId, 1, &durMs, &startMs, &unk);
+    }
+    if (durMs == 0) return 0.0; // not on cooldown
 
-    // 1) GetSpellCooldown(spellId) → start, duration (game-time seconds)
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "GetSpellCooldown");
-        p_pushnumber(L, (double)spellId);
-        rc = p_pcall(L, 1, 2, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (s_first) { RL::Log::Warn("SpellCooldownMs: getfield/pcall AV (func ptrs invalid for build)"); s_first = false; }
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return -1.0;
-    }
-    if (rc != 0) {
-        if (s_first) { RL::Log::Warn("SpellCooldownMs: GetSpellCooldown pcall rc=%d", rc); s_first = false; }
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return -1.0;
-    }
-
-    double start = 0.0, duration = 0.0;
-    __try {
-        start    = p_tonumber(L, -2);
-        duration = p_tonumber(L, -1);
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1.0;
-    }
-    if (duration <= 0.0) return 0.0; // no cooldown on this spell
-
-    // 2) GetTime() → current game-time seconds (same clock as GetSpellCooldown)
-    __try {
-        p_getfield(L, kGlobals, "GetTime");
-        rc = p_pcall(L, 0, 1, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return -1.0;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return -1.0; }
-
-    double now = 0.0;
-    __try {
-        now = p_tonumber(L, -1);
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1.0;
+    uint32_t nowMs = 0;
+    {
+        RL::Game::Guard::Scope g;
+        if (!g.Caught())
+            nowMs = pGetTime();
     }
 
-    double end = start + duration;
-    if (now >= end) return 0.0; // cooldown expired
-    double rem = (end - now) * 1000.0;
-    if (s_first) {
-        RL::Log::Info("SpellCooldownMs OK id=%d start=%.3f dur=%.3f now=%.3f rem=%.0fms",
-                      spellId, start, duration, now, rem);
-        s_first = false;
-    }
-    return rem; // remaining milliseconds
+    int64_t endMs = (int64_t)startMs + (int64_t)durMs;
+    int64_t remMs = endMs - (int64_t)nowMs;
+    if (remMs <= 0) return 0.0;
+    return (double)remMs;
 }
 
 // ---- IsSpellInRange / IsSpellUsable — PURE C++ memory reads ---------------
@@ -289,196 +291,52 @@ void ValidateCast(lua_State* L, int spellId, float maxRange, char* outBuf, size_
 }
 
 double GameTimeFromLua(lua_State* L) {
-    if (!L || !p_getfield || !p_pcall || !p_tonumber || !p_settop) return -1.0;
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1.0; }
-
-    __try {
-        p_getfield(L, kGlobals, "GetTime");
-        int rc = p_pcall(L, 0, 1, 0);
-        if (rc != 0) { p_settop(L, top); return -1.0; }
-        double t = p_tonumber(L, -1);
-        p_settop(L, top);
-        return t;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return -1.0;
-    }
+    (void)L;
+    // SAFE NO-OP: lua_getfield+lua_pcall from non-Lua context corrupts the
+    // Lua stack in Ascension's custom VM → AV_READ crash. Game time is read
+    // via the client's internal clock elsewhere (pure C++).
+    return -1.0;
 }
 
 void SpellInfoFromLua(lua_State* L, int spellId, float* outMaxRange, int* outCastMs, int* outPowerType) {
+    (void)L; (void)spellId;
+    // CRASH RULE (permanent): nested lua_getfield+lua_pcall of GetSpellInfo
+    // from inside Lua_IsLinuxClient corrupts the Lua stack → eip=0 in the
+    // game VM (proven 2026-07-31). SAFE NO-OP. The addon reads spell info via
+    // its own Lua GetSpellInfo (Lua→Lua, safe). Callers treat -1 as unknown.
     *outMaxRange = -1.f; *outCastMs = -1; *outPowerType = -1;
-    if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tonumber || !p_settop || spellId <= 0)
-        return;
-
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "GetSpellInfo");
-        p_pushnumber(L, (double)spellId);
-        rc = p_pcall(L, 1, 9, 0); // name,rank,icon,cost,isFunnel,powerType,castTime,minRange,maxRange
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
-
-    __try {
-        // Returns: 1=name 2=rank 3=icon 4=cost 5=isFunnel 6=powerType 7=castTime 8=minRange 9=maxRange
-        // We want: castTime(7), minRange(8, in yards, -1 if no data), maxRange(9)
-        // GetSpellInfo stack order after call: all 9 results on stack
-        *outCastMs    = (int)(p_tonumber(L, -3) * 1000.0); // castTime (sec) → ms, at position -3
-        *outMaxRange  = (float)p_tonumber(L, -1);            // maxRange at top of stack
-        *outPowerType = (int)p_tonumber(L, -4);              // powerType
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
 }
 
 void PlayerCastInfo(int* outSpellId, int* outCastTotalMs) {
+    // CRASH RULE (permanent): nested lua_getfield+lua_pcall of UnitCastingInfo
+    // from inside the bridge corrupts the Lua stack (proven). SAFE NO-OP.
+    // Callers treat (-1, 0) as "not casting / unknown".
     *outSpellId = -1; *outCastTotalMs = 0;
-    void* rawL = RL::Game::Addr::LuaState();
-    if (!rawL || !p_getfield || !p_pcall || !p_pushstring || !p_tonumber || !p_settop) return;
-    auto L = (lua_State*)rawL;
-
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "UnitCastingInfo");
-        p_pushstring(L, "player");
-        rc = p_pcall(L, 1, 9, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
-
-    __try {
-        // Stack: 1=name 2=text 3=icon 4=startMs 5=endMs 6=delay 7=castId 8=interrupt 9=spellId
-        double endMs   = p_tonumber(L, -5);
-        double startMs = p_tonumber(L, -6);
-        if (endMs <= 0.0) { p_settop(L, top); return; }
-        *outSpellId     = (int)p_tonumber(L, -1);
-        *outCastTotalMs = (int)(endMs - startMs);
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
 }
 
 void MapInfoFromLua(char* buf, size_t bufSize) {
     if (!buf || bufSize < 8) return;
+    // CRASH RULE (permanent): nested lua_getfield+lua_pcall of GetMapInfo
+    // from inside the bridge corrupts the Lua stack (proven). SAFE NO-OP.
+    // Callers fall back to "mapId=?|..." placeholders. The addon reads map
+    // info via its own Lua GetMapInfo (Lua→Lua, safe) where it matters.
     buf[0] = '\0';
-    void* rawL = RL::Game::Addr::LuaState();
-    if (!rawL || !p_getfield || !p_pcall || !p_gettop || !p_settop || !p_tonumber || !p_tolstring) return;
-    auto L = (lua_State*)rawL;
-
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "GetMapInfo");
-        rc = p_pcall(L, 0, 6, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
-
-    __try {
-        // Stack: 1=mapFile 2=mapName 3=mapDesc 4=zoneId 5=zoneName 6=zoneDesc
-        int mapId = (int)p_tonumber(L, -6);
-        const char* mapName = p_tolstring(L, -5, nullptr);
-        int zoneId = (int)p_tonumber(L, -3);
-        const char* zoneName = p_tolstring(L, -2, nullptr);
-        snprintf(buf, bufSize, "mapId=%d|mapName=%s|zoneId=%d|zoneName=%s",
-                 mapId, mapName ? mapName : "?", zoneId, zoneName ? zoneName : "?");
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
 }
 
 void ShapeshiftFormFromLua(int* outForm) {
+    // CRASH RULE (permanent): nested lua_getfield+lua_pcall of
+    // GetShapeshiftForm from inside the bridge corrupts the Lua stack
+    // (proven). SAFE NO-OP. The addon reads GetShapeshiftForm via its own Lua
+    // (Lua→Lua, safe). -1 = unknown.
     *outForm = -1;
-    void* rawL = RL::Game::Addr::LuaState();
-    if (!rawL || !p_getfield || !p_pcall || !p_gettop || !p_settop || !p_tonumber) return;
-    auto L = (lua_State*)rawL;
-
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "GetShapeshiftForm");
-        rc = p_pcall(L, 0, 1, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return; }
-
-    __try {
-        *outForm = (int)p_tonumber(L, -1);
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
 }
 
-// Spell school from Lua — reads GetSpellInfo powerType as a proxy, plus spell name heuristic
+// Spell school — CRASH RULE (permanent): nested GetSpellInfo lua_pcall from
+// the bridge corrupts the Lua stack (proven). SAFE NO-OP. The addon resolves
+// spell school via its own Lua (Lua→Lua, safe). -1 = unknown.
 int SpellSchoolFromLua(lua_State* L, int spellId) {
-    if (!L || !p_getfield || !p_pcall || !p_pushnumber || !p_tolstring || !p_tonumber || !p_settop || spellId <= 0)
-        return -1;
-
-    int top = 0;
-    __try { top = p_gettop(L); } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-
-    int rc = -1;
-    __try {
-        p_getfield(L, kGlobals, "GetSpellInfo");
-        p_pushnumber(L, (double)spellId);
-        rc = p_pcall(L, 1, 9, 0);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return -1;
-    }
-    if (rc != 0) { __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {} return -1; }
-
-    int school = -1;
-    __try {
-        // Spell name at position -9 (first return)
-        const char* name = p_tolstring(L, -9, nullptr);
-        if (name) {
-            // Heuristic: school from common spell name patterns
-            // This is crude — proper school read needs DBC access
-            if (strstr(name, "Frost") || strstr(name, "Ice") || strstr(name, "Chill"))
-                school = 16;  // SPELL_SCHOOL_FROST
-            else if (strstr(name, "Fire") || strstr(name, "Flame") || strstr(name, "Burn"))
-                school = 4;   // SPELL_SCHOOL_FIRE
-            else if (strstr(name, "Shadow") || strstr(name, "Dark"))
-                school = 32;  // SPELL_SCHOOL_SHADOW
-            else if (strstr(name, "Holy") || strstr(name, "Light") || strstr(name, "Smite"))
-                school = 2;   // SPELL_SCHOOL_HOLY
-            else if (strstr(name, "Nature") || strstr(name, "Lightning") || strstr(name, "Thunder"))
-                school = 8;   // SPELL_SCHOOL_NATURE
-            else if (strstr(name, "Arcane") || strstr(name, "Mana"))
-                school = 64;  // SPELL_SCHOOL_ARCANE
-            else if (strstr(name, "Physical") || strstr(name, "Strike") || strstr(name, "Slash")
-                     || strstr(name, "Attack") || strstr(name, "Hit") || strstr(name, "Stab"))
-                school = 1;   // SPELL_SCHOOL_PHYSICAL
-        }
-        p_settop(L, top);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try { p_settop(L, top); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-    return school;
+    (void)L; (void)spellId;
+    return -1;
 }
 
 } // namespace RL::Lua

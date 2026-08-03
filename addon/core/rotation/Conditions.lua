@@ -1175,12 +1175,30 @@ Conditions.register("aura_search", {
         end
 
         -- RUNTIME AuraSearch only — no Unit* discovery.
+        -- 2026-08-02 (NO FALLBACKS — user directive): the search range is
+        -- min(user condition range, the SPELL's REAL max range). The spell's
+        -- range is decoded from the client's Spell.dbc by the runtime — it is
+        -- the authority. An ability with a 20yd range must NEVER be searched
+        -- at 30/40yd, and a spell whose range cannot be decoded is a HARD
+        -- failure (never a silent 30/40-yard search that finds targets the
+        -- spell cannot reach).
+        local search_range = num(args.range, 40)
+        local spell_max = W.spell_max_range and W.spell_max_range(id)
+        if not spell_max then
+            if W.dlog then
+                W.dlog("search", "aura_search RANGE_UNKNOWN sid=%d — refusing to search",
+                    id)
+            end
+            ctx.aura_search_hit = nil
+            return false
+        end
+        if search_range > spell_max then search_range = spell_max end
         local list = W.find_aura_search_targets({
             kind = string.lower(tostring(args.kind or "debuff")),
             state = state,
             spell_id = id,
             name = nm,
-            range = num(args.range, 40),
+            range = search_range,
             min_stacks = num(args.min_stacks, 1),
             max_stacks = num(args.max_stacks, 0),
             max_n = 8,
@@ -1215,7 +1233,28 @@ Conditions.register("aura_search", {
             return false
         end
 
-        -- list is already ranked by runtime: closest first, FOV centre on ties.
+        -- 2026-08-02 (MAIN-TARGET PREFERENCE): the list is closest-first, but
+        -- when the player's CURRENT target is also a valid match (alive,
+        -- attackable, aura-missing) it MUST be the head — the rotation should
+        -- refresh the main target before spreading dots to adds. This is what
+        -- "wasn't using Icy Touch on the main target" was about: the runtime
+        -- distance sort can put a closer add first while the main target sits
+        -- a yard further and never gets re-dotted until every add is covered.
+        local current_guid = (UnitExists and UnitExists("target") and UnitGUID
+            and UnitGUID("target")) or nil
+        if current_guid then
+            for i = 1, #list do
+                local c = list[i]
+                if c and c.guid and tostring(c.guid) == tostring(current_guid) then
+                    if i ~= 1 then
+                        table.remove(list, i)
+                        table.insert(list, 1, c)
+                    end
+                    break
+                end
+            end
+        end
+
         local best = list[1]
         ctx.aura_search_hit = {
             token = nil,

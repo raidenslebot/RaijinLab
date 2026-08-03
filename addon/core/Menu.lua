@@ -1290,9 +1290,16 @@ function Menu:ShowDebugCopyDialog()
         f._eb = eb
         f._built = true
     end
+    -- Cap the copied log: 3000 spam lines concatenated into one SetText froze
+    -- the client for ~20 s. The last 800 lines are plenty for diagnosis and the
+    -- concat/SetText stays cheap.
     local snap = RaijinLab.DebugLog and RaijinLab.DebugLog.Snapshot() or {}
+    local first = math.max(1, #snap - 799)
     local lines = {}
-    for _, e in ipairs(snap) do lines[#lines + 1] = e.t .. " " .. e.text end
+    for i = first, #snap do
+        local e = snap[i]
+        lines[#lines + 1] = e.t .. " " .. e.text
+    end
     f._eb:SetText(table.concat(lines, "\n"))
     f._eb:HighlightText(); f._eb:SetFocus()
     f:Show()

@@ -73,9 +73,70 @@ micro_lock = function()
     return 0.016
 end
 
--- Authoritative remaining GCD/CD for a spell (seconds). Prefer Blizzard
--- GetSpellCooldown (reliable on all clients). Runtime SpellCooldownMs as
--- optional supplement (fails on clients with wrong lua_getfield offset).
+-- Authoritative remaining GCD/CD for a spell (seconds). Primary is Blizzard
+-- GetSpellCooldown (read-only query, works from insecure code). Supplement is
+-- the runtime's SpellCooldownMs — PURE C++ since 1.10.x (calls the client's
+-- own InternalGetCooldown/InternalGetTime directly; the old nested-lua_pcall
+-- stack-corruption that forced it off is gone). Cached 100ms/spell so 8 slots
+-- do not issue 8 bridge calls every tick.
+local _rt_cd_cache = {}
+local function runtime_cooldown_remaining(sid)
+    -- 2026-08-02 (CRASH FIX — the persistent 0x512B07 Lua-VM corruption):
+    -- NEVER cross the bridge from INSIDE a game event handler. The event path
+    -- (apply_pending_refuse from UNIT_SPELLCAST_*/UI_ERROR) called this
+    -- synchronously -> RuntimeCall("SpellCooldownMs") re-entered the runtime
+    -- while the game's Lua VM was mid event-dispatch -> corrupted the VM
+    -- (live forensics: SpellCooldownMs was the last bridge call, then the game
+    -- crashed 6ms later at 0x512B07 reading a garbage closure). Executor._in_event
+    -- is set only around the OnEvent body; Lua GetSpellCooldown is still used
+    -- there, and the tick recomputes the authoritative cooldown next frame.
+    if Executor._in_event then return 0 end
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then return 0 end
+    local t = now()
+    local e = _rt_cd_cache[sid]
+    if e and e.until_t and t < e.until_t then return e.best end
+    local ok, rem = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellCooldownMs", sid)
+    local best = 0
+    if ok then
+        rem = tonumber(rem) or 0
+        if rem and rem > 0 then best = rem / 1000 end
+    end
+    _rt_cd_cache[sid] = { until_t = t + 0.1, best = best }
+    return best
+end
+
+-- AUTHORITATIVE MELEE/MELEE-RANGE CLASSIFICATION (2026-08-02). The runtime
+-- decodes the client's loaded Spell.dbc record (exact 0x4CFD20/0x4CFBB0 path)
+-- and reads the spell's range entry to say whether facing is REQUIRED. This
+-- replaces the maxR>8 heuristic: the client only refuses "target needs to be
+-- in front of you" for melee-range spells. Returns 1=melee(facing required),
+-- 0=ranged(no facing), nil=unknown. Cached 120s/spell (spell data is static).
+-- NEVER fail-closed: unknown -> nil -> Lua falls back to the range heuristic.
+-- ALSO returns the spell's REAL max range from the client's Spell.dbc range
+-- entry (max=%.2f) — GetSpellInfo returns 0 for custom Ascension spell IDs,
+-- so the Lua spell_range_info() is blind for most rotation spells. The runtime
+-- range is the authority for the per-candidate range gate (the "too far away"
+-- client refusal was a far candidate passing a maxR=0 gate).
+local _rt_melee_cache = {}
+local function runtime_spell_melee(sid)
+    if not (RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime()) then return nil end
+    local e = _rt_melee_cache[sid]
+    if e and e.until_t and now() < e.until_t then return e.melee, e.maxR end
+    local ok, pack = pcall(RaijinLab.RuntimeCall, RaijinLab, "SpellMeleeInfo", sid)
+    local melee, maxR = nil, nil
+    if ok and type(pack) == "string" then
+        local m = pack:match("melee=(%d)")
+        if m then melee = (tonumber(m) or 0) ~= 0 and 1 or 0 end
+        local mx = pack:match("max=([%-%d%.]+)")
+        if mx then
+            maxR = tonumber(mx)
+            if not maxR or maxR ~= maxR or maxR <= 0 or maxR > 500 then maxR = nil end
+        end
+    end
+    _rt_melee_cache[sid] = { until_t = now() + 120, melee = melee, maxR = maxR }
+    return melee, maxR
+end
+
 local function spell_ready_remaining(sid, name)
     local t = now()
     local best = 0
@@ -95,17 +156,11 @@ local function spell_ready_remaining(sid, name)
         if name and name ~= "" then sample(name) end
         if sid and sid > 0 then sample(sid) end
     end
-    -- Secondary: runtime SpellCooldownMs (sub-ms precision when available)
-    local RL = RaijinLab
-    if RL and RL.RuntimeCall and sid and sid > 0 then
-        local ok, packed = pcall(RL.RuntimeCall, RL, "SpellCooldownMs", sid)
-        if ok and type(packed) == "string" then
-            local cdMs = tonumber(packed) or 0
-            if cdMs > 0 then
-                local rem = cdMs / 1000
-                if rem > best then best = rem end
-            end
-        end
+    -- Authoritative supplement: runtime pure-C++ cooldown (covers custom
+    -- spells / cases where Lua GetSpellCooldown misses).
+    if sid and sid > 0 then
+        local rt = runtime_cooldown_remaining(sid)
+        if rt > best then best = rt end
     end
     return best
 end
@@ -221,8 +276,17 @@ local function mark_failed_sid(_sid)
     -- no-op by design (kept as a call site so refuse paths stay readable)
 end
 
--- Instant re-eval after a cast refuse. Prefer SAME-frame pcall(tick); only defer
--- if already inside a tick (then chain once on exit).
+-- Instant re-eval after a cast refuse / land event.
+--
+-- 2026-08-02 (CRASH FIX): NEVER run the full tick SYNCHRONOUSLY from inside a
+-- game event handler. The old code did `pcall(Executor.tick)` right here when
+-- UNIT_SPELLCAST_SUCCEEDED/FAILED fired — running the whole tick (with its
+-- ~dozens of bridge calls re-entering the VM) inside the game's protected-call
+-- event dispatch corrupted the Lua VM (live: rotation-enable crash, game VM
+-- reading garbage 14ms after the first landed cast). Always defer one frame via
+-- C_Timer.After(0) — a normal Lua execution context, not the event's protected
+-- frame. One frame (~16ms) is far faster than the grace window and costs nothing
+-- in feel. When already inside a tick, chain once on exit (no re-entry).
 local function request_retick(why)
     if not RaijinLabDB or not RaijinLabDB.rotation_enabled then return end
     Executor._retick_why = why
@@ -230,20 +294,28 @@ local function request_retick(why)
         Executor._retick_pending = true
         return
     end
-    if Executor._retick_depth and Executor._retick_depth >= 3 then
-        -- Cap re-entry storms; one frame later is still far faster than grace.
-        if C_Timer and C_Timer.After and not Executor._retick_armed then
-            Executor._retick_armed = true
-            C_Timer.After(0, function()
-                Executor._retick_armed = false
-                pcall(Executor.tick)
-            end)
-        end
-        return
+    if Executor._retick_armed then return end
+    Executor._retick_armed = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            Executor._retick_armed = false
+            -- 2026-08-02 (OFF-STILL-CASTING FIX): an armed retick can fire
+            -- AFTER the user turned the rotation off (stop() only removed the
+            -- OnUpdate; the already-scheduled C_Timer still runs). Re-check the
+            -- enabled flag INSIDE the callback so a post-OFF retick is a no-op
+            -- instead of running one more full tick (which cast again → the
+            -- "too far away" spam right after OFF).
+            if not RaijinLabDB or not RaijinLabDB.rotation_enabled then return end
+            -- 2026-08-02 (NO-HESITATION): this is the event-driven path — it
+            -- must bypass the facing/oor poll throttle so a landed cast re-
+            -- evaluates the next ability immediately (no 0.25s hesitation).
+            Executor._from_event = true
+            pcall(Executor.tick)
+            Executor._from_event = false
+        end)
+    else
+        Executor._retick_armed = false
     end
-    Executor._retick_depth = (Executor._retick_depth or 0) + 1
-    pcall(Executor.tick)
-    Executor._retick_depth = math.max(0, (Executor._retick_depth or 1) - 1)
 end
 Executor.request_retick = request_retick
 
@@ -324,6 +396,75 @@ local function apply_pending_refuse(reason, fail_name)
         return true
     end
 
+    -- FACING REFUSE (2026-08-01 + 2026-08-02, FINAL): the CLIENT says we are
+    -- not facing — the one authoritative signal. HARD RULE (Prompt.md): the
+    -- rotation NEVER turns the character and never moves it. No FaceTowardGuid /
+    -- TurnByDelta / StopMoving here — the player steers. We only back off this
+    -- spell so it does not re-fire into the same refusal every frame, and let
+    -- the next tick re-measure (the runtime snapshot reads the real facing).
+    -- Pre-wire we already skip not-facing candidates (see the facing gate), so
+    -- a refuse here is a rare edge (target moved mid-wire / measurement lag).
+    if rl:find("in front", 1, true) or rl:find("facing", 1, true) then
+        -- 2026-08-02: free the list (other spells may still work) but floor
+        -- THIS spell so it does not re-fire into the same refusal every frame.
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "refuse_facing"
+        Executor._recent = Executor._recent or {}
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.45 end
+        log_cast("refused", sid, name or fail_name,
+            "facing:" .. (reason ~= "" and tostring(reason) or "in front"), cast_t)
+        return true
+    end
+    -- LOS REFUSE: client says the path is blocked. Our TraceLine can say clear
+    -- while the client disagrees (moving target / geometry). Back off so we do
+    -- not spam "out of line of sight" every frame; re-evaluate after the floor.
+    if rl:find("line of sight", 1, true) or rl:find("los", 1, true) then
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "refuse_los"
+        Executor._recent = Executor._recent or {}
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
+        log_cast("refused", sid, name or fail_name,
+            "los:" .. (reason ~= "" and tostring(reason) or "line of sight"), cast_t)
+        return true
+    end
+    -- RANGE REFUSE (2026-08-02): client says out of range — the authoritative
+    -- signal (our position/range model can disagree on custom Ascension spells
+    -- / moving targets). Free the list but floor THIS spell 0.6s so we do not
+    -- spam "too far away" every frame; the player may be approaching.
+    if rl:find("too far", 1, true) or rl:find("out of range", 1, true) then
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "refuse_range"
+        Executor._recent = Executor._recent or {}
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
+        log_cast("refused", sid, name or fail_name,
+            "range:" .. (reason ~= "" and tostring(reason) or "too far away"), cast_t)
+        return true
+    end
+    -- RESOURCE REFUSE (2026-08-02, 14:09 FIX): client says "Not enough runes" /
+    -- "not enough mana" / "requires ..." etc. The old code had NO branch for
+    -- this — it fell through to the generic "Other refuses" which called
+    -- clear_sid_soft_locks, so the spell re-fired EVERY tick (live: Icy Touch
+    -- FIRE'd 8x in ~1s at 14:09:52, all refused "Not enough runes" — a hard
+    -- spam loop that ALSO starved the GCD/rotation). DK rune / resource gates
+    -- are client-authoritative (IsUsableSpell misses rune availability on
+    -- custom Ascension spells). Floor the spell so it re-evaluates after the
+    -- resource window (rune CD ~0.5-1.0s) instead of every frame.
+    if rl:find("not enough", 1, true) or rl:find("requires", 1, true)
+        or rl:find("need a", 1, true) or rl:find("need to be", 1, true)
+        or rl:find("need an", 1, true) then
+        Executor._gcd_until = 0
+        Executor._gcd_provisional = false
+        Executor._gcd_src = "refuse_resource"
+        Executor._recent = Executor._recent or {}
+        if sid and sid > 0 then Executor._recent[sid] = now() + 0.6 end
+        log_cast("refused", sid, name or fail_name,
+            "resource:" .. (reason ~= "" and tostring(reason) or "not enough"), cast_t)
+        return true
+    end
+
     -- Other refuses: free list completely. Same-tick fallthrough / retick.
     Executor._gcd_until = 0
     Executor._gcd_provisional = false
@@ -352,6 +493,11 @@ local function ensure_events()
     f:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
     f:RegisterEvent("UI_ERROR_MESSAGE")
     f:SetScript("OnEvent", function(_, event, a1, a2)
+        -- 2026-08-02 (CRASH FIX): mark that we are INSIDE the game's event
+        -- dispatch. Any bridge call made synchronously from here re-enters the
+        -- runtime under the game's Lua VM and corrupts it (persistent 0x512B07).
+        -- runtime_cooldown_remaining checks this and uses Lua-only cooldown here.
+        Executor._in_event = true
         local e = Executor._evt
         local cast_fail, fail_name, reason = false, nil, nil
         if event == "UI_ERROR_MESSAGE" then
@@ -388,6 +534,9 @@ local function ensure_events()
                 end
             end
         end
+        -- Leave the event-dispatch window: bridge calls from the next tick /
+        -- OnUpdate are safe (they run in a normal Lua execution context).
+        Executor._in_event = false
     end)
 end
 Executor._ensure_events = ensure_events
@@ -484,11 +633,73 @@ end
 
 -- 3.3.5 GetSpellInfo: name, rank, icon, cost, isFunnel, powerType, castTime,
 -- minRange, maxRange. maxRange==0 usually means melee/self (no yard band).
+--
+-- AUTHORITATIVE SOURCE (2026-08-01, RE-verified): Lua GetSpellInfo is NOT
+-- hardware-event-gated (the client's GetSpellInfo handler 0x00540A30 has no
+-- 0xC21000 flag check) and is a read-only spell-data query — it returns the
+-- client's real min/max range for stock AND custom spells from insecure addon
+-- code. A runtime SpellRange bridge was tried (direct call of that handler)
+-- and REMOVED: the handler builds a spell object + touches the player via
+-- 0x801650/0x7ff480 and was the prime suspect for a use-after-free crash 2s
+-- after arming. Lua GetSpellInfo is the safe authoritative source. maxR==0
+-- (self/melee/unknown custom) is handled by the precise edge model: the
+-- default band is 5yd and the measured ObjectPosition edge overrides a lying
+-- client.
 local function spell_range_info(sid)
     sid = tonumber(sid) or 0
     if sid <= 0 or not GetSpellInfo then return 0, 0 end
-    local _, _, _, _, _, _, _, minR, maxR = GetSpellInfo(sid)
+    local ok, _, _, _, _, _, _, minR, maxR = pcall(GetSpellInfo, sid)
+    if not ok then return 0, 0 end
     return tonumber(minR) or 0, tonumber(maxR) or 0
+end
+
+-- AUTHORITATIVE player cast/attack state (RE-verified 2026-08-01). The
+-- runtime reads the client's real casting fields (player+0xA6C cast id,
+-- +0xA7C cast end, +0xA70/0xA74 target) and the current-spells list
+-- ([0xAF5254], 6603 present = auto-attacking) directly — the Lua
+-- UnitCastingInfo/IsCurrentSpell NO-OP from insecure addon code (protected-
+-- call / hardware-event gate), which is exactly why the old rotation re-cast
+-- Attack every 0.35s and got "blocked action" errors. This is the bridge
+-- authority the rotation uses for busy/attack decisions.
+-- Returns: state ("free"|"attacking"|"casting"|"channeling"|"targeting"),
+--          castSpellId, castEndMs, castTargetGuid.
+local cast_state_cache = { t = 0, v = "free", sid = 0, end_ms = 0, tgt = 0 }
+local function cast_state()
+    local t = now()
+    if cast_state_cache.t and (t - cast_state_cache.t) < 0.05 and cast_state_cache.v then
+        return cast_state_cache.v, cast_state_cache.sid, cast_state_cache.end_ms, cast_state_cache.tgt
+    end
+    local state, sid, end_ms, tgt = "free", 0, 0, 0
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        local ok, packed = pcall(RaijinLab.RuntimeCall, RaijinLab, "PlayerCastState")
+        if ok and type(packed) == "string" then
+            -- packed: cast=<sid>|end=<ms>|tgt=0x..|attack=0|1|atk_tgt=0x..|auto=..|cur=..|tgtflag=0|1|time=..
+            -- (%X is the non-hex class — use [0-9a-fA-F] because the runtime
+            -- formats GUIDs with UPPERCASE hex via %llX.)
+            local cid, cend, cgtg, atk, tgtf =
+                packed:match("^cast=(%-?%d+)|end=(%-?%d+)|tgt=0x([0-9a-fA-F]+)|attack=(%d)|atk_tgt=0x[0-9a-fA-F]+|auto=%d+|cur=%d+|tgtflag=(%d)")
+            if cid then
+                sid = tonumber(cid) or 0
+                end_ms = tonumber(cend) or 0
+                tgt = tonumber(cgtg, 16) or 0
+                if tonumber(tgtf) == 1 then state = "targeting"
+                elseif sid and sid > 0 then state = "casting"
+                elseif tonumber(atk) == 1 then state = "attacking"
+                else state = "free" end
+            end
+        end
+    end
+    if state == "free" then
+        -- Runtime offline fallback: Lua-level (may no-op when protected — the
+        -- runtime is the real authority; this only prevents a hard nil crash).
+        if UnitCastingInfo and UnitCastingInfo("player") ~= nil then
+            state, sid = "casting", 1
+        elseif UnitChannelInfo and UnitChannelInfo("player") ~= nil then
+            state, sid = "channeling", 1
+        end
+    end
+    cast_state_cache = { t = t, v = state, sid = sid, end_ms = end_ms, tgt = tgt }
+    return state, sid, end_ms, tgt
 end
 
 -- Combat reach (melee / unit-targeted). Descriptor + Trinity default 1.5.
@@ -575,6 +786,13 @@ end
 -- AUTHORITY: ObjectPosition(GUID) + ObjectCombatReach only.
 -- Nameplates / CheckInteractDistance never supply yards.
 -- Returns: edge, aoe_gap, center, pCombat, tCombat, precise.
+--
+-- 2026-08-02 (FPS FIX): World.build_context fills ctx.target_distance_center /
+-- player_combat_reach / target_combat_reach / target_bounding_radius ONCE per
+-- tick. live_range_model is called by BOTH fill_live_spell_state AND
+-- spell_in_range_vs_target, so reading the tick cache first removes ~8 bridge
+-- round-trips (ObjectPosition x2 + CombatReach x2 + BoundingRadius) per tick
+-- (~240/s in combat). Live reads remain the fallback when the cache is absent.
 local function live_range_model(ctx)
     local function pack(center, pr, tr, tguid)
         center = tonumber(center)
@@ -595,11 +813,29 @@ local function live_range_model(ctx)
         local edge = center - pr - tr
         if edge < 0 then edge = 0 end
         -- Self-AoE: pure center for normal models; giant bound extends only.
-        local aoe = center - aoe_extend_for(tguid or "target")
+        -- Use the tick-cached bounding radius when available (no bridge call).
+        local ext = 0
+        local tb = ctx and ctx.target_bounding_radius
+        if not tb and tguid then tb = bounding_radius(tguid) end
+        if tb and tb > AOE_BOSS_BOUND then ext = tb end
+        local aoe = center - ext
         if aoe < 0 then aoe = 0 end
         return edge, aoe, center, pr, tr, true
     end
 
+    -- TICK-CACHE FIRST (computed once per tick by World.build_context).
+    if ctx and ctx.target_distance_precise == true
+        and tonumber(ctx.target_distance_center or 0) > 0 then
+        local center = tonumber(ctx.target_distance_center)
+        local tguid = UnitGUID and UnitGUID("target") or nil
+        return pack(center,
+            tonumber(ctx.player_combat_reach),
+            tonumber(ctx.target_combat_reach),
+            tguid)
+    end
+
+    -- Fallback: live reads only when the tick cache is absent (non-rotation
+    -- consumers / a target that changed mid-tick).
     if RaijinLab and UnitExists and UnitExists("target") then
         local tguid = UnitGUID and UnitGUID("target") or nil
         -- GUID-first live positions every tick (no token / nameplate geometry).
@@ -629,16 +865,6 @@ local function live_range_model(ctx)
                 local e, a, c, p, t, prec = pack(center, pr, tr, tguid)
                 if prec then return (edge or e), a, c, p, t, true end
             end
-        end
-    end
-    if ctx and ctx.target_distance_precise == true then
-        local center = tonumber(ctx.target_distance_center)
-        local tguid = UnitGUID and UnitGUID("target") or nil
-        if center then
-            return pack(center,
-                tonumber(ctx.player_combat_reach),
-                tonumber(ctx.target_combat_reach),
-                tguid)
         end
     end
     return nil, nil, nil, nil, nil, false
@@ -678,7 +904,32 @@ local function spell_in_range_vs_target(sid, name, ctx)
         end
     end
 
-    local band = is_aoe and SELF_AOE_RADIUS or ((maxR and maxR > 0) and maxR or 5.0)
+    -- 2026-08-02 (NO FALLBACKS — user directive): a targeted (non-AoE) spell
+    -- with an UNKNOWN range is a HARD failure — never a silent 5-yard default
+    -- that casts at out-of-range targets. The runtime decodes the real
+    -- Spell.dbc range (SpellMeleeInfo); if BOTH GetSpellInfo and the runtime
+    -- fail, surface it and fail the cast.
+    local band
+    if is_aoe then
+        band = SELF_AOE_RADIUS
+    elseif maxR and maxR > 0 then
+        band = maxR
+    else
+        local _rt_m, rt_maxR = runtime_spell_melee(sid)
+        if rt_maxR and rt_maxR > 0 then
+            band = rt_maxR
+        else
+            local _rd = {
+                sid = sid, name = name, minR = minR, maxR = maxR, band = 0,
+                gap = is_aoe and aoe or edge, edge = edge, aoe = aoe,
+                center = center, precise = precise and true or false,
+                client = client_r == nil and "nil" or tostring(client_r),
+                kind = is_aoe and "aoe" or "targeted",
+                verdict = "range_unknown",
+            }
+            return false, "range_unknown", _rd
+        end
+    end
     local diag = {
         sid = sid, name = name, minR = minR, maxR = maxR, band = band,
         gap = is_aoe and aoe or edge, edge = edge, aoe = aoe, center = center,
@@ -857,32 +1108,71 @@ local function live_castable(sid, name, opts)
                 and tostring(UnitGUID("target")) == tostring(search_guid))) then
                 local ok, why = spell_in_range_vs_target(sid, name, opts.ctx)
                 if not ok then return false, why end
-            elseif search_guid and RaijinLab and RaijinLab.ObjectPosition then
-                -- Range vs search unit by GUID positions (no client target needed).
-                local px, py = RaijinLab:ObjectPosition("player")
-                local tx, ty = RaijinLab:ObjectPosition(search_guid)
-                if px and tx then
-                    local dx, dy = px - tx, py - ty
-                    local center = math.sqrt(dx * dx + dy * dy)
+            elseif search_guid then
+                -- Range vs search unit.
+                --
+                -- AUTHORITATIVE (2026-08-02): the runtime AuraSearch pack ALWAYS
+                -- carries the measured center distance (search.dist) — the exact
+                -- number the runtime used to rank closest-first AND to filter
+                -- (units beyond maxRange+1 are never in the pack). Use it
+                -- directly. NO per-spell ObjectPosition round-trip: that re-read
+                -- is the same snapshot data, and each bridge crossing inside the
+                -- game Lua VM is a crash-surface (post-cast burst). The check
+                -- ALWAYS runs — far units are refused, in-range units cast —
+                -- with zero dependence on a fallible second call (never fail-
+                -- closed: no measurement -> proceed, client is final authority).
+                local search = opts.ctx and opts.ctx.aura_search_hit
+                local center = search and tonumber(search.dist)
+                if center and center > 0 then
                     local minR, maxR = spell_range_info(sid)
-                    local band = (maxR and maxR > 0) and maxR or 30
-                    local pr = 1.5
-                    local tr = 1.5
-                    if RaijinLab.ObjectCombatReach then
-                        pr = tonumber(RaijinLab:ObjectCombatReach("player")) or 1.5
-                        tr = tonumber(RaijinLab:ObjectCombatReach(search_guid)) or 1.5
+                    -- 2026-08-02 (RUNTIME RANGE AUTHORITY): GetSpellInfo returns
+                    -- 0 for custom Ascension IDs. The runtime decodes the real
+                    -- Spell.dbc range entry (SpellMeleeInfo) — that IS the
+                    -- authority.
+                    local rt_melee, rt_maxR = runtime_spell_melee(sid)
+                    if rt_maxR and rt_maxR > 0 then maxR = rt_maxR end
+                    -- 2026-08-02 (NO FALLBACKS — user directive): the spell's
+                    -- REAL max range is REQUIRED. If BOTH GetSpellInfo AND the
+                    -- runtime Spell.dbc decode fail, that is a HARD failure to
+                    -- surface — never a silent 30-yard default that casts at
+                    -- out-of-range targets (the "why is icy touch searching in
+                    -- 30 yards" bug). Fail the cast with "range_unknown".
+                    local band = (maxR and maxR > 0) and maxR
+                    if not band then
+                        return false, "range_unknown"
                     end
-                    local edge = center - pr - tr
-                    if edge < 0 then edge = 0 end
-                    if edge > band + 0.5 then return false, "oor" end
-                    if minR and minR > 0 and edge + 0.05 < minR then return false, "oor" end
+                    -- 2026-08-02 (14:09 RANGE FIX — client measures CENTER, not
+                    -- edge): compare CENTER against the spell's real max range.
+                    -- MELEE is strict; ranged gets a small hitbox tolerance.
+                    local melee = (rt_melee == true or rt_melee == 1
+                        or tostring(rt_melee) == "1")
+                    local tol = melee and 0.5 or 1.5
+                    if center > band + tol then return false, "oor" end
+                    if minR and minR > 0 and center + 0.05 < minR then return false, "oor" end
+                end
+                -- 2026-08-02 (NO FALLBACKS): a search hit with NO valid measured
+                -- distance is NOT a valid cast target (World.find_aura_search
+                -- targets now excludes unplaceable units). If one ever reaches
+                -- here, fail — never "proceed and let the client refuse" (that
+                -- was the edge=999.0 -> Out of range spam).
+                if search and not (center and center > 0) then
+                    return false, "range_unknown"
                 end
             end
         end
         -- FACING + LOS (unit-target only): WotLK HasInArc(M_PI) = 180° front
         -- hemisphere (half-angle π/2). Instant re-eval every tick — no sticky
-        -- lockout. NEVER wire a cast that will spam "in front" / "line of sight".
-        -- skip_facing is set for ground self-AoE / self / no unit target.
+        -- lockout.
+        --
+        -- FACING (2026-08-01): NEVER hard-skip here. The facing measurement can
+        -- disagree with the client's real facing (the +0x7AC field lags the
+        -- visual, and the Lua GetPlayerFacing fallback no-ops to 0.0). Hard-
+        -- skipping produced "wait facing:Blood Strike" forever while the user
+        -- stood facing the target — the slot never reached the wire path that
+        -- TURNS and wires. Facing is now handled in the wire path (turn toward
+        -- the GUID, re-measure, wire regardless — the client is the authority).
+        -- LOS stays a measurement gate (TraceLine, point-blank exempt): only a
+        -- CONFIDENT block refuses the cast pre-wire.
         if not opts.skip_facing or not opts.skip_los then
             local Wf = RaijinLab and RaijinLab.World
             local face_ref = search_guid
@@ -898,12 +1188,7 @@ local function live_castable(sid, name, opts)
                     })
                     if not gok then return false, gwhy end
                 else
-                    -- Only measured not-facing blocks (nil undetermined allows).
-                    if not opts.skip_facing and Wf and Wf.is_not_facing_guid then
-                        if Wf.is_not_facing_guid(face_ref, Wf.CAST_FACE_HALF_ARC) then
-                            return false, "facing"
-                        end
-                    end
+                    -- LOS only: confident-block refuses; facing NEVER blocks here.
                     if not opts.skip_los and Wf and Wf.is_los_guid then
                         if Wf.is_los_guid(face_ref) == false then
                             return false, "los"
@@ -1006,29 +1291,31 @@ local function fill_live_spell_state(ctx, spell_ids)
             ctx.cooldowns[id] = rem
             ctx.cooldowns[tostring(id)] = rem
 
-            -- Runtime C++ ValidateCast: single call validates cooldown, power,
-            -- range, facing. Returns "ok" or "oor:N" / "cooldown:N" / "no_power:N".
+            -- Runtime ValidateCast DISABLED: calling through bridge 8 spells x
+            -- 30 ticks = 240/sec corrupts Lua stack → AV_READ crash. Use safe
+            -- Lua-level APIs (IsUsableSpell, IsSpellInRange) which are proven
+            -- stable. Cooldowns already handled by GetSpellCooldown above.
             if not gcd_lock then
-                local verdict = "ok"
-                if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    local maxR = meta.maxR or 5.0
-                    local okr, result = pcall(RaijinLab.RuntimeCall, RaijinLab, "ValidateCast", id, maxR)
-                    if okr and type(result) == "string" and result ~= "" then
-                        verdict = result
-                    end
+                local usable = true
+                if IsUsableSpell and name and name ~= "" then
+                    local u, nomana = IsUsableSpell(name)
+                    if u == nil and id then u, nomana = IsUsableSpell(id) end
+                    if nomana then usable = false end
                 end
-                local ok = (verdict == "ok")
-                ctx.spell_usable[id] = ok
-                ctx.spell_usable[tostring(id)] = ok
-                if not ok then
-                    local oor = string.match(verdict, "^oor:(.+)")
-                    ctx.spell_in_range[id] = false
-                    ctx.spell_in_range[tostring(id)] = false
-                    ctx.spell_range_diag[id] = { sid = id, name = name, verdict = verdict, edge = tonumber(oor) }
-                else
-                    ctx.spell_in_range[id] = true
-                    ctx.spell_in_range[tostring(id)] = true
+                ctx.spell_usable[id] = usable
+                ctx.spell_usable[tostring(id)] = usable
+                local inRange = true
+                if IsSpellInRange and name and name ~= "" then
+                    -- Ascension: IsSpellInRange returns 0/nil for custom spells
+                    -- even IN range, and 0 whenever the hardware-event flag is
+                    -- 0 (flag writes are BANNED — they crash the VM). Treat
+                    -- 0/nil as UNKNOWN: inRange stays true (never block). The
+                    -- authoritative range check is the precise runtime model
+                    -- (live_range_model via ObjectPosition) at the wire path.
+                    IsSpellInRange(name, "target")
                 end
+                ctx.spell_in_range[id] = inRange
+                ctx.spell_in_range[tostring(id)] = inRange
             elseif ctx.spell_usable[id] == nil then
                 ctx.spell_usable[id] = true
                 ctx.spell_usable[tostring(id)] = true
@@ -1098,8 +1385,12 @@ local function apply_slot_policy_overrides(ctx, rotation)
                 ctx.spell_usable[tostring(sid)] = true
             end
             if policy == "corpse" and W and W.nearest_available_corpse then
-                local cr = slot_corpse_range(slot) or 30
-                local corpse = W.nearest_available_corpse(cr)
+                -- 2026-08-02 (NO FALLBACKS): the corpse condition's range is
+                -- REQUIRED — an unknown range fails the corpse check rather
+                -- than silently searching 30yd.
+                local cr = slot_corpse_range(slot)
+                if not cr or cr <= 0 then cr = nil end
+                local corpse = cr and W.nearest_available_corpse(cr)
                 local minR, maxR = spell_range_info(sid)
                 local lim = cr
                 if maxR and maxR > 0 and maxR < lim then lim = maxR end
@@ -1135,7 +1426,21 @@ end
 
 local function target_guid()
     if UnitGUID and UnitExists and UnitExists("target") then
-        return UnitGUID("target")
+        local g = UnitGUID("target")
+        if g and g ~= "" then return g end
+    end
+    -- RUNTIME AUTHORITY (2026-08-01): UnitGUID can no-op / return nil from
+    -- insecure addon code on this client while UnitExists still works. The
+    -- runtime reads the client's real UNIT_FIELD_TARGET (player descriptor
+    -- +0x48) — always authoritative. Use it so target_rel casts always have a
+    -- real GUID and never fall into the "no_candidate"/empty-try_list trap.
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab.HasRuntime
+        and pcall(RaijinLab.HasRuntime, RaijinLab) then
+        local ok, g = pcall(RaijinLab.RuntimeCall, RaijinLab, "UnitTargetGuid", "player")
+        if ok and g and tostring(g) ~= "" and tostring(g) ~= "0x0"
+            and tostring(g) ~= "0x0000000000000000" then
+            return g
+        end
     end
     return nil
 end
@@ -1153,17 +1458,23 @@ end
 -- Snapshot of cast-related client state for pre/post comparison
 local function cast_snapshot(sid)
     local name = spell_name(sid)
+    local cstate = cast_state()
     local snap = {
         t = now(),
-        casting = (UnitCastingInfo and UnitCastingInfo("player") ~= nil) or false,
-        channel = (UnitChannelInfo and UnitChannelInfo("player") ~= nil) or false,
+        casting = (cstate == "casting" or cstate == "channeling"),
+        channel = false,
         current = false,
         cd_start = 0,
         cd_dur = 0,
         gcd_start = 0,
         gcd_dur = 0,
     }
-    if IsCurrentSpell then
+    -- Authoritative current-spell detection for `sid` (runtime list walk).
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        local ok, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "CurrentSpell")
+        if ok and tonumber(cur) == tonumber(sid) then snap.current = true end
+    end
+    if not snap.current and IsCurrentSpell then
         local ok, cur = pcall(IsCurrentSpell, sid)
         if ok then snap.current = not not cur end
     end
@@ -1646,19 +1957,13 @@ end
 
 function Executor.attempt_petaction(action)
     if not (UnitExists and UnitExists("pet")) then return false, "no_pet" end
-    local cmd = tostring(action.pet_cmd or action.name or ""):lower()
-    -- Attack: needs a hostile target; PetAttack() is the canonical, unprotected call.
-    if cmd:find("attack") then
-        if not (UnitExists("target")) then return false, "no_target" end
-        if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then return false, "target_dead" end
-        if UnitCanAttack and not UnitCanAttack("player", "target") then return false, "not_enemy" end
-        if PetAttack then PetAttack(); return true, "petattack" end
-        return false, "no_petattack_api"
-    end
-    -- Other commands (Follow/Stay/stances): cast the resolved pet-bar slot.
-    local idx = resolve_pet_index(action)
-    if idx and CastPetAction then CastPetAction(idx); return true, "petaction:" .. tostring(idx) end
-    return false, "petaction_unresolved"
+    -- 2026-08-02 (BLOCKED-DIALOG FIX): PetAttack() and CastPetAction() are
+    -- PROTECTED FrameScript APIs in 3.3.5 — calling them from addon Lua pops
+    -- "RaijinLab has been blocked from an action only available to the Blizzard
+    -- UI" (taint; the screenshot at 15:23). The runtime has no native pet-cmd
+    -- primitive yet, so fail-open: return false and let the Engine cycle to the
+    -- next slot. NEVER touch a protected pet API from Lua.
+    return false, "no_native_pet"
 end
 
 -- Auto Attack is not a castable GCD ability. Spamming CastSpell(6603) is pure
@@ -1714,23 +2019,70 @@ function Executor.attempt_action(action, ctx)
 
     -- Auto Attack: engage once if needed; never CastSpell spam / never GCD.
     if is_auto_attack(sid, name) then
-        -- If no target selected, try to auto-acquire nearest enemy
+        -- HARD RULE (Prompt.md): NEVER manually acquire a target here. When
+        -- acquire is off the rotation must not change/acquire selection at all.
+        -- Auto-targeting is permitted ONLY when a hostile/neutral unit is
+        -- attacking the player (targeting/casting/damaging us — heals/buffs
+        -- excluded) — and even then we let the GAME's natural targeting select
+        -- it; we never TargetUnit. Act.Attack is a no-op without a selected
+        -- target (runtime reads the client's selection), so it cannot acquire.
         if not (UnitExists and UnitExists("target")) then
             if Act.Attack then pcall(Act.Attack) end
-            -- Re-check after auto-acquire attempt
-            if not (UnitExists and UnitExists("target")) then return false, "no_target" end
+            -- Re-check after the (no-op) engage attempt.
+            if not (UnitExists and UnitExists("target")) then
+                local WW = RaijinLab and RaijinLab.World
+                local threat = WW and WW.hostile_or_neutral_attacking_me
+                    and WW.hostile_or_neutral_attacking_me()
+                if threat then
+                    -- A hostile/neutral is attacking us: the game's natural
+                    -- targeting may select it (or the player clicks it). We
+                    -- wait without touching selection.
+                    return false, "no_target_await_attacker"
+                end
+                return false, "no_target"
+            end
         end
         if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then return false, "target_dead" end
         if UnitCanAttack and not UnitCanAttack("player", "target") then return false, "not_enemy" end
+        -- AUTHORITATIVE already-attacking check (RE-verified): the runtime walks
+        -- the client's real current-spells list ([0xAF5254]) for 6603. The Lua
+        -- IsCurrentSpell(6603) NO-OPS from insecure code (hardware-event gate) —
+        -- that is why the old code re-engaged Attack every 0.35s and the client
+        -- replied with "blocked action"/busy errors. AttackTarget in the runtime
+        -- is also idempotent (never re-casts while the list says attacking).
         local already = false
-        if IsCurrentSpell then
+        if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+            -- Authoritative: "1|0xGUID" = the GUID the player is attacking.
+            -- Only skip when it matches the CURRENT target (attacking a
+            -- leftover target must fall through so AttackTarget can re-aim).
+            local okc, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "IsAttacking")
+            if okc and type(cur) == "string" then
+                local flag, atk = cur:match("^([01])|0x([0-9a-fA-F]+)$")
+                if flag == "1" and atk then
+                    local tgt = (UnitGUID and UnitGUID("target")) or ""
+                    if tgt ~= "" and atk:lower() == tgt:lower() then
+                        already = true
+                    end
+                end
+            end
+        end
+        if not already and IsCurrentSpell then
             local okc, cur = pcall(IsCurrentSpell, 6603)
             if okc and cur then already = true end
+        end
+        -- Engage ONCE per target: after a successful Act.Attack for a target,
+        -- do not call it again for the same target (prevents the addon from
+        -- re-firing auto-attack every 0.35s — the runtime is also idempotent,
+        -- but this keeps the FIRE log and bookkeeping clean too).
+        local tgt_g = (UnitGUID and UnitGUID("target")) or ""
+        if Executor._aa_target and Executor._aa_target == tgt_g then
+            return false, "already_attacking"
         end
         if already then return false, "already_attacking" end
         if Act.Attack then
             pcall(Act.Attack)
             Executor._last_cast = { sid = 6603, name = "Auto Attack", via = "Attack", t = now(), evidence = "attack" }
+            Executor._aa_target = tgt_g
             -- Short re-engage floor only (not 0.75 — felt like rotation delay).
             Executor._recent = Executor._recent or {}
             Executor._recent[sid] = now() + 0.35
@@ -1745,7 +2097,9 @@ function Executor.attempt_action(action, ctx)
     -- (Target Existence any|no_target, Corpse Nearby) - never from IsSpellInRange nil.
     local policy = action.target_policy or slot_policy(action.slot)
     local needs_enemy = (policy == "require")
-    local corpse_range = (policy == "corpse") and (slot_corpse_range(action.slot) or 30) or nil
+    -- 2026-08-02 (NO FALLBACKS): an unknown corpse range = nil (the corpse
+    -- check fails open to the next slot — never a silent 30yd search).
+    local corpse_range = (policy == "corpse") and slot_corpse_range(action.slot) or nil
     local guid = nil
     local corpse_guid_for_mark = nil
     local probe_marked = false
@@ -1754,10 +2108,6 @@ function Executor.attempt_action(action, ctx)
     -- Acquire OFF (default): NEVER TargetUnit / never leave selection on victim.
     -- Acquire ON: may Target the match; Reset after restores previous.
     local search = action.aura_search_hit or (ctx and ctx.aura_search_hit)
-    if search and search.guid then
-        guid = search.guid
-        if ctx then ctx.aura_search_hit = search end
-    end
     -- Strict truthy only. Anything else (nil/false/"false"/0) = acquire OFF.
     -- HARD RULE: acquire OFF means NEVER call Act.Target for this cast.
     local want_acquire = false
@@ -1776,6 +2126,30 @@ function Executor.attempt_action(action, ctx)
         local ra = search.reset_after
         want_reset_after = (ra == true or ra == 1 or ra == "true")
     end
+    --
+    -- 2026-08-02 (HARD acquire-OFF rule — the "aura_search force-acquires"
+    -- fix): when acquire is OFF and we ALREADY have a current target, the
+    -- aura-search unit is IGNORED — casting at it via Spell_C(guid) is exactly
+    -- what makes the client visibly target it (force-acquire), and blocking it
+    -- with no_acquire is what froze the rotation into a Consecration-only loop
+    -- (live 16:34: search returned a unit != current target -> every aura slot
+    -- blocked, melee blocked on facing, only Consecration fired). Instead we
+    -- cast at the CURRENT TARGET via the native guid=0 path: it never changes
+    -- selection and never force-acquires, and the rotation actually does its
+    -- job on the unit you are attacking. The search unit is only reachable
+    -- when there is NO current target ("cast without targeting" — the runtime
+    -- selection-restore reverts the async pick).
+    local has_ctarget = UnitExists and UnitExists("target")
+    -- 2026-08-01 (HARD acquire-OFF rule, verified constraint): with acquire OFF
+    -- we MUST cast at the CURRENT target (guid=0 native path) when one exists.
+    -- There is NO way to cast at a different aura-search unit without acquiring
+    -- it — UNIT_FIELD_TARGET (desc+0x48) IS the client's selection field, so the
+    -- descriptor-pin + Spell_C(0) path selectes that unit (CastSpellNoAcquire
+    -- force-acquired live). Per the rule "the mob I am physically targeting, if
+    -- I am targeting anything, is my target," the rotation casts at the current
+    -- target. The candidate/try_list logic (below) clears search guidance when
+    -- acquire-off + current target, so the wire takes the guid=0 path. Search
+    -- targets are cast only with NO current target ("cast without targeting").
     -- Snapshot selection BEFORE any Target / Cast that might mutate it.
     local pre_target_guid = nil
     local pre_had_target = UnitExists and UnitExists("target")
@@ -1790,14 +2164,11 @@ function Executor.attempt_action(action, ctx)
     end
     -- Acquire OFF: never Target, period. Runtime CastSpell restores after Spell_C.
 
-    -- Auto Face is opt-in only via the "Auto Face" slot condition (not always on).
-    local want_auto_face = action.auto_face == true
-    if not want_auto_face and action.slot then
-        local Eng = RaijinLab and RaijinLab.RotationEngine
-        if Eng and Eng.slot_wants_auto_face then
-            want_auto_face = Eng.slot_wants_auto_face(action.slot)
-        end
-    end
+    -- 2026-08-02 (NO AUTO-FACE, user directive): the rotation NEVER turns the
+    -- character. Engine.slot_wants_auto_face always returns false (the "Auto
+    -- Face" condition is inert); no auto-face flag is ever set. Facing is
+    -- detection-only — a cast wires only when the player ALREADY faces the
+    -- target (runtime ObjectIsFacing confirmed), otherwise the slot is skipped.
 
     if policy == "corpse" then
         -- Cast ON a verified corpse GUID only. Unverified CLEU ghosts caused
@@ -1853,11 +2224,16 @@ function Executor.attempt_action(action, ctx)
         -- Ground self-AoE (Consecration) has no facing requirement.
         local skip_face = ground or policy == "optional" or policy == "forbid"
             or is_self_aoe_spell(sid, name)
-        -- If Auto Face is on, skip face here — wire path will turn then recheck.
+        -- 2026-08-02 (NO AUTO-FACE, user directive): facing is detection-only
+        -- and UNIVERSAL. The wire path enforces confirmed facing for EVERY
+        -- unit-targeted cast (melee AND ranged). Never skip facing for
+        -- unit-targeted spells — the client refuses "facing the wrong way"
+        -- even on ranged here. Only ground/self/optional spells skip (they
+        -- have no unit target to face).
         local can, why = live_castable(sid, name, {
             policy = policy, needs_enemy = needs_enemy,
             skip_range = skip_r,
-            skip_facing = skip_face or want_auto_face,
+            skip_facing = skip_face,
             ctx = ctx,
         })
         if not can then
@@ -1905,6 +2281,29 @@ function Executor.attempt_action(action, ctx)
     if RR and RR.highest then cast_sid = RR.highest(sid) or sid end
     action._cast_name = spell_name(cast_sid, name)
 
+    -- DIAG (2026-08-01): state at cast attempt — which policy, is there a
+    -- search/guid, is a client target present. One line per wire-bound attempt.
+    -- 2026-08-02 (LOG-THROTTLE, NOT DECISION-THROTTLE — user directive): the
+    -- old 0.25s _next_gap pause on "facing" blocked the LITERAL-INSTANT cast the
+    -- user demands ("as im turning the literal instant its possible to cast it
+    -- should cast literally instantly"). The DECISION must re-check every tick
+    -- (the native facing read is cheap and hook-cached); only this LOG line is
+    -- throttled (~3Hz) so the log doesn't flood at 50Hz. Facing is detected
+    -- natively now, so re-checking is near-free.
+    do
+        local tnow3 = now()
+        local lk = Executor._attempt_log_key
+        if not lk or lk.name ~= name or lk.sid ~= cast_sid or (tnow3 - (lk.t or 0)) > 0.33 then
+            dlog("cast", "attempt %s sid=%d pol=%s needs_enemy=%s search=%s guid=%s tgt=%s",
+                tostring(name), cast_sid, tostring(policy),
+                needs_enemy and "y" or "n",
+                (search and "y" or "n"),
+                tostring(guid or "nil"),
+                (UnitExists and UnitExists("target") and "y" or "n"))
+            Executor._attempt_log_key = { name = name, sid = cast_sid, t = tnow3 }
+        end
+    end
+
     -- Final ready gate (latency-aware). Never spam Spell_C when not ready.
     do
         local rem = spell_ready_remaining(cast_sid, action._cast_name or name)
@@ -1916,13 +2315,29 @@ function Executor.attempt_action(action, ctx)
 
     -- Multi-dot: GUID is mandatory when search found a unit.
     -- Never fall back to current-target cast (melee hits wrong unit).
+    -- 2026-08-02 (HARD acquire-OFF rule, CORRECTED per user): for AURA_SEARCH
+    -- slots, cast at the SEARCHED mob even when acquire is OFF and there IS a
+    -- current target. Per the user's rule, "multi-dot/aura_search should CAST
+    -- to a different mob Y when acquire is off" — it must NOT fall back to the
+    -- current target X. Only NON-search (plain target_rel) slots fall back to
+    -- the current target (guid=nil -> guid=0 current-target cast).
+    local _slot_is_aura_search = search
+        and (search.guid or (search.candidates and #search.candidates > 0))
     if search and search.guid then
         guid = search.guid
     end
-    if search and not guid then
+    -- Acquire-off + current target is FINE with guid=nil only for NON-search
+    -- slots (cast at current target via guid=0 path). An aura_search slot with
+    -- a search guid is always mandatory — never nil it.
+    if search and not guid and not (_slot_is_aura_search) then
         return false, "no_search_guid:" .. tostring(name)
     end
-    if needs_enemy and not guid and not is_ground_self_aoe(sid, name) then
+    -- Current-target cast (2026-08-01): a target_rel slot with a client target
+    -- but no resolvable GUID (UnitGUID no-op from insecure code) must cast at
+    -- the CURRENT TARGET via the guid=0 path — never return "no_target" while
+    -- a valid target is selected. Only truly no-target returns no_target.
+    if needs_enemy and not guid and not is_ground_self_aoe(sid, name)
+        and not (UnitExists and UnitExists("target")) then
         return false, "no_target:" .. tostring(name)
     end
 
@@ -1938,13 +2353,46 @@ function Executor.attempt_action(action, ctx)
     --   acquire ON + no reset -> Target match and keep it
     -- Facing is independent of acquire: unit-targeted spells still need front cone.
     local preserve_selection = (guid ~= nil) and (not want_acquire or want_reset_after)
+    -- 2026-08-02 (MULTI-DOT FACING FIX): aura_search slots are NEVER
+    -- facing-gated. The search target can be anywhere around the player (dots
+    -- spread to adds behind / beside), and a custom-spell facing false-positive
+    -- froze the whole rotation at "wait facing:Icy Touch x36" while the player
+    -- faced the target (Icy Touch is a 30yd ranged spell — it needs no front
+    -- cone at all). Only plain target_rel slots consult the front cone.
+    -- 2026-08-02 (UNIVERSAL FACING — user directive): facing applies to EVERY
+    -- unit-targeted cast, melee AND ranged AND aura_search. The client refuses
+    -- "You are facing the wrong way!" / "in front of you" even on ranged casts
+    -- here. Only ground/self/optional/forbid/corpse spells skip (they have no
+    -- unit target to face).
     local skip_face_cast = is_ground_self_aoe(sid, name) or is_self_aoe_spell(sid, name)
         or policy == "optional" or policy == "forbid" or policy == "corpse"
 
     -- Multi-candidate same-tick try (aura_search top-N). Face-fail → next GUID.
     -- Order is runtime authority: closest first, FOV-centre on distance ties.
     local try_list = {}
-    if search and search.candidates and #search.candidates > 0 then
+    -- 2026-08-02 (HARD acquire-OFF rule, CORRECTED per user): with acquire OFF
+    -- and a CURRENT target, only NON-search target slots fall back to the
+    -- current target (guid=0). AURA_SEARCH slots must STILL cast at the
+    -- searched candidates (mob Y) — per the user rule "multi-dot/aura_search
+    -- should CAST to a different mob Y when acquire is off." So _is_aura_search
+    -- slots keep their try_list/guid (they cast at Y, not the current target).
+    --
+    -- 2026-08-02 (USER-CORRECTED, ZERO-FRAME ACQUIRE): with acquire OFF, casting
+    -- at a searched mob MUST NOT touch the client's selected target / unitframe
+    -- at all — it just casts directly at the mob aura_search decides. This
+    -- holds EVEN with NO current target: we do NOT refuse (unlike a prior draft).
+    -- The zero touch is achieved at the runtime by the CAST_NO_ACQUIRE path:
+    -- pin UNIT_FIELD_TARGET descriptor -> Spell_C(spellId, 0) -> restore, never
+    -- writing the 0xBD07B0 selection global the unitframe reads. No refusal.
+    local _acquire_off_has_ct = (not want_acquire)
+        and (UnitExists and UnitExists("target")) and (UnitGUID and UnitGUID("target"))
+        and not _slot_is_aura_search
+    if _acquire_off_has_ct then
+        try_list = {}
+        guid = nil
+        search = nil
+        if ctx then ctx.aura_search_hit = nil end
+    elseif search and search.candidates and #search.candidates > 0 then
         for i = 1, #search.candidates do
             local c = search.candidates[i]
             if c and c.guid then try_list[#try_list + 1] = c end
@@ -1959,9 +2407,15 @@ function Executor.attempt_action(action, ctx)
     -- Live bug: policy=optional (target_exists any + ground-AoE force) left
     -- try_list empty → last_why=no_candidate forever, rotation froze, client
     -- crashed ~4s later when OM re-armed mid-stuck combat.
+    -- Current-target cast (2026-08-01): needs_enemy slots WITHOUT a resolvable
+    -- GUID (UnitGUID no-ops from insecure code) still cast at the CURRENT
+    -- TARGET via the guid=0 path — Spell_C(0) resolves against client
+    -- selection. This was the "literally nothing casts" bug: every target_rel
+    -- slot (PS/IT/BS) returned no_candidate with try_list empty.
     local self_cast_ok = ground_self
         or policy == "optional" or policy == "forbid"
         or (not needs_enemy and not search)
+        or (needs_enemy and not search and (UnitExists and UnitExists("target")))
 
     -- Ground feet AoE: NEVER walk try_list / GUID cast. Always CastSpell(id).
     if ground_self then
@@ -1972,21 +2426,56 @@ function Executor.attempt_action(action, ctx)
     -- Multi-dot GUID wire: Spell_C only. Runtime pins UNIT_FIELD_TARGET and
     -- restores descriptor — no TargetUnit from Lua after wire (crash surface).
     local ok, wire_guid = false, nil
-    local last_why = "no_candidate"
-    local FACE = (Act.CAST_FACE_IF_NEEDED or 1)
-    local SKIP = (Act.CAST_SKIP_IF_NOT_FACING or 4)
+    -- CRITICAL (2026-08-01): last_why MUST start as nil, not "no_candidate".
+    -- The wire is guarded by `if not last_why then` — a non-nil initial string
+    -- made that guard ALWAYS false, so the wire NEVER executed and every slot
+    -- fell through as "no_candidate" (the "literally nothing casts" bug). nil
+    -- means "no blocker yet — proceed to wire"; it is only set to a real reason
+    -- inside the loop when a candidate is rejected (bad_guid/blacklist) or the
+    -- cast runs and fails.
+    local last_why = nil
     local NOTGT = (Act.CAST_NO_TARGET_CHANGE or 2)
+    local NOACQ = (Act.CAST_NO_ACQUIRE or 16)
     -- Restored to working baseline flags:
     --   NOTGT when acquire-off (multi-dot must not sticky-select)
-    --   FACE+SKIP only when Auto Face is on the slot (turn then skip if still off)
-    --   Do NOT force CHECK_LOS — TraceLine false-positives killed every unit cast
-    --   while Consecration (guid=0) still fired.
+    --   NEVER FACE / SKIP / LOS — the runtime must not turn (NO AUTO-FACE) and
+    --   must not refuse on its own facing guess; the Lua wire path is the
+    --   single facing authority (confirmed runtime ObjectIsFacing) and the
+    --   client is the final judge. Do NOT force CHECK_LOS — TraceLine false-
+    --   positives killed every unit cast while Consecration still fired.
+    --
+    -- 2026-08-01 (CRASH FIX, definitive): CAST_NO_ACQUIRE is REMOVED from the
+    -- execution path. That flag invoked CastSpellNoAcquire, which WRITES
+    -- UNIT_FIELD_TARGET (the client selection field) synchronously under the
+    -- Lua bridge — this races the game's cast-resolve and corrupts the Lua VM
+    -- (0x512B07, proven 19:33) and force-acquires. The rotation now casts via
+    -- the plain CastSpell(guid) path (deferred restore reverts the visible and
+    -- pick) and, with a current target, casts at it via guid=0 (never touches
+    -- another unit). Flags are NOTGT (acquire-off) only.
+    -- 2026-08-02 (PROVEN UNSAFE, reverted): the descriptor-pin CAST_NO_ACQUIRE
+    -- path CRASHES 0x512B07 under the bridge (proven twice) AND still force-
+    -- acquires. So acquire-off guid casts do NOT set NOACQ — they use the plain
+    -- CastSpell(guid) path whose deferred selection restore reverts the victim
+    -- after the cast (best available without the native-hook zero-touch cast).
+    -- guid=nil (current-target cast) stays the plain path.
     local function unit_cast_flags()
         local f = 0
         if not want_acquire then f = f + NOTGT end
-        if want_auto_face then f = f + FACE + SKIP end
+        -- 2026-08-02 (NO AUTO-FACE, user directive): NEVER set the FACE flag.
+        -- That instructed the runtime to turn the character toward the target.
+        -- The rotation must never move/turn the player — facing is detection
+        -- only. A cast wires only when the player ALREADY faces the target.
         return f
     end
+    -- FACING ONLY APPLIES TO MELEE-RANGE SPELLS (2026-08-02). Ranged spells
+    -- (Icy Touch 30yd, etc.) NEVER require facing in WoW — the client only
+    -- refuses "target is not in front of you" for melee. Blocking a 30yd spell
+    -- on the facing gate froze the whole rotation ("wait facing:Icy Touch
+    -- x122" while the player faced the target and Icy Touch needed no facing).
+    -- AUTHORITATIVE (runtime): SpellMeleeInfo decodes the client's Spell.dbc
+    -- record + range entry (used for the runtime range authority below).
+    local melee_rt = runtime_spell_melee(cast_sid)
+    local _, maxR_spell = spell_range_info(cast_sid)
     for ci = 1, #try_list do
         local cand = try_list[ci]
         local cg = cand.guid
@@ -1995,38 +2484,176 @@ function Executor.attempt_action(action, ctx)
         elseif Executor.guid_blacklisted(cg) then
             last_why = "blacklisted"
         else
-            -- FACING GATE: only hard-skip when Auto Face is ON and still not
-            -- facing after the turn attempt. Without Auto Face, the player chose
-            -- manual facing — wire and let the server decide (old behavior).
-            if not skip_face_cast and needs_enemy then
-                local not_facing = W and W.is_not_facing_guid
-                    and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                if not_facing then
-                    if want_auto_face then
-                        -- Attempt auto-face; re-measure
-                        if Act.FaceTowardGuid then pcall(Act.FaceTowardGuid, cg)
-                        elseif W and W.face_guid then pcall(W.face_guid, cg) end
-                        not_facing = W and W.is_not_facing_guid
-                            and W.is_not_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                        if not_facing then
-                            -- Auto-face failed: skip this GUID, don't wire a guaranteed fail
-                            last_why = "facing"
-                        end
-                    end
-                    -- Without Auto Face: fall through and wire (old behavior).
-                    -- Server may still refuse with "wrong way" — event handler
-                    -- cleans up and rotation retries next tick.
+            -- 2026-08-02 (HARD acquire-OFF, corrected): casting at a different
+            -- mob is NOT switching targets. The native CAST_NO_ACQUIRE path
+            -- pins the player descriptor UNIT_FIELD_TARGET to the aura-search
+            -- guid and calls Spell_C(0) — cast-at-current-target via the
+            -- descriptor, which does NOT trigger the async client-selection
+            -- pick. So the client selection never moves, even for a frame, even
+            -- when the cast target differs from my current physical target.
+            -- This removes the old "no_acquire" refusal that blocked casting on
+            -- new targets mid-fight ("fails to cast while fighting"). My
+            -- physical target (if any) is never changed by a cast.
+            -- FACING GATE (2026-08-01 + 2026-08-02, FINAL):
+            --
+            -- HARD RULE (Prompt.md): the rotation NEVER turns the character.
+            -- No movement behaviour of any kind comes from the rotation — the
+            -- player steers. Turning happens ONLY when the user explicitly adds
+            -- the "Auto Face" condition to a slot (want_auto_face), which is an
+            -- opt-in, never a default.
+            --
+            -- Without Auto Face: when a candidate is NOT facing us, we must
+            -- NEVER wire it (that produced the client "target is not in front
+            -- of you" refusal + red UI_ERROR spam) and NEVER turn. We set
+            -- last_why="facing" so the try-list moves to the next candidate
+            -- (multi-dot has up to 8, closest-first); if none is facing, the
+            -- slot is skipped this tick with no wire at all — a clean backoff,
+            -- zero UI errors, and the player turns when they want to engage.
+            --
+            -- Safe against the old "wait facing:X forever" failure: the runtime
+            -- reads the LIVE facing field (0x7AC), not the stale 0x7A4, so a
+            -- "not facing" verdict is real — the player genuinely is not in the
+            -- front cone, and not casting IS correct.
+            -- 2026-08-02: melee_req gates this — ranged spells never need facing
+            -- (a 30yd Icy Touch frozen on "facing" for 122 ticks froze the whole
+            -- rotation). Only melee-range casts consult the front cone.
+            -- 2026-08-02 (STRICT): only wire melee when the runtime CONFIRMS
+            -- we face the target (facing == true). Both confident-not-facing
+            -- AND undetermined (target not yet in the snapshot) skip — never
+            -- wire melee into a guaranteed client "target is not in front of
+            -- you" refusal. An undetermined skip is a 1-frame wait (snapshot
+            -- refreshes next tick), not a freeze. This is "more aware and in
+            -- control" — we do not spend the player's GCD on a refusal.
+            --
+            -- 2026-08-02 (FACING-FREEZE FIX, FINAL): a target in MELEE RANGE
+            -- (edge <= ~2yd) is by definition front-facing — the client
+            -- auto-faces melee and a melee-swinging/standing player cannot be
+            -- "not in front of" a mob they are standing on. The runtime facing
+            -- read (0x7AC heading->target) intermittently reports a false
+            -- "not facing" even at edge=0yd (proven three sessions: "wait
+            -- facing:Blood Strike xN" / "wait facing:Icy Touch xN" froze the
+            -- rotation on a single target being fought). So melee-range targets
+            -- NEVER face-block. Mid-auto-attack is the same exemption. Only a
+            -- target OUTSIDE melee range with a confident not-facing verdict
+            -- blocks (and even then, only when not attacking).
+            -- HARD RULE (Prompt.md, 2026-08-02 FINAL): the rotation NEVER turns
+            -- the character. NO FaceTowardGuid / face_guid / StopMoving /
+            -- TurnByDelta from the rotation, EVER — for ANY spell, melee OR
+            -- ranged. The player steers; the rotation only detects.
+            --
+            -- UNIVERSAL FACING GATE (2026-08-02, user directive): facing
+            -- detection must be PERFECT for EVERY unit-targeted cast — melee
+            -- AND ranged. This Ascension client refuses "You are facing the
+            -- wrong way!" / "Target needs to be in front of you" on ranged
+            -- spells too (the user's screenshot proves it: those exact errors
+            -- appeared during Icy Touch casts). So there is NO melee-only
+            -- exemption and NO "melee-range = auto-facing" exemption.
+            --
+            -- 2026-08-02 (RUNTIME AUTHORITY + FAIL-OPEN, user directive):
+            --   * facing == true   → wire NOW (instant — the native read is
+            --     hook-cached, so the literal frame the player's facing is
+            --     sufficient, the cast fires; NO 0.25s pause).
+            --   * facing ~= true   → do NOT wire this candidate. "Fail-open"
+            --     (user-corrected 2026-08-02): if nothing else is castable,
+            --     CONTINUE TO CYCLE THROUGH THE ROTATION SLOTS — never force-
+            --     cast a blocked ability. The Engine already falls through to
+            --     the next priority slot when attempt_action returns false, so
+            --     setting last_why="facing" is the correct fail-open: slot 1
+            --     blocked → slot 2 → ... → next tick re-checks the FULL list.
+            --     The old "wait facing:X x161" freeze was the BROKEN native
+            --     facing read (LocalPtr+0x7AC = 0 → confident false on every
+            --     cast), now fixed at the source (camera→ObjectPtr→+0x7AC,
+            --     hook-cached). With a correct read, a not-facing verdict is a
+            --     genuine 1-tick skip, and the moment the player's facing is
+            --     sufficient the native cache flips and this slot wires.
+            if not last_why and not skip_face_cast and needs_enemy then
+                -- 2026-08-02 (18:11 — FACING FIX, NO EXEMPTION): every unit-
+                -- targeted cast face-gates on a confirmed-true verdict, melee
+                -- AND ranged, ALL distances. The 18:11 log showed Blood Strike
+                -- wiring at edge=2.0 via the OLD melee-point-blank exemption
+                -- (center < 5yd skipped the gate) while the player was NOT
+                -- facing -> client "target needs to be in front of you" errors
+                -- + phantom_grace. The runtime's <1yd special case already
+                -- handles the 0yd auto-attack case; 1yd+ the measurement is
+                -- exact. Fail-open: not-facing cycles to the next slot (a
+                -- 1-tick skip, never a hard wait).
+                local facing = W and W.is_facing_guid
+                    and W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
+                if facing ~= true then
+                    last_why = "facing"
                 end
             end
             -- WIRE (range was already validated in live_castable; facing gate above)
+            -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
+            -- ONLY the HEAD candidate (ctx.aura_search_hit.dist). But the try_list
+            -- iterates ALL candidates — when the head is blocked (facing/oor),
+            -- candidate #2/#3 are wired WITHOUT their own distance gate, so a far
+            -- add got cast and the client refused "You are too far away!" (live:
+            -- FIRE edge=999.0 then refused range:too far, 23:08:25). The runtime
+            -- AuraSearch filters to the aura_search condition's range (~40yd), but
+            -- the SPELL's own range (Icy Touch 30yd) must gate each candidate.
+            -- Use each candidate's measured dist when present; skip (next
+            -- candidate) when confidently out of the spell's max range.
+            -- 2026-08-02 (RUNTIME RANGE AUTHORITY): GetSpellInfo returns 0 range
+            -- for custom Ascension spell IDs, so spell_range_info() was blind
+            -- (maxR=0 → the gate never fired → "too far away"). The runtime's
+            -- SpellMeleeInfo decodes the real Spell.dbc range entry (max=%.2f).
+            -- Prefer it; fall back to GetSpellInfo; only fail-closed when BOTH
+            -- are unavailable (then the client is the final authority).
+            if not last_why and search and cand and not is_ground_self_aoe(sid, name)
+                and not (policy == "optional" or policy == "forbid") then
+                local cdist = tonumber(cand.dist or cand.dist_center or cand.dist_aoe)
+                local _, cmaxR = spell_range_info(cast_sid)
+                local rt_melee, rt_maxR = runtime_spell_melee(cast_sid)
+                if rt_maxR and rt_maxR > 0 then cmaxR = rt_maxR end
+                if cdist and cdist > 0 and cdist < 900 and cmaxR and cmaxR > 0 then
+                    -- 2026-08-02 (14:09 RANGE GATE FIX — the client measures
+                    -- CENTER, not edge): the OLD gate subtracted combat reaches
+                    -- (cedge = cdist - pr - tr) and compared THAT to maxR+0.5.
+                    -- The client refuses on CENTER distance (live: a 5yd melee
+                    -- at edge=2.5 / center=5.5 got "Out of range"; edge=2.0 /
+                    -- center=5.0 too). The old gate allowed center up to
+                    -- maxR+0.5+pr+tr ≈ 8.5yd for a 5yd spell — every far add
+                    -- passed the gate and the client refused "too far away".
+                    -- Compare the CENTER distance directly against the spell's
+                    -- real max range. MELEE is strict (center >= maxR refuses);
+                    -- ranged gets a small tolerance for the client hitbox slack.
+                    local _cm = (rt_melee == true or rt_melee == 1
+                        or tostring(rt_melee) == "1")
+                    local _ctol = _cm and 0.5 or 1.5
+                    if cdist > cmaxR + _ctol then
+                        last_why = "oor"
+                    end
+                end
+            end
+            -- 2026-08-02 (PER-CANDIDATE LOS): live_castable/Engine check LoS on
+            -- the HEAD candidate only; the try_list loop wires candidates #2+ with
+            -- NO LoS gate → client "target out of line of sight" refusal (the
+            -- user still sees it). Gate EVERY candidate with a confident block;
+            -- undetermined (nil) allows (client is final authority, and a stale
+            -- TraceLine must not freeze multi-dot). Point-blank (<8yd) is already
+            -- exempt inside World.is_los_guid.
+            if not last_why and search and cand and cand.guid and not is_ground_self_aoe(sid, name)
+                and not (policy == "optional" or policy == "forbid") then
+                if W and W.is_los_guid and W.is_los_guid(cand.guid) == false then
+                    last_why = "los"
+                end
+            end
             if not last_why then
                 local reason, cdMs = nil, 0
-                if Act.CastSpellEx then
+                dlog("cast", "wire %s sid=%d cg=%s flags=%d try=%d",
+                    tostring(name), cast_sid, tostring(cg), unit_cast_flags(), #try_list)
+                if Act.CastQueued then
+                    ok, reason = Act.CastQueued(cast_sid, cg, unit_cast_flags())
+                    cdMs = 0
+                elseif Act.CastSpellEx then
                     ok, reason, cdMs = Act.CastSpellEx(cast_sid, cg, unit_cast_flags())
                 else
                     ok = Act.CastSpell(cast_sid, cg)
                     reason = ok and "ok" or "cast_fail"
                 end
+                dlog("cast", "wire-result %s ok=%s reason=%s cd=%s",
+                    tostring(name), tostring(ok), tostring(reason), tostring(cdMs))
                 if ok == true or ok == 1 then
                     ok = true
                     wire_guid = cg
@@ -2035,6 +2662,36 @@ function Executor.attempt_action(action, ctx)
                         search.guid = cg
                         search.token = cand.token
                         if ctx then ctx.aura_search_hit = search end
+                    end
+                    -- RESET AFTER (2026-08-01): "Acquire target" swapped selection
+                    -- to the victim before the cast. With "Reset after" ON, restore
+                    -- the EXACT previous target immediately after the cast lands —
+                    -- never leave the rotation's selection on the victim. Native
+                    -- descriptor write only (A.Target -> runtime TargetGuid = pure
+                    -- UNIT_FIELD_TARGET write, no Lua pcall after wire).
+                    if want_reset_after then
+                        if pre_target_guid then
+                            if Act and Act.Target then pcall(Act.Target, pre_target_guid) end
+                        elseif Act and Act.ClearTarget then
+                            pcall(Act.ClearTarget)
+                        end
+                        if W and W.sync_ctx_target and ctx then pcall(W.sync_ctx_target, ctx) end
+                    elseif not want_acquire then
+                        -- 2026-08-02 (HARD RULE — acquire OFF never changes target):
+                        -- Spell_C(guid) SELECTS the cast victim as the client target,
+                        -- and that selection lands ASYNCHRONOUSLY (next frame) — so
+                        -- the runtime's immediate descriptor restore sees the old
+                        -- selection (prev==nowSel) and skips, leaving the victim
+                        -- targeted. Record the pre-cast selection here and restore
+                        -- it on the NEXT tick if the client target moved to the
+                        -- victim. This is the "aura_search force-targets even with
+                        -- acquire disabled" bug.
+                        Executor._restore_selection = {
+                            had = pre_had_target,
+                            guid = pre_target_guid,
+                            victim = cg,
+                            until_t = now() + 0.6,
+                        }
                     end
                     break
                 end
@@ -2058,17 +2715,82 @@ function Executor.attempt_action(action, ctx)
 
     -- No unit candidates: self/ground cast path (Consecration etc.).
     if not ok and #try_list == 0 and self_cast_ok then
+        -- 2026-08-02 (melee current-target path): an acquire-OFF aura-search
+        -- slot with a current target is routed HERE as a guid=0 native cast.
+        -- It must respect the SAME universal facing gate as the GUID wire
+        -- (user directive 2026-08-02): NO auto-facing, PERFECT facing detection
+        -- for EVERY unit-targeted cast, melee OR ranged. Wires only when the
+        -- runtime CONFIRMS the player faces the target.
         local cok, creason
-        if Act.CastSpellEx then
-            cok, creason = Act.CastSpellEx(cast_sid, nil, 0)
+        if needs_enemy then
+            -- 2026-08-02 (TARGET-REL GUID CAST — 15:22 CHOKING FIX): the OLD
+            -- path cast CastQueued(cast_sid, nil, 0) = Spell_C at the CURRENT
+            -- CLIENT TARGET (guid=0). With acquire-off the runtime restores the
+            -- client target to 0 after every aura-search cast (SelectionRestore
+            -- -> 0x0), so guid=0 unit casts had NO target -> silently refused ->
+            -- "phantom_grace" on EVERY Plague Strike/Blood Strike -> the slot
+            -- choked and the rotation stalled for seconds (live 15:22:45-49
+            -- "wait cooldown x82"). Resolve a REAL GUID (the live current
+            -- target, else the rotation's own aura-search hit) and cast it as a
+            -- GUID cast with the SAME acquire-off flags (NOTGT) as aura-search
+            -- slots: register + Spell_C(GUID) + deferred restore. NEVER guid=0
+            -- for a unit-targeted spell. This puts EVERY unit cast on ONE
+            -- consistent target (the rotation's victim), never the flickering
+            -- client selection.
+            local cg2 = nil
+            if UnitGUID and UnitExists and UnitExists("target") then
+                local t2 = UnitGUID("target")
+                if t2 and not (UnitIsDeadOrGhost and UnitIsDeadOrGhost("target")) then
+                    cg2 = t2
+                end
+            end
+            if not cg2 and ctx and ctx.aura_search_hit and ctx.aura_search_hit.guid then
+                cg2 = ctx.aura_search_hit.guid
+            end
+            -- UNIVERSAL FACING (18:11 FIX — NO EXEMPTION): every unit-targeted
+            -- cast face-gates on a confirmed-true verdict, melee AND ranged,
+            -- ALL distances (the old melee point-blank exemption let non-faced
+            -- melee casts wire -> "target needs to be in front of you" errors).
+            -- Plus a LoS gate: the target-relative path had NONE -> "target out
+            -- of line of sight" spam. Fail-open: a blocked target skips to the
+            -- next slot / next tick.
+            if not cg2 then
+                last_why = "no_target"
+            else
+                local facing = W and W.is_facing_guid
+                    and W.is_facing_guid(cg2, W.CAST_FACE_HALF_ARC)
+                local _c_los = true
+                if W and W.is_los_guid and not is_ground_self_aoe(sid, name) then
+                    if W.is_los_guid(cg2) == false then
+                        _c_los = false
+                    end
+                end
+                if facing ~= true then
+                    last_why = "facing"
+                elseif not _c_los then
+                    last_why = "los"
+                else
+                    if Act.CastQueued then
+                        cok, creason = Act.CastQueued(cast_sid, cg2, NOTGT)
+                    elseif Act.CastSpellEx then
+                        cok, creason = Act.CastSpellEx(cast_sid, cg2, NOTGT)
+                    else
+                        cok = Act.CastSpell(cast_sid, cg2)
+                    end
+                    if cok then ok = true; last_why = "ok"
+                    else last_why = creason or "cast_failed" end
+                end
+            end
         else
-            cok = Act.CastSpell(cast_sid)
-        end
-        if cok then
-            ok = true
-            last_why = "ok"
-        else
-            last_why = creason or "cast_failed"
+            if Act.CastQueued then
+                cok, creason = Act.CastQueued(cast_sid, nil, 0)
+            elseif Act.CastSpellEx then
+                cok, creason = Act.CastSpellEx(cast_sid, nil, 0)
+            else
+                cok = Act.CastSpell(cast_sid)
+            end
+            if cok then ok = true; last_why = "ok"
+            else last_why = creason or "cast_failed" end
         end
     end
 
@@ -2089,6 +2811,24 @@ function Executor.attempt_action(action, ctx)
         -- oor from live_castable or our facing gate) don't need retick — the
         -- next OnUpdate will re-evaluate naturally.
         local lw = tostring(last_why or "")
+        -- 2026-08-02 (NO-PAUSE FACING — user directive): a facing/oor/los block
+        -- must NOT pause the whole rotation. The user's hard requirement: "as im
+        -- turning the literal instant its possible to cast ... it should cast
+        -- literally instantly." The old `_next_gap = 0.25` made the rotation
+        -- sleep 250ms after a facing block — that is exactly the hesitation the
+        -- user forbids. The native facing read is hook-cached (cheap), so the
+        -- gate can re-check EVERY tick and wire the literal instant the player's
+        -- facing is sufficient. The attempt LOG is throttled separately (above);
+        -- the DECISION is never paused on facing/oor/los.
+        -- We only keep a tiny micro-gap (30ms) so a genuinely-refused cast
+        -- doesn't hammer the bridge in a tight loop; this is NOT a perceivable
+        -- pause (it is below one frame).
+        if lw:find("^facing") or lw:find("^oor") or lw:find("^los") then
+            local tnow2 = now()
+            local g = Executor._next_gap or 0
+            if g < 0.03 then Executor._next_gap = 0.03 end
+            Executor._last_attempt_t = tnow2
+        end
         if lw:find("^cast_fail") or lw:find("^cooldown:") then
             if Executor._in_tick then
                 Executor._retick_pending = true
@@ -2174,9 +2914,18 @@ function Executor.attempt_action(action, ctx)
                 Executor._gcd_provisional = true
                 Executor._gcd_src = "wire_live_gcd"
             else
-                Executor._gcd_until = 0
-                Executor._gcd_provisional = false
-                Executor._gcd_src = "wire_unconf"
+                -- 2026-08-02 (RED-SPAM FIX): the client ACCEPTED the wire
+                -- (Spell_C al=1) but reports no live GCD (Ascension custom /
+                -- instant casts skip the CD table). The server WILL apply a
+                -- real GCD. Lock the observed/hasted GCD NOW so no slot
+                -- re-fires into the live client GCD — that re-fire was the
+                -- "spell not ready" spam + double-casts. Land/fail events
+                -- refine or free it.
+                local dur = select(1, Executor.gcd_fallback())
+                Executor._gcd_until = tnow + dur
+                Executor._gcd_provisional = true
+                Executor._gcd_src = "wire_optimistic"
+                arem = dur
             end
             Executor._pending = {
                 sid = sid, cast_t = tnow, deadline = tnow + grace, grace = grace,
@@ -2257,8 +3006,12 @@ end
 
 -- Real cast start: cast bar, channel, or THIS ability's CD (not bare GCD).
 local function cast_confirmed(sid, before_cd)
-    if UnitCastingInfo and UnitCastingInfo("player") ~= nil then return true, "casting" end
-    if UnitChannelInfo and UnitChannelInfo("player") ~= nil then return true, "channel" end
+    local cstate, csid = cast_state()
+    if cstate == "casting" or cstate == "channeling" then return true, "casting" end
+    if RaijinLab and RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
+        local ok, cur = pcall(RaijinLab.RuntimeCall, RaijinLab, "CurrentSpell")
+        if ok and tonumber(cur) == tonumber(sid) then return true, "current" end
+    end
     if IsCurrentSpell then
         local ok, cur = pcall(IsCurrentSpell, sid)
         if ok and cur then return true, "current" end
@@ -2388,6 +3141,17 @@ function Executor._tick_body()
         Executor._last_err = "missing_engine"
         return nil, "missing_engine"
     end
+
+    -- 2026-08-02 (CRASH FIX, corrected): the RUNTIME owns the acquire-off
+    -- selection restore (PulseSelectionRestore — deferred, only when NOT
+    -- casting, VEH-guarded). The old Lua `_restore_selection` here called
+    -- A.Target/A.ClearTarget (WriteClientTargetGuid -> writes 0xBD07B0)
+    -- SYNCHRONOUSLY from a later tick, racing the game's cast-resolve and
+    -- corrupting the Lua VM (0x512B07). The runtime's deferred restore already
+    -- reverts the client-selection global once the cast settles, so this Lua
+    -- block is now a NO-OP. Keep the table reference cleared so it stops being
+    -- re-armed.
+    Executor._restore_selection = nil
 
     local rotation = select(1, Executor.get_active_rotation())
     if not rotation then
@@ -2551,27 +3315,60 @@ function Executor._tick_body()
                 end
                 log_cast("landed", sid, p.name, "grace_confirm", p.cast_t)
             else
-                -- PHANTOM / FAILED RECOVERY: free the list completely so lower
-                -- priority slots can cast next evaluation. Multi-dot only
-                -- micro-locks this spell; never a multi-second freeze.
+                -- PHANTOM / FAILED RECOVERY (2026-08-02): the wire was ACCEPTED
+                -- (Spell_C al=1) — the client applied a real GCD even though no
+                -- event/field evidence arrived (instant spells never set the
+                -- casting field; Ascension custom spells often skip CD-table
+                -- writes). Zeroing _gcd_until here re-fired into the live
+                -- client GCD → "spell not ready" red spam + double-casts.
+                -- KEEP the GCD floor; only a genuine FAIL event frees early
+                -- (apply_pending_refuse).
+                -- 2026-08-02 (INSTANT RECOVERY, user directive): a phantom is a
+                -- cast that never landed — the rotation must recover from it
+                -- IMMEDIATELY, not wait a full 1.5s GCD. The GCD floor is a
+                -- guess (the spell may not have cast at all); the spell-level
+                -- _recent micro-lock prevents re-fire spam, and the real CD
+                -- table still gates a genuinely-on-CD spell. Free the GCD.
                 Executor._pending = nil
-                Executor._gcd_until = 0
                 Executor._gcd_provisional = false
-                Executor._gcd_src = "phantom_free"
                 Executor._next_gap = 0
                 Executor._idle_until = nil
                 Executor._unconf = nil
                 clear_sid_soft_locks(sid)
+                if p.multidot then
+                    -- Multi-dot: micro-lock only (never freeze the whole list).
+                    Executor._gcd_until = 0
+                    Executor._gcd_src = "phantom_multidot"
+                elseif not (Executor._gcd_until and Executor._gcd_until > t) then
+                    -- NO full GCD floor on phantom — the cast never produced
+                    -- evidence, so there is no confirmed GCD to wait out. Only
+                    -- the spell micro-lock + real CD table gate re-fire.
+                    Executor._gcd_until = 0
+                    Executor._gcd_src = "phantom_free"
+                else
+                    Executor._gcd_src = "phantom_kept"
+                end
                 Executor._recent = Executor._recent or {}
-                Executor._recent[sid] = t + (p.multidot and 0.12 or 0.08)
+                Executor._recent[sid] = math.max(Executor._recent[sid] or 0,
+                                                 t + (p.multidot and 0.12 or 0.08))
                 log_cast("refused", sid, p.name, "phantom_grace", p.cast_t)
+                -- INSTANT RECOVERY: a phantom must trigger an immediate re-eval
+                -- (event-driven path bypasses the poll throttle), so the next
+                -- castable spell fires THIS frame, not after the next poll.
+                request_retick("phantom_recover")
             end
         end
         -- else: still inside grace — short provisional only
     end
 
     local gap = Executor._next_gap or 0
-    if gap > 0 and (t - (Executor._last_attempt_t or 0)) < gap then
+    -- 2026-08-02 (NO-HESITATION): an event-driven retick (cast land / refuse)
+    -- MUST bypass the facing/oor poll throttle — a real game event is the
+    -- fastest truth the rotation can get; delaying it 0.25s would be a visible
+    -- hesitation after every landed cast. Only the free-running OnUpdate poll
+    -- loop is throttled (that is where the 50Hz attempt spam lived).
+    if gap > 0 and (t - (Executor._last_attempt_t or 0)) < gap
+        and not Executor._from_event then
         return nil, "throttle"
     end
 
@@ -2605,12 +3402,13 @@ function Executor._tick_body()
     -- forcing targets and made multi-dot look "target required".
     -- Auto Attack still engages only when a living target already exists.
 
+    local cstate = cast_state()
     local ctx = {
         target_exists = UnitExists and UnitExists("target") or false,
         target_is_dead = UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") or false,
         target_is_enemy = UnitCanAttack and UnitCanAttack("player", "target") or false,
-        is_casting = (UnitCastingInfo and UnitCastingInfo("player") ~= nil) or false,
-        is_channeling = (UnitChannelInfo and UnitChannelInfo("player") ~= nil) or false,
+        is_casting = (cstate == "casting" or cstate == "channeling"),
+        is_channeling = (cstate == "channeling"),
         user_state = user_state,
         cooldowns = {},
         known_spells = {},
@@ -2661,6 +3459,12 @@ function Executor._tick_body()
             ctx.strict_usable = false
             ctx.auto_castable = auto_castable
             if not ctx.user_state then ctx.user_state = user_state end
+            -- Authoritative casting (RE-verified): build_context derives
+            -- is_casting from Lua UnitCastingInfo which NO-OPS from insecure
+            -- code. Re-assert the runtime's real casting state here.
+            local cst2 = cast_state()
+            ctx.is_casting = (cst2 == "casting" or cst2 == "channeling")
+            ctx.is_channeling = (cst2 == "channeling")
         end
     end
     ctx.auto_castable = auto_castable
@@ -2679,7 +3483,9 @@ function Executor._tick_body()
     end
 
     -- GCD freeze first so fill_live can take the light path under GCD.
-    local casting_now = (UnitCastingInfo and UnitCastingInfo("player"))
+    local cst = cast_state()
+    local casting_now = (cst == "casting" or cst == "channeling")
+        or (UnitCastingInfo and UnitCastingInfo("player"))
         or (UnitChannelInfo and UnitChannelInfo("player"))
     -- Clear STUCK provisional GCD when live client shows ready (new-target lag).
     -- Live: gcd_src=not_ready_gcd rem=1.47 while OOC no target for minutes.
@@ -2899,8 +3705,26 @@ function Executor._tick_body()
             Executor._gcd_src = "fallthrough_spell_cd"
             ctx.gcd_active = false
             ctx.live_gcd_remaining = 0
+        elseif how_s:find("^busy") ~= nil or how_s:find("cast_fail", 1, true) ~= nil then
+            -- BUSY / CAST_FAIL (2026-08-02): the runtime/client refused the
+            -- cast (Spell_C returned al=0). A silent native refusal never fires
+            -- UNIT_SPELLCAST_FAILED, so there is NO event to set a floor —
+            -- without one the rotation re-fires the same spell every frame at
+            -- 30 Hz (the "cast_fail" spam that bloated the dev log and froze
+            -- the debug-copy dialog for 20 s). Back off ~1 GCD instead of
+            -- hammering; the underlying gate will clear and we retry.
+            Executor._gcd_until = t + 1.0
+            Executor._gcd_provisional = true
+            Executor._gcd_src = (how_s:find("^busy") ~= nil) and "busy_backoff" or "castfail_backoff"
+            ctx.gcd_active = true
+            ctx.live_gcd_remaining = math.max(0, Executor._gcd_until - t)
+            ctx.pending_sid = nil
+            action = nil
+            ok = false
+            how = how_s
+            break
         else
-            -- Facing / OOR / cast_fail: free list hard, no invent floors.
+            -- Facing / OOR: free list hard, no invent floors.
             Executor._gcd_until = 0
             Executor._gcd_provisional = false
             Executor._gcd_src = "fallthrough_clear"
@@ -2984,6 +3808,23 @@ function Executor._tick_body()
                     no_gcd = is_md or (not has_live_gcd),
                 }
             end
+            -- REAL GCD FLOOR on wire-ok (2026-08-01). After a SUCCESSFUL wire
+            -- the pending/grace can expire before the client's land event
+            -- clears, so the SAME spell re-fires next frame — that is the
+            -- "blocked action spam at 30 Hz" (live: Icy Touch / Plague Strike
+            -- FIRE'd dozens of times per second while the client refused every
+            -- re-cast). Set a genuine GCD floor from the observed/fallback GCD
+            -- so the rotation cannot re-fire the same (or any GCD-bound) spell
+            -- until the real GCD window has passed. _recent floors THIS spell;
+            -- the land/refuse event refines it further.
+            Executor._recent = Executor._recent or {}
+            local gdur = Executor.gcd_fallback and select(1, Executor.gcd_fallback()) or 1.0
+            if not is_md then
+                Executor._recent[sid] = t + gdur
+            else
+                -- Multi-dot: short floor (0.12s) then free list for the next target.
+                Executor._recent[sid] = t + 0.12
+            end
             -- _recent already set from live rem in attempt_action when available.
         end
         Executor._idle_until = nil
@@ -3025,7 +3866,9 @@ function Executor._tick_body()
     Executor._skip_streak = (not changed and (Executor._skip_streak or 0) or 0) + 1
     -- Quiet waits (no target / gcd / power): heartbeat every 5s.
     -- Other waits: every 3s. Always log on reason change.
-    local boring = (reason == "no_target" or reason == "gcd" or reason == "power"
+    local boring = (reason == "no_target" or reason == "no_target_await_attacker"
+        or reason == "target_dead"
+        or reason == "gcd" or reason == "power"
         or reason == "enemies_in_range" or reason == "user_busy" or reason == "idle")
     local hb = boring and 5.0 or 3.0
     local heartbeat = (t - (Executor._last_skip_log_t or 0)) >= hb
@@ -3107,13 +3950,21 @@ function Executor._tick_body()
 end
 
 function Executor.tick()
+    -- 2026-08-02 (OFF-STILL-CASTING FIX): tick must self-guard on the enabled
+    -- flag. A post-OFF entry (armed C_Timer retick, stale event frame, or the
+    -- Events.lua resume path racing the toggle) must be a no-op — never run a
+    -- full tick (with casts) after the user turned the rotation off.
+    if not RaijinLabDB or not RaijinLabDB.rotation_enabled then return nil, "off" end
     if Executor._in_tick then
         Executor._retick_pending = true
         return nil, "reentrant"
     end
     Executor._in_tick = true
+    local prev_from_event = Executor._from_event
+    if Executor._from_event == nil then Executor._from_event = false end
     local ok, a, b = pcall(Executor._tick_body)
     Executor._in_tick = false
+    Executor._from_event = prev_from_event
     if Executor._retick_pending then
         Executor._retick_pending = false
         request_retick(Executor._retick_why or "chained")
@@ -3139,6 +3990,15 @@ end
 local function adaptive_tick_interval()
     if Executor._pending then return 0 end
     local combat = UnitAffectingCombat and UnitAffectingCombat("player")
+    -- 2026-08-02 (DEAD-TARGET ANTI-FREEZE): with the current target dead, there
+    -- is nothing to cast at (acquire-off never retargets a corpse) — spinning at
+    -- 60fps trying the corpse froze the rotation ("wait target_dead x363").
+    -- Drop to a calm cadence until a living target exists.
+    if UnitExists and UnitExists("target") then
+        if UnitIsDeadOrGhost and UnitIsDeadOrGhost("target") then
+            return 0.05
+        end
+    end
     local ui = ui_open()
     -- UI open: leave frame budget for paint (hitches when opening menu).
     -- Combat still ~30Hz (not stopped); multi-dot remains fully capable.
@@ -3192,6 +4052,22 @@ function Executor.start(interval)
 
     local f = CreateFrame("Frame", nil, UIParent)
     f:Show()
+    -- DIAG (2026-08-01): capture the EXACT tainted action. WoW fires
+    -- ADDON_ACTION_BLOCKED with the protected function name + addon when a
+    -- secure action is attempted from insecure origin — logging it pinpoints
+    -- which call (StartAttack / CastSpell / movement / Interact / Target) is
+    -- poisoning the session with the "blocked by Blizzard UI" popup.
+    f:RegisterEvent("ADDON_ACTION_BLOCKED")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(self, event, ...)
+        if event == "ADDON_ACTION_BLOCKED" then
+            local fn, addon = ...
+            if tostring(addon):lower():find("raijin", 1, true) then
+                Executor._last_blocked_action = tostring(fn)
+                dlog("rot", "BLOCKED ACTION fn=%s addon=%s", tostring(fn), tostring(addon))
+            end
+        end
+    end)
     local acc = 0
     f:SetScript("OnUpdate", function(_, e)
         if not RaijinLabDB or not RaijinLabDB.rotation_enabled then return end
@@ -3247,6 +4123,22 @@ function Executor.stop()
         Executor._frame:Hide()
         Executor._frame = nil
     end
+    -- 2026-08-02 (LOCKUP FIX): clear ALL transient rotation state so a
+    -- re-enable never inherits a stuck GCD / pending / recent floor. Live:
+    -- gcd=1.419 gcd_src=fallthrough_clear persisted for MINUTES with the
+    -- rotation OFF (stop() never reset _gcd_until) — re-enabling then waited
+    -- the stale GCD and looked completely frozen. Now stop() is a hard reset.
+    Executor._gcd_until = 0
+    Executor._gcd_provisional = false
+    Executor._gcd_src = "stopped"
+    Executor._pending = nil
+    Executor._unconf = nil
+    Executor._recent = nil
+    Executor._idle_until = nil
+    Executor._next_gap = 0
+    Executor._restore_selection = nil
+    Executor._retick_pending = false
+    Executor._retick_why = nil
     if RaijinLabDB then
         RaijinLabDB.rotation_enabled = false
         if RaijinLabDB.modules then RaijinLabDB.modules.rotation = false end

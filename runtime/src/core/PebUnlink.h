@@ -18,4 +18,20 @@ bool WipePeHeaders(HMODULE self);
 // set RL_PEB_UNLINK=0 to skip unlink (headers still wiped unless RL_WIPE_PE=0).
 bool ApplyLoadStealth(HMODULE self);
 
+// DEFERRED stealth (2026-08-01, default):
+//   Injecting during world load is fatal to the game's Lua VM (crash
+//   signature eip=0x0085C47A fault=NULL+0x28 — game Lua stack corruption;
+//   proven: our worker never even registered). The LDR-list mutation + header
+//   wipe racing the game's world-load Lua work is the interference vector.
+//   So DllMain only REMEMBERS the module; the actual unlink+wipe is applied
+//   by the worker once the world is confirmed fully loaded (post-load, game
+//   stable). Absolute stealth is preserved — just applied at the safe moment.
+//   The random on-disk temp name still hides us by name during the load
+//   window. RL_PEB_UNLINK=0 / RL_WIPE_PE=0 opt-outs still honored.
+void RequestDeferredApply(HMODULE self);
+
+// Apply the deferred stealth now (idempotent, thread-safe). Call only when
+// the game is confirmed in-world and stable.
+void ApplyDeferredStealth();
+
 } // namespace RL::Stealth

@@ -20,4 +20,8 @@ void ResetRegistrationState();
 
 const char* Version();
 
+// Dump the ring buffer of recent bridge calls (crash forensics). Called from
+// the VEH CrashHandler in main.cpp so runtime.log always shows what ran last.
+void DumpRecentBridgeCalls();
+
 } // namespace RL::Bridge

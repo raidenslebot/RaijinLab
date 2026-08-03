@@ -3,6 +3,7 @@
 #include "AddressDB.h"
 #include "Offsets.h"
 #include "Mem.h"
+#include "Actions.h"
 #include "core/Log.h"
 #include "core/Config.h"
 #include <Windows.h>
@@ -24,32 +25,20 @@ void EnsureCs() {
     }
 }
 
-uint64_t SafeGuid() {
-    using fn = uint64_t(__cdecl*)();
-    auto f = reinterpret_cast<fn>(Addr::ClntObjMgrGetActivePlayer);
-    __try {
-        return f();
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
-}
-
-uintptr_t SafePtr(uint64_t guid) {
-    __try {
-        return OM::Ptr(guid);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
-}
-
-int SafeRefreshOm() {
-    __try {
-        OM::Refresh(true);
-        return 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
-}
+// CRASH RULE (permanent, 2026-08-02): __try/__except is a DEAD guard in this
+// stealth module — an AV inside it propagates into the game's Lua protected-call
+// wrapper 0x858A16 and corrupts the Lua closure table (the garbage-eip crash
+// family, frame=0 ret=0x00858A16). The old SafeGuid()/SafePtr()/SafeRefreshOm()
+// wrappers here were exactly that: dead-SEH GAME calls (GetActivePlayer /
+// ObjectPtr) executed on EVERY bridge call from PulseFromMainThread. They are
+// deleted. Pulse now reads ONLY:
+//   - OM::SafeGetActive()  — rate-limited (~120ms TTL), VEH (Guard::Scope)
+//                            guarded, never dead-SEH, never per-bridge-call.
+//   - OM::LocalPtr()       — snapshot-first + pure-memory 0xC7B098, VEH-guarded
+//                            cold fallback, no dead SEH.
+//   - OM::Position(guid)   — snapshot-only (pure memory) after fix 2026-08-02.
+// SafeRefreshOm is gone too: Refresh is only ever called from OM handlers
+// (which own their walk cadence), never from Pulse.
 
 // Multi-method position read (0x798 is often cold NaN on Ascension).
 // Local-gated: camera agreement + camera fallback (PositionLocalFromPtr).
@@ -77,10 +66,14 @@ bool OmWanted() {
 void PulseFromMainThread() {
     EnsureCs();
     Snapshot s{};
-    s.playerGuid = SafeGuid();
-    // Prefer OM::LocalPtr (GetActivePlayerObj + ObjectPtr fallbacks).
+    // 2026-08-02 (CRASH FIX): OM::LocalGuid -> SafeGetActive is rate-limited
+    // (~120ms TTL) and VEH-guarded, so the GetActivePlayer game call runs
+    // ~8/sec — never once per bridge call (the post-cast burst was 30+ calls
+    // in 15ms). The old SafeGuid() here was a DEAD-`__try` call on EVERY call.
+    s.playerGuid = OM::LocalGuid();
+    // OM::LocalPtr is snapshot-first + pure-memory (no dead SEH, no hot
+    // ObjectPtr game call).
     s.playerPtr = OM::LocalPtr();
-    if (!s.playerPtr && s.playerGuid) s.playerPtr = SafePtr(s.playerGuid);
     s.valid = (s.playerGuid != 0) || (s.playerPtr != 0);
     s.lastTick = GetTickCount();
     s.objectCount = 0;
@@ -105,14 +98,21 @@ void PulseFromMainThread() {
         }
     }
 
-    // Do NOT auto-enum on every bridge pulse — that was the AV flood amplifier.
-    // Enum only runs when an OM API (GetObjectCount / OmProbe / etc.) calls Refresh.
-    // Still surface last known objectCount if OM already populated it.
-    if (s.valid && OmWanted() && !OM::EnumIsDead()) {
-        // Read cache only — Refresh(false) no-ops when TTL not expired and never
-        // re-enters enum if dead. Avoid force-refresh here.
-        s.objectCount = OM::Count();
-    }
+    // CRASH RULE (permanent, 2026-08-01): PulseFromMainThread is a PURE player
+    // snapshot cache. It NEVER triggers OM::Count()/Refresh() — object
+    // enumeration (EnumVisibleObjects / list walk) must never run from inside
+    // a Lua C closure (Pulse is called from the bridge entry). OM handlers
+    // (GetObjectCount / NearbyHostiles / OmProbe) call Refresh themselves and
+    // are the only OM-walk entry points. This removed the "enum inside the
+    // Lua VM" corruption path (crash family: Lua closure corruption).
+    // s.objectCount is left 0 here; OM callers read the real count directly.
+
+    // 2026-08-02 ("cast without targeting"): apply the delayed client-selection
+    // restore for NOTGT / acquire-OFF GUID casts. Spell_C selects the victim
+    // ASYNC (next frame); the immediate post-cast restore misses it. This runs
+    // on the next bridge call (~the same frame the async pick lands) and reverts
+    // the selection, so the aura-search victim never stays targeted.
+    RL::Game::Actions::PulseSelectionRestore();
 
     EnterCriticalSection(&g_cs);
     g_snap = s;

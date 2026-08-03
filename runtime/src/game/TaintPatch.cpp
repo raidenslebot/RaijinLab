@@ -241,67 +241,23 @@ int g_hw_count = 0;
 } // namespace
 
 bool ApplyHardwareGatesOnly() {
-    if (g_hw_only || g_applied) return true;
-    using namespace RL::Game::Addr;
-
-    uintptr_t textS = 0, textE = 0;
-    if (!GetTextSection(textS, textE) || !HardwareEventFlag) {
-        RL::Log::Warn("hwgates: no text section or flag");
-        return false;
+    // CRASH RULE (permanent, 2026-08-01): NO-OP.
+    // Patching game .text (JE->JMP / JNE->NOP2 on every `cmp [HardwareEventFlag],0`)
+    // corrupts a game code path → AV_WRITE in game code. Live proof 00:42:30:
+    // rotation armed → first cast applied these patches → 2.4s later
+    // `AV_WRITE eip=0x4047433C fault=0x00000001` (eip mid-instruction = runtime
+    // bytes differ from the packed file = our patch). Same class as the
+    // documented "HW gate JE->JMP scan was corrupting a code path that led to
+    // AV_WRITE at 0x43B0DB51".
+    // Native Spell_C_CastSpell does NOT need .text surgery — it is called from
+    // C++ directly, bypassing the Lua taint binding layer entirely. Writing
+    // *HardwareEventFlag is also forbidden (Lua VM corruption, proven). So:
+    // NO game .text writes, NO flag writes. Casts go out native as-is.
+    if (!g_hw_only) {
+        g_hw_only = true; // mark "applied" so callers stop retrying (no-op)
+        RL::Log::Warn("hwgates: DISABLED (no-op) — native Spell_C only");
     }
-
-    uint8_t pattern[7] = {0x83, 0x3D, 0, 0, 0, 0, 0x00};
-    uint32_t flag = static_cast<uint32_t>(HardwareEventFlag);
-    memcpy(pattern + 2, &flag, 4);
-    uint8_t jmp = 0xEB;
-    int hw = 0;
-    // Match the full-taint Apply() loop verbatim — pattern is
-    //     `cmp dword ptr [HardwareEventFlag], 0`  (7 bytes; last 4 are the
-    //     exact VA of the flag global).
-    // With those 4 bytes being a specific fixed VA the false-positive rate is
-    // ~1 in 2^32; the earlier boundary-check heuristic that filtered by "prev
-    // byte looks like a control-flow terminator" rejected almost every real
-    // site (production dropped from ~30 patches to 2, and the 2 that landed
-    // could be misaligned false positives — this broke manual casts too).
-    // Trust the pattern; only bail via a sanity ceiling far above the real
-    // count (~250+ patch attempts means the pattern itself is wrong, not
-    // that we should silently install a partial set).
-    constexpr int kHwGateSanityCap = 1000;
-
-    for (uintptr_t p = textS; p + 9 < textE && hw < kHwGateSanityCap; ++p) {
-        __try {
-            if (memcmp(reinterpret_cast<void*>(p), pattern, 7) != 0)
-                continue;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            continue;
-        }
-        uint8_t op = ReadByte(p + 7);
-        if (op == 0x74) {
-            if (SaveAndPatch(p + 7, &jmp, 1)) {
-                ++hw;
-                RL::Log::Trace("hwgate site va=%08X op=74->EB", (unsigned)(p + 7));
-            }
-        } else if (op == 0x75) {
-            uint8_t n2[] = {0x90, 0x90};
-            if (SaveAndPatch(p + 7, n2, 2)) {
-                ++hw;
-                RL::Log::Trace("hwgate site va=%08X op=75->NOP2", (unsigned)(p + 7));
-            }
-        }
-    }
-    if (hw >= kHwGateSanityCap)
-        RL::Log::Warn("hwgates: hit sanity cap %d — investigate pattern quality",
-                      kHwGateSanityCap);
-
-    g_hw_count = hw;
-    g_hw_only = hw > 0;
-    // Soft-set flag as well
-    __try {
-        *reinterpret_cast<volatile uint32_t*>(HardwareEventFlag) = 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-    RL::Log::Warn("hwgates: patched=%d (HW-only, no full taint)", hw);
-    return g_hw_only;
+    return true;
 }
 
 bool HardwareGatesApplied() { return g_hw_only || g_applied; }

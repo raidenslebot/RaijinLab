@@ -103,6 +103,10 @@ constexpr uintptr_t Obj_Facing     = 0x7A4;
 bool InWorld();              // multi-signal (see WorldReady)
 void* LuaState();
 uint64_t ActivePlayerGuid(); // ClntObjMgrGetActivePlayer
+// PURE-MEMORY active player GUID (NO game call — safe to poll from the worker
+// thread, even during the world-load window). Mirrors the game's GetActivePlayer
+// read ([ClntObjMgr+0xC0/+0xC4]); tries the mgr global + local player ptr.
+uint64_t ActiveGuidPure();
 // PURE memory read of the g_InWorld flag (NO client-function call). Safe to
 // poll from the worker thread. The flag is a BYTE (bool) at g_InWorld — do not
 // read as int. Returns 1 = in world (byte != 0), 0 = not, -1 = unreadable.

@@ -208,18 +208,13 @@ function Engine.slot_target_policy(slot)
     return policy
 end
 
--- Slot policy: Auto Face condition present (and not inverted) → cast path may
--- TurnByDelta toward the cast unit before Spell_C. Absence = no auto turn.
+-- Slot policy: 2026-08-02 (NO AUTO-FACE, user directive). The rotation NEVER
+-- turns the character — for ANY spell, melee OR ranged. This function is
+-- retained only so callers that read `slot_wants_auto_face` keep working; it
+-- ALWAYS returns false. The "Auto Face" condition is inert. Facing is
+-- detection-only: a cast wires only when the player ALREADY faces the target
+-- (runtime ObjectIsFacing confirmed), otherwise the slot is skipped cleanly.
 function Engine.slot_wants_auto_face(slot)
-    if not slot then return false end
-    for _, c in ipairs(slot.conditions or {}) do
-        if c and c.id == "auto_face" then
-            local inv = c.args and (c.args.invert == true or c.args.invert == 1
-                or c.args.invert == "true"
-                or c.args.want == false or c.args.want == 0 or c.args.want == "false")
-            return not inv
-        end
-    end
     return false
 end
 

@@ -3,10 +3,14 @@
 #include "lua/Lua.h"
 #include "game/ObjectManager.h"
 #include "game/Actions.h"
+#include "game/SpellDB.h"
+#include "game/GameState.h"
+#include "game/Mem.h"
 #include "game/TaintPatch.h"
 #include "game/Offsets.h"
 #include "game/AddressDB.h"
 #include "game/MainThread.h"
+#include "game/NativeHook.h"
 #include "core/Config.h"
 #include "core/Log.h"
 #include <Windows.h>
@@ -25,7 +29,56 @@ namespace {
 // Version string returned to addon only - keep short, no product brand.
 // Bump whenever the live bridge behaviour changes so /raijin and inject logs
 // prove which DLL is resident (1.8.9-objectfield still running = old inject).
-const char* kVersion = "1.10.43-hwscan";
+// 1.10.70: 0x512B07 crash FIX — FacingLiveLocal is a PURE CACHE READ. The
+// previous version resolved the player via camera→ObjectPtr (game functions)
+// from inside the Lua VM when the cache was stale → VM corruption (crash.fatal
+// eip=0x512B07 right after a clean CastQueue DRAIN + GatherMate2/XPerl UI-error
+// cascade). Only the native frame hook resolves via the camera now.
+const char* kVersion = "1.10.82-faceconv";
+
+// ---- Crash forensics: ring buffer of the last bridge calls ----------------
+// The CrashHandler in main.cpp dumps this on ANY access violation so the
+// runtime.log always shows the exact bridge activity that preceded a crash
+// ("what ran last") — no more guessing from registers alone. Single main
+// thread writes; crash thread reads — a torn slot is acceptable forensics.
+struct CallTrace { uint32_t seq; uint32_t t_ms; char name[32]; int arg; };
+static CallTrace g_lastCalls[128] = {};
+static std::atomic<uint32_t> g_callSeq{0};
+
+void TraceBridgeCall(const char* name, int arg) {
+    uint32_t s = g_callSeq.fetch_add(1) + 1;
+    CallTrace& c = g_lastCalls[s % 128];
+    c.seq = s;
+    c.t_ms = (uint32_t)(GetTickCount() & 0xFFFFFFFFu);
+    c.arg = arg;
+    c.name[0] = '\0';
+    if (name) {
+        std::strncpy(c.name, name, sizeof(c.name) - 1);
+        c.name[sizeof(c.name) - 1] = '\0';
+    }
+}
+
+} // namespace
+
+// Dump the most recent bridge calls (newest first, capped at 40) to the log.
+// Called from CrashHandler on any fatal exception.
+void DumpRecentBridgeCalls() {
+    uint32_t s = g_callSeq.load();
+    RL::Log::Warn("forensics: last %u bridge calls (seq %u)",
+                  s < 128 ? s : 128u, s);
+    int printed = 0;
+    for (int i = 0; i < 128 && printed < 40; ++i) {
+        uint32_t idx = (s - i) % 128;
+        CallTrace& c = g_lastCalls[idx];
+        if (c.seq == 0 || c.name[0] == '\0') continue;
+        RL::Log::Warn("forensics: +%dms #%u %s arg=%d",
+                      (int)((uint32_t)(GetTickCount() & 0xFFFFFFFFu) - c.t_ms),
+                      (unsigned)c.seq, c.name, c.arg);
+        ++printed;
+    }
+}
+
+namespace {
 
 using fnReg = void(__cdecl*)(const char*, void*);
 using fnExec = void(__cdecl*)(const char*, const char*);
@@ -278,17 +331,13 @@ static RL::Game::Vec3 ResolveLocalPos() {
     return RL::Game::Vec3{};
 }
 
-// SEH-guarded single float read. Must live in its own function: __try cannot be
-// used in a function that also needs C++ object unwinding (like Handle).
+// VirtualQuery-guarded single float read (no __try dependency — SEH does not
+// dispatch in this stealth module). PosProbe diagnostics.
 static float SafeReadFloatField(uintptr_t addr) {
-    __try {
-        return *reinterpret_cast<float*>(addr);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1.0f;
-    }
+    return RL::Game::Mem::Read<float>(addr);
 }
 
-// SEH-isolated raw ObjectPtr call for PosProbe (no C++ unwind objects).
+// Raw ObjectPtr call for PosProbe (game function — no memory deref here).
 static uintptr_t RawObjectPtrProbe(uint64_t guid) {
     using fn3 = uintptr_t(__cdecl*)(uint32_t, uint32_t, int);
     auto f = reinterpret_cast<fn3>(0x004D4DB0);
@@ -301,46 +350,59 @@ static uintptr_t RawObjectPtrProbe(uint64_t guid) {
     return rawPtr;
 }
 
-// Read 3 floats at ptr+off under SEH for PosProbe diagnostics.
+// Read 3 floats at ptr+off (VirtualQuery-guarded) for PosProbe diagnostics.
 static int SafeReadXYZ(uintptr_t ptr, uintptr_t off, float* x, float* y, float* z) {
     *x = *y = *z = 0.f;
     if (!ptr) return 0;
-    __try {
-        float* v = reinterpret_cast<float*>(ptr + off);
-        *x = v[0]; *y = v[1]; *z = v[2];
-        return 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
+    *x = RL::Game::Mem::Read<float>(ptr + off);
+    *y = RL::Game::Mem::Read<float>(ptr + off + 4);
+    *z = RL::Game::Mem::Read<float>(ptr + off + 8);
+    return 1;
 }
 
-// SEH-isolated: MovementInfo* at +0xD8 and type dword at +0x14.
+// VirtualQuery-guarded: MovementInfo* at +0xD8 and type dword at +0x14.
 static void SafeReadObjMeta(uintptr_t ptr, uintptr_t* movPtr, uint32_t* type14) {
     *movPtr = 0;
     *type14 = 0;
     if (!ptr) return;
-    __try {
-        *movPtr = *reinterpret_cast<uintptr_t*>(ptr + 0xD8);
-        *type14 = *reinterpret_cast<uint32_t*>(ptr + 0x14);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *movPtr = 0;
-        *type14 = 0;
-    }
+    *movPtr = RL::Game::Mem::Read<uintptr_t>(ptr + 0xD8);
+    *type14 = RL::Game::Mem::Read<uint32_t>(ptr + 0x14);
 }
 
-// SEH-isolated: descriptor pointer at object+0x08.
+// VirtualQuery-guarded: descriptor pointer at object+0x08.
 static uintptr_t SafeReadDescPtr(uintptr_t ptr) {
     if (!ptr) return 0;
-    uintptr_t d = 0;
-    __try {
-        d = *reinterpret_cast<uintptr_t*>(ptr + 0x08);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        d = 0;
-    }
-    return d;
+    return RL::Game::Mem::Read<uintptr_t>(ptr + 0x08);
 }
 
 static int Handle(lua_State* L, const char* name) {
+    // 0x512B07 CRASH DIAG (2026-08-01): track Lua stack depth across bridge
+    // calls. The crash is "Lua calls 0x512B00(GUID-resolver) with a garbage
+    // arg" = a corrupted Lua TValue. If one of our handlers imbalances the
+    // stack (leaks/overeats values), the depth here drifts and we can flag the
+    // corrupting command. Logs when the stack top is abnormal, throttled.
+    {
+        static int s_lastTop = -1;
+        static int s_abnormal = 0;
+        int top = RL::Lua::gettop(L);
+        if (s_lastTop >= 0 && top > s_lastTop + 8) {
+            if (s_abnormal < 20)
+                RL::Log::Warn("LuaStackAnomaly top=%d last=%d cmd=%s (stack drift!)",
+                              top, s_lastTop, name ? name : "?");
+            s_abnormal++;
+        } else if (s_abnormal > 0 && top <= s_lastTop + 2) {
+            s_abnormal = 0;
+        }
+        s_lastTop = top;
+    }
+    // Crash forensics: always record the call into the ring buffer (never
+    // skipped, unlike the Trace log) so CrashHandler can dump exactly what ran.
+    {
+        int traceArg = 0;
+        if (name && std::strcmp(name, "CastSpellEx") == 0)
+            traceArg = (int)RL::Lua::optnumber(L, 2, 0.0);
+        TraceBridgeCall(name, traceArg);
+    }
     // Verbose bridge trace (RL_LOG=1 -> Trace level). Skip ultra-hot pings by default.
     if (name && std::strcmp(name, "Ping") != 0 &&
         std::strcmp(name, "GetRuntimeVersion") != 0) {
@@ -442,6 +504,12 @@ static int Handle(lua_State* L, const char* name) {
         snprintf(buf, sizeof(buf), "0x%llX", (unsigned long long)o->guid);
         return PushString(L, buf);
     };
+
+    // WHOLE-OM SNAPSHOT (2026-08-02): the addon's Lua OM reads ONE packed
+    // string per tick instead of ~5 bridge calls per object. The runtime IS
+    // the OM authority. See OM::OmSnapshotPacked for the pack format.
+    if (!std::strcmp(name, "OmSnapshot"))
+        return PushString(L, OM::OmSnapshotPacked().c_str());
 
     if (!std::strcmp(name, "GetObjectWithIndex")) {
         if (!OmEnabled()) return PushNil(L);
@@ -1016,14 +1084,9 @@ static int Handle(lua_State* L, const char* name) {
         if (v < 0) return PushNil(L);
         return PushBool(L, v == 1);
     }
-    if (!std::strcmp(name, "PlayerCastState")) {
-        int sid = -1, total = 0, elapsed = 0;
-        OM::PlayerCastState(&sid, &total, &elapsed);
-        if (sid < 0) return PushString(L, "0|0|0");
-        char buf[48];
-        snprintf(buf, sizeof(buf), "%d|%d|%d", sid, total, elapsed);
-        return PushString(L, buf);
-    }
+    // (PlayerCastState handled authoritatively near the top of Handle via
+    // State::FullStatePacked — the old OM::PlayerCastState no-op placeholder
+    // that always reported "not casting" is gone.)
     if (!std::strcmp(name, "IsUnitMounted")) {
         uint64_t g = GuidArg(L, 2);
         if (!g) g = OM::LocalGuid();
@@ -1068,6 +1131,20 @@ static int Handle(lua_State* L, const char* name) {
         auto s = OM::SpellInfoPacked(spellId);
         return PushString(L, s.c_str());
     }
+    // LIVE per-ability spell data (2026-08-02): decoded Spell.dbc record +
+    // range entry. One call, full dump. "SpellInfoLive"
+    if (!std::strcmp(name, "SpellInfoLive")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        auto s = SpellDB::SpellInfoLive(spellId);
+        return PushString(L, s.c_str());
+    }
+    // AUTHORITATIVE melee/facing classification (2026-08-02): replaces the Lua
+    // maxR>8 heuristic with the client's decoded range data. "SpellMeleeInfo"
+    if (!std::strcmp(name, "SpellMeleeInfo") || !std::strcmp(name, "MeleeInfo")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        auto s = SpellDB::SpellMeleeInfo(spellId);
+        return PushString(L, s.c_str());
+    }
     // Unit aura list from runtime aura table: "n|spellId:stacks:remMs|..."
     if (!std::strcmp(name, "UnitAuras") || !std::strcmp(name, "GetUnitAuras")) {
         uint64_t g = GuidArg(L, 2);
@@ -1097,16 +1174,40 @@ static int Handle(lua_State* L, const char* name) {
         int ms = OM::RuneCooldownMs(idx);
         return PushNumber(L, (double)ms);
     }
-    // Map/zone info via Lua GetMapInfo pcall (cached 500ms — map rarely changes)
+    // AUTHORITATIVE PLAYER/SPELL STATE — pure client-memory reads (RE-verified
+    // 2026-08-01). These replace the HW-gated / protected Lua APIs that no-op
+    // from insecure addon code (the root cause of the auto-attack re-fire
+    // loop and "blocked action" errors). See game/GameState.h for the RE map.
+    if (!std::strcmp(name, "IsAttacking") || !std::strcmp(name, "AttackState")) {
+        // Authoritative: player+0xA20/0xA24 = the GUID the player is CURRENTLY
+        // attacking (RE from IsCurrentSpell internal 0x806030). The current-
+        // spells list [0xAF5254] does NOT reliably hold 6603 on this client,
+        // so the GUID is the primary signal. Returns "1|0xGUID" or "0|0".
+        char buf[64];
+        uint64_t atk = State::AttackTargetGuid();
+        snprintf(buf, sizeof(buf), "%d|0x%llX", (atk != 0) ? 1 : 0,
+                 (unsigned long long)atk);
+        return PushString(L, buf);
+    }
+    if (!std::strcmp(name, "PlayerCastState") || !std::strcmp(name, "CastState")) {
+        char buf[80];
+        State::FullStatePacked(buf, sizeof(buf));
+        return PushString(L, buf);
+    }
+    if (!std::strcmp(name, "IsSpellTargeting")) {
+        return PushBool(L, State::IsSpellTargeting());
+    }
+    if (!std::strcmp(name, "AutoRepeatSpell")) {
+        return PushNumber(L, (double)State::AutoRepeatSpellId());
+    }
+    if (!std::strcmp(name, "CurrentSpell") || !std::strcmp(name, "GetCurrentSpell")) {
+        return PushNumber(L, (double)State::CurrentSpellUsed());
+    }
+    // Map/zone info — CRASH RULE (permanent): GetMapInfo via nested lua_pcall
+    // from the bridge corrupts the Lua stack (proven). SAFE: placeholders
+    // only. The addon reads GetMapInfo via its own Lua (Lua→Lua, safe).
     if (!std::strcmp(name, "GetCurrentMapInfo")) {
-        static char s_mapBuf[128] = {};
-        static ULONGLONG s_mapAt = 0;
-        ULONGLONG now = GetTickCount64();
-        if (!s_mapAt || (now - s_mapAt) > 500ull) {
-            s_mapAt = now;
-            RL::Lua::MapInfoFromLua(s_mapBuf, sizeof(s_mapBuf));
-        }
-        return PushString(L, s_mapBuf[0] ? s_mapBuf : "mapId=?|mapName=?|zoneId=?|zoneName=?");
+        return PushString(L, "mapId=?|mapName=?|zoneId=?|zoneName=?");
     }
     if (!std::strcmp(name, "UnitIsLootable") || !std::strcmp(name, "UnitIsSkinnable") ||
         !std::strcmp(name, "UnitIsMounted") ||
@@ -1207,15 +1308,44 @@ static int Handle(lua_State* L, const char* name) {
             RL::Log::Warn("CastSpell refuse bad_guid id=%d", spellId);
             return PushBool(L, false);
         }
-        RL::Log::Info("CastSpell request id=%d guid=0x%llX",
+        RL::Log::Warn("CastSpell request id=%d guid=0x%llX",
                       spellId, (unsigned long long)g);
         RL::Game::MainThread::PulseFromMainThread();
-        Actions::SetCurrentLuaState(L);
-        bool ok = Actions::CastSpell(spellId, g);
-        Actions::SetCurrentLuaState(nullptr);
-        RL::Log::Info("CastSpell result id=%d ok=%d", spellId, (int)ok);
+        // 2026-08-02 (NATIVE CAST CARRIER): stage — Spell_C runs only from the
+        // native frame hook (no Lua on the stack). Never on this bridge call.
+        bool ok = Actions::QueueCast(spellId, g, 0);
+        RL::Log::Warn("CastSpell result id=%d ok=%d", spellId, (int)ok);
         return PushBool(L, ok);
     }
+    // Native-frame cast queue: STAGE a cast (no Spell_C from Lua). The native
+    // frame hook drains it and runs Spell_C from pure native context (no Lua
+    // on the stack) — the structural fix for the 0x512B07 corruption. Returns
+    // "1|queued" or "0|queue_full" / "0|no_spell".
+    //
+    // 2026-08-02 (NATIVE CAST CARRIER — user ABSOLUTE DIRECTIVE): the Lua
+    // bridge NEVER touches Spell_C. CastQueued/CastStage STAGE the cast into
+    // the FIFO; the NATIVE frame hook (NativeHook.cpp TickHookBody, main
+    // thread, no Lua on the stack) drains it and runs Spell_C. This is the
+    // structural fix for the 0x512B07 Lua-VM corruption (Spell_C's cast-
+    // feedback re-enters FrameScript/Lua, which corrupts the VM when a bridge
+    // C-closure is on the stack — proven every crash). The addon's Lua gates
+    // (facing/range/LoS/cooldown) run BEFORE this call; this path only queues.
+    if (!std::strcmp(name, "CastQueued") || !std::strcmp(name, "CastStage")) {
+        int spellId = (int)optnumber(L, 2, 0);
+        uint64_t g = parseGuidArg(3);
+        uint32_t flags = (uint32_t)optnumber(L, 4, 0.0);
+        if (spellId <= 0) return PushString(L, "0|no_spell");
+        if (g == 0 && guidArgWasIntended(3)) return PushString(L, "0|bad_guid");
+        RL::Game::MainThread::PulseFromMainThread();
+        bool ok = RL::Game::Actions::QueueCast(spellId, g, flags);
+        return PushString(L, ok ? "1|ok" : "0|queue_full");
+    }
+    if (!std::strcmp(name, "CastQueueStatus")) {
+        char b[32];
+        snprintf(b, sizeof(b), "%d", RL::Game::Actions::PendingCastCount());
+        return PushString(L, b);
+    }
+
     // Structured cast path: "1|ok" or "0|facing|los|oor|not_ready|cast_fail|..."
     // flags: 1=FACE_IF_NEEDED, 4=SKIP_IF_NOT_FACING, 8=CHECK_LOS
     if (!std::strcmp(name, "CastSpellEx") || !std::strcmp(name, "CastSpellGuid")) {
@@ -1234,20 +1364,24 @@ static int Handle(lua_State* L, const char* name) {
         char buf[80];
         if (!r.ok && r.reason && !std::strcmp(r.reason, "cooldown") && r.cooldownMs > 0.0) {
             snprintf(buf, sizeof(buf), "0|cooldown|%.0f", r.cooldownMs);
+        } else if (!r.ok && r.reason && !std::strcmp(r.reason, "busy") && r.busyState) {
+            snprintf(buf, sizeof(buf), "0|busy|%s", r.busyState);
         } else {
             snprintf(buf, sizeof(buf), "%d|%s", r.ok ? 1 : 0, r.reason ? r.reason : "?");
         }
-        // Trace-only success; Warn refuses (was Info every cast → I/O lag under RL_LOG).
+        // Visible cast telemetry (Warn = logged): one line per cast attempt with
+        // the packed verdict, so live sessions show exactly why each spell fires
+        // or is refused. Throttled refusals; successes throttled to every 4th.
+        static int s_castLog = 0;
+        s_castLog++;
         if (!r.ok) {
-            static int s_refuseLog = 0;
-            if (s_refuseLog < 24) {
-                RL::Log::Info("CastSpellEx refuse id=%d guid=0x%llX -> %s",
-                              spellId, (unsigned long long)g, buf);
-                s_refuseLog++;
+            if (s_castLog <= 60 || (s_castLog & 31) == 1) {
+                RL::Log::Warn("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
+                              spellId, (unsigned long long)g, (unsigned)flags, buf);
             }
-        } else {
-            RL::Log::Trace("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
-                           spellId, (unsigned long long)g, (unsigned)flags, buf);
+        } else if ((s_castLog & 3) == 1) {
+            RL::Log::Warn("CastSpellEx id=%d guid=0x%llX flags=%u -> %s",
+                          spellId, (unsigned long long)g, (unsigned)flags, buf);
         }
         return PushString(L, buf);
     }
@@ -1359,17 +1493,36 @@ static int Handle(lua_State* L, const char* name) {
         return PushBool(L, Actions::TargetLastTarget());
     if (!std::strcmp(name, "Attack") || !std::strcmp(name, "AttackTarget") ||
         !std::strcmp(name, "StartAttack"))
+        // 2026-08-02 (NO BLOCKED ACTION): AttackTarget now STAGES the engage —
+        // the native frame hook runs Spell_C(6603) (no Lua on the stack).
         return PushBool(L, Actions::AttackTarget());
+    if (!std::strcmp(name, "AttackEngage"))
+        return PushBool(L, Actions::RequestAttackEngage(GuidArg(L, 2)));
     if (!std::strcmp(name, "StopAttack"))
         return PushBool(L, Actions::StopAttack());
     if (!std::strcmp(name, "Interact") || !std::strcmp(name, "ObjectInteract") ||
         !std::strcmp(name, "InteractUnit")) {
         uint64_t g = parseGuidArg(2);
-        if (g) return PushBool(L, Actions::InteractGuid(g));
-        return PushBool(L, Actions::InteractTarget());
+        // 2026-08-02 (blocked-action + nested-VM crash surface): mark the
+        // bridge active around Interact so Actions::InteractGuid/Target's
+        // SafeFSExec("InteractUnit('target')") fallback REFUSES while we are
+        // inside Lua_IsLinuxClient. Without this, g_currentL is NULL during
+        // the dispatch, the guard `!g_currentL` wrongly passes, and the
+        // protected InteractUnit executes via FrameScript_Execute from inside
+        // the VM — a blocked action AND a documented nested re-entry crash.
+        // The native direct-handler path (InteractUnitDirect) is the primary
+        // and unaffected.
+        Actions::SetCurrentLuaState(L);
+        bool ok = g ? Actions::InteractGuid(g) : Actions::InteractTarget();
+        Actions::SetCurrentLuaState(nullptr);
+        return PushBool(L, ok);
     }
-    if (!std::strcmp(name, "InteractTarget"))
-        return PushBool(L, Actions::InteractTarget());
+    if (!std::strcmp(name, "InteractTarget")) {
+        Actions::SetCurrentLuaState(L);
+        bool ok = Actions::InteractTarget();
+        Actions::SetCurrentLuaState(nullptr);
+        return PushBool(L, ok);
+    }
     if (!std::strcmp(name, "Jump"))
         return PushBool(L, Actions::Jump());
     // Held swim-up: must NOT share "Jump" - Jump is a one-shot land hop.
@@ -1383,6 +1536,12 @@ static int Handle(lua_State* L, const char* name) {
         return PushBool(L, Actions::Descend(false));
     if (!std::strcmp(name, "StopMoving"))
         return PushBool(L, Actions::StopMoving());
+    if (!std::strcmp(name, "HaltMovement") || !std::strcmp(name, "DeferredHalt"))
+        // 2026-08-02 (NO BLOCKED ACTION on disable): stage the halt — the
+        // native frame hook executes the protected StopMoving/MouselookStop/
+        // CommitMovement. NEVER call those protected APIs from this Lua-
+        // dispatched bridge call (that pops the taint dialog).
+        return PushBool(L, Actions::RequestHaltMovement());
     if (!std::strcmp(name, "MoveForwardStart")) return PushBool(L, Actions::MoveForward(true));
     if (!std::strcmp(name, "MoveForwardStop"))  return PushBool(L, Actions::MoveForward(false));
     if (!std::strcmp(name, "MoveBackwardStart")) return PushBool(L, Actions::MoveBackward(true));
@@ -1429,7 +1588,18 @@ static int Handle(lua_State* L, const char* name) {
     }
     if (!std::strcmp(name, "ExecSecure") || !std::strcmp(name, "RunSecure")) {
         const char* code = checkstring(L, 2);
-        return PushBool(L, code && Actions::ExecSecure(code));
+        if (!code) return PushBool(L, false);
+        // 2026-08-02 (TAINT + CRASH FIX): mark the bridge as active while
+        // ExecSecure runs so SafeFSExec REFUSES — FrameScript_Execute re-enters
+        // the Lua VM from inside a Lua C closure (the documented nested-VM crash
+        // surface) and is the "Tainted call to a secure function" source. The
+        // addon now casts by native spell ID instead (A.CastSpellByName resolves
+        // names via GetSpellInfo -> CastSpell). ExecSecure stays reachable only
+        // from OUTSIDE the bridge (non-bridge paths), where it is safe.
+        Actions::SetCurrentLuaState(L);
+        bool ok = Actions::ExecSecure(code) > 0;
+        Actions::SetCurrentLuaState(nullptr);
+        return PushBool(L, ok);
     }
     if (!std::strcmp(name, "FaceDirection")) {
         return PushBool(L, Actions::FaceDirection((float)optnumber(L, 2, 0)));
@@ -1487,6 +1657,59 @@ static int Handle(lua_State* L, const char* name) {
         !std::strcmp(name, "GetValueTypesTable"))
         return PushNil(L);
 
+    // ---- NATIVE HOOK (detour/trampoline) test surface (2026-08-02) ----
+    // 2026-08-01 CRASH LESSON: these commands were how the frame-tick hook got
+    // installed on an UNVERIFIED function, and the decoder bug corrupted game
+    // state (crash at 0x7B3B52). The hook is now CONFIG-GATED (OFF by default)
+    // and the decoder is PROVEN correct. These commands are dev-only; a normal
+    // session never calls them.
+    //   NativeHookTest      -> installs with force=true (logs loudly)
+    //   NativeHookDiag      -> full diagnostic snapshot (thread, main, intervals)
+    //   FrameTickRate       -> "fps"|"warming|0"      (non-blocking delta)
+    //   FrameTicks          -> "<count>"              (cumulative ticks)
+    //   NativeHookUninstall -> "ok"                   (remove all native hooks)
+    if (!std::strcmp(name, "NativeHookTest") || !std::strcmp(name, "FrameTickRate") ||
+        !std::strcmp(name, "FrameTicks") || !std::strcmp(name, "NativeHookUninstall") ||
+        !std::strcmp(name, "NativeHookDiag") || !std::strcmp(name, "NativeHookEnsure")) {
+        // The bridge runs on the game's main thread — record that id so the
+        // tick diagnostics can prove whether the hook fires on the main thread.
+        RL::Game::NativeHook::SetMainThreadId(GetCurrentThreadId());
+        if (!std::strcmp(name, "NativeHookUninstall")) {
+            RL::Game::NativeHook::Shutdown();
+            return PushString(L, "ok");
+        }
+        if (!std::strcmp(name, "NativeHookDiag"))
+            return PushString(L, RL::Game::NativeHook::FrameTickDiag().c_str());
+        if (!std::strcmp(name, "NativeHookEnsure")) {
+            // 2026-08-01 (0x512B07 fix): install the frame-tick hook as the
+            // NATIVE OM enumeration carrier. The hook body now runs ONLY
+            // ObjectManager::Refresh (safe: pure memory, VEH-guarded, native
+            // non-Lua context), NOT Spell_C (which crashed from the thunk). The
+            // Lua bridge defers enumeration via ObjectManager::SetInLuaContext,
+            // and the hook performs the deferred walk each frame on the main
+            // thread with no Lua on the stack. Casting stays on the direct
+            // bridge path. Idempotent.
+            RL::Game::NativeHook::InstallFrameTickHook(true);
+            return PushString(L, RL::Game::NativeHook::FrameTickDiag().c_str());
+        }
+        if (!std::strcmp(name, "FrameTicks")) {
+            char b[32];
+            snprintf(b, sizeof(b), "%llu",
+                     (unsigned long long)RL::Game::NativeHook::FrameTickCount());
+            return PushString(L, b);
+        }
+        if (!std::strcmp(name, "NativeHookTest")) {
+            // force=true (dev only): the config gate is OFF by default
+            RL::Game::NativeHook::InstallFrameTickHook(true);
+            return PushString(L, RL::Game::NativeHook::FrameTickDiag().c_str());
+        }
+        int fps = RL::Game::NativeHook::FrameRateDelta();
+        char b[32];
+        if (fps <= 0) snprintf(b, sizeof(b), "warming|0");
+        else snprintf(b, sizeof(b), "%d", fps);
+        return PushString(L, b);
+    }
+
     return PushNil(L);
 }
 
@@ -1542,15 +1765,47 @@ static int __cdecl Lua_IsLinuxClient(lua_State* L) {
     }
 
     const char* name = RL::Lua::checkstring(L, 1);
-    if (!name || !std::strcmp(name, "Ping") || !std::strcmp(name, "GetRuntimeVersion") ||
+
+    // STOCK API CONTRACT (2026-08-01, crash fix):
+    // We rebind the STOCK global IsLinuxClient. The game's OWN FrameXML calls
+    // IsLinuxClient() with NO arguments expecting the stock boolean false (a
+    // nil-stub). Returning a truthy version string here made the game's
+    // Linux branches fire inside its own scripts → Lua VM corruption (crash
+    // family: closure-table corruption after heavy ticking, eip=garbage,
+    // AV_WRITE, our DLL in registers). A no-arg call MUST return false.
+    // The addon always probes WITH the "GetRuntimeVersion" argument, so its
+    // dispatch is unaffected.
+    if (!name || !name[0]) {
+        return RL::Lua::PushBool(L, 0);
+    }
+
+    // NO OM work inside the Lua VM: PulseFromMainThread is a pure player
+    // snapshot now (no OM::Count/Refresh) — object enumeration must never
+    // run from inside a Lua C closure (crash-lesson permanent rule).
+    if (!std::strcmp(name, "Ping") || !std::strcmp(name, "GetRuntimeVersion") ||
         !std::strcmp(name, "CastSpell") || !std::strcmp(name, "CastSpellByID") ||
         !std::strcmp(name, "ArmUnlock")) {
         RL::Game::MainThread::PulseFromMainThread();
     } else if (OmEnabled()) {
         RL::Game::MainThread::PulseFromMainThread();
     }
-    if (!name) return Handle(L, "GetRuntimeVersion");
-    return Handle(L, name);
+    // 0x512B07 CRASH FIX: mark that we are inside the game's Lua VM call chain
+    // so OM enumeration is DEFERRED (the native frame hook performs it on a
+    // non-Lua context). This is the permanent rule being enforced mechanically —
+    // object enumeration (Refresh/SoftRefresh) must never run inside Lua.
+    RL::Game::OM::SetInLuaContext(true);
+    // The bridge always runs on the game's main thread — record it so the
+    // native frame hook can gate its EnumVisibleObjects to main-thread only.
+    RL::Game::NativeHook::SetMainThreadId(GetCurrentThreadId());
+    // 2026-08-02 (native carrier): install the frame-tick hook from the MAIN
+    // thread (this dispatch IS the main thread). This avoids the torn-patch
+    // race of patching 0x7E5120 from the worker thread while the game main
+    // thread executes it every frame. Idempotent; one-time. The hook body
+    // runs OM::Refresh (the ONLY context allowed to EnumVisibleObjects).
+    RL::Game::NativeHook::InstallFrameTickHook(true);
+    int rc = Handle(L, name);
+    RL::Game::OM::SetInLuaContext(false);
+    return rc;
 }
 
 } // namespace

@@ -16,6 +16,8 @@
 #include "game/ObjectManager.h"
 #include "game/MainThread.h"
 #include "game/TaintPatch.h"
+#include "game/LiveScan.h"
+#include "game/Guard.h"
 #include "lua/Lua.h"
 #include "bridge/Dispatch.h"
 
@@ -159,6 +161,104 @@ static volatile bool g_run = true;
 static HANDLE g_mutex = nullptr;
 static HMODULE g_self = nullptr;
 
+// ---- Corrupted-indirect-call skip (2026-08-01) ---------------------------
+// The game's own exit / .NET-export dispatch (0x40D06E -> 0x40CEE4, mscoree
+// CorExitProcess resolver; writable callback tables at 0x9E0AF8/0x9E0B08)
+// occasionally holds a corrupted function pointer. The processor jumps to
+// non-image memory (live: eip=0x66AAF090, AV_READ fault=0x3C) and faults on
+// the first read — a classic "call through a garbage pointer" crash that the
+// scoped Guard cannot cover because it happens on the GAME's async path, not
+// inside one of our guarded calls.
+//
+// We ONLY act on that exact signature:
+//   * exception is AV or illegal-instruction,
+//   * NO Guard::Scope is armed on this thread (a guarded region must keep
+//     using the longjmp guard — never skip its fault),
+//   * EIP is NOT inside any image executable section (Ascension.exe, our DLL,
+//     or system DLLs) -> a garbage / corrupted function pointer,
+//   * the stack top (the return address the corrupted `call` pushed) points
+//     back into Ascension.exe .text.
+// Then we resume at that return address (Esp += 4) — the corrupted call is
+// skipped exactly as if the target function had returned. Everything else
+// falls through to Guard::Handler / CrashHandler unchanged.
+static LONG WINAPI SkipCorruptCall(_EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    // A guarded region must use the longjmp guard, not this skip.
+    if (RL::Game::Guard::g_top && RL::Game::Guard::g_top->armed)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    CONTEXT* ctx = ep->ContextRecord;
+    uintptr_t ip = ctx->Eip;
+
+    // EIP inside Ascension.exe .text? -> real game code, not a corrupt jump.
+    if (ip >= 0x00401000u && ip < 0x009DE3B2u)
+        return EXCEPTION_CONTINUE_SEARCH;
+    // EIP inside our own DLL? -> our code; Guard / CrashHandler should own it.
+    if (g_self) {
+        uintptr_t lo = (uintptr_t)g_self;
+        // Image size is unreliable after the header wipe; +0x40000 is ample.
+        if (ip >= lo && ip < lo + 0x40000u)
+            return EXCEPTION_CONTINUE_SEARCH;
+    }
+    // EIP inside a system DLL (kernel32/ntdll/user32 load at 0x7Cxxxxxx /
+    // 0x77xxxxxx on this 32-bit client; anything >= 0x70000000 is system or
+    // high-reserved)? -> not a corrupt jump to garbage; let the OS handle it.
+    if (ip >= 0x70000000u)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    // The corrupted `call` pushed its return address on the stack. But the
+    // garbage target (a freed .NET JIT region) may have EXECUTED a few
+    // instructions before faulting, pushing more entries — so the return
+    // address is not necessarily at [esp]. Scan a small window for the FIRST
+    // value that points into Ascension.exe .text (0x401000-0x9DE3B2); data /
+    // vtables live at 0x9E0000+ so they never match. Resume at that address.
+    uintptr_t esp = ctx->Esp;
+    if (esp < 0x10000u || (esp & 3)) return EXCEPTION_CONTINUE_SEARCH;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery((LPCVOID)esp, &mbi, sizeof(mbi)))
+        return EXCEPTION_CONTINUE_SEARCH;
+    static const DWORD kRW = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & kRW) == 0)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    uintptr_t ret = 0;
+    uintptr_t retEsp = esp;
+    // Widen the scan (live: 0x66FBF090 crash had the game return at
+    // [esp+0x58]) — cover [esp, esp+0x200) plus a small headroom below.
+    for (uintptr_t a = esp - 0x40; a < esp + 0x200u; a += 4) {
+        if (a < 0x10000u) break;
+        uintptr_t v = *(uintptr_t*)a;
+        if (v >= 0x00401000u && v < 0x009DE3B2u) { ret = v; retEsp = a; break; }
+    }
+    // Fallback: walk the EBP frame chain (same walk CrashHandler uses) — the
+    // corrupted frame's caller often survives there even when the linear
+    // [esp] window got clobbered by the garbage target's partial execution.
+    if (!ret && ctx->Ebp >= 0x10000u) {
+        uintptr_t* frame = (uintptr_t*)ctx->Ebp;
+        for (int i = 0; i < 16 && frame && (uintptr_t)frame >= 0x10000u &&
+                         IsBadReadPtr(frame, 8) == 0; ++i) {
+            uintptr_t r = frame[1];
+            if (r >= 0x00401000u && r < 0x009DE3B2u) { ret = r; retEsp = (uintptr_t)&frame[1]; break; }
+            uintptr_t* next = (uintptr_t*)frame[0];
+            if (!next || next <= frame) break;
+            frame = next;
+        }
+    }
+    if (!ret) return EXCEPTION_CONTINUE_SEARCH; // no game-code return addr found
+
+    // Resume after the corrupted call (skip it entirely).
+    RL::Log::Warn("skip corrupt call eip=0x%08X fault=0x%08X -> ret=0x%08X@+%u",
+                  (unsigned)ip,
+                  (unsigned)(code == EXCEPTION_ACCESS_VIOLATION
+                                 ? ep->ExceptionRecord->ExceptionInformation[1] : 0),
+                  (unsigned)ret, (unsigned)(retEsp - esp));
+    ctx->Eip = ret;
+    ctx->Esp = retEsp + 4;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 // ---- Vectored Exception Handler — crash diagnostics ----------------------
 // Captures FULL register + stack context on ANY access violation and logs
 // to runtime.log BEFORE the process terminates. This is the "black box"
@@ -186,6 +286,31 @@ static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
         snprintf(faultType, sizeof(faultType), "PAGE_ERR");
     }
 
+    // 2026-08-02 (15:10 CRASH — 0x512B07 CRASH SHIELD, 1.10.79): the client's
+    // cast-feedback walk (0x856370 -> 0x512B00 GUID resolver) can pass a
+    // garbage GUID-struct pointer -> AV_READ at `mov eax,[esi+4]` (0x512B07)
+    // / `mov ecx,[esi]` (0x512B0A). Instead of dying, point ESI at a runtime
+    // zero-GUID and re-execute: ObjectPtr(0,0,8) returns 0 -> the walk's
+    // `test edi,edi; je` branch SKIPS the unresolved target and continues.
+    // The process NEVER dies from this AV. Belt-and-suspenders on top of the
+    // 1.10.79 GUIDCAST cast-path fix (register + Spell_C(GUID) = the game's
+    // own proven path). Rate-limited log so a recurrence is visible.
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        (ip == 0x00512B07 || ip == 0x00512B0A)) {
+        static uint64_t s_resolverZeroGuid = 0;   // valid 8-byte zero GUID struct
+        static volatile LONG s_shieldCount = 0;
+        LONG n = InterlockedIncrement(&s_shieldCount);
+        if (n <= 4 || (n & 63) == 1)
+            RL::Log::Warn("0x512B07 SHIELD: recovered resolver AV (count=%ld) "
+                          "esi=0x%08X", (long)n, (unsigned)ctx->Esi);
+        ctx->Esi = (uintptr_t)&s_resolverZeroGuid;
+        ctx->Eax = 0;
+        ctx->Ecx = 0;
+        if (ip == 0x00512B0A)
+            ctx->Eip = 0x00512B0D;  // skip both movs; eax/ecx already zeroed
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     // Stack walk: read return addresses from current stack frame
     uintptr_t stack[32] = {};
     int stackN = 0;
@@ -208,6 +333,35 @@ static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
     for (int i = 0; i < stackN; ++i) {
         LOG_E("crash.stack", "frame=%d ret=0x%08X", i, (unsigned)stack[i]);
     }
+
+    // 2026-08-02 (0x512B07 diagnostics): dump the client's action-state globals
+    // at the fault so a recurring crash is immediately attributable — a bare
+    // zero (d4139c=0, d413a0=0, d413a4=0) vs intact save/zero/restore
+    // bookkeeping. These are always-mapped client globals; plain reads.
+    // 2026-08-02 (1.10.78): also dump the cast-commit state [0xD3F4E0] and the
+    // cast-record pointer [0xD3F4E4] — non-zero commit state at the fault
+    // proves the client was STILL committing the cast when the walk crashed
+    // (i.e. a too-short selection restore raced the commit).
+    LOG_E("crash.state",
+          "d4139c=0x%08X d413a0=0x%08X d413a4=0x%08X bd07b0=0x%08X bd07b4=0x%08X d3f4e0=0x%08X d3f4e4=0x%08X",
+          (unsigned)(*(volatile uint32_t*)0x00D4139C),
+          (unsigned)(*(volatile uint32_t*)0x00D413A0),
+          (unsigned)(*(volatile uint32_t*)0x00D413A4),
+          (unsigned)(*(volatile uint32_t*)0x00BD07B0),
+          (unsigned)(*(volatile uint32_t*)0x00BD07B4),
+          (unsigned)(*(volatile uint32_t*)0x00D3F4E0),
+          (unsigned)(*(volatile uint32_t*)0x00D3F4E4));
+
+    // Crash forensics: dump the last bridge calls that ran before the fault.
+    // This turns every crash into "the last N things the addon asked the
+    // runtime" — the fastest possible path to the culprit.
+    RL::Bridge::DumpRecentBridgeCalls();
+
+    // Crash forensics: dump every guarded game call that AV'd (VEH longjmp
+    // recovery) before the fault — the "Guard::Scope longjmp-recovery crash
+    // vector" measured. If the closure-table crash follows a guard catch, this
+    // names the exact AV site.
+    RL::Game::Guard::DumpGuardCatches();
 
     // Flush log to disk before the process dies
     RL::Log::Shutdown();
@@ -237,9 +391,16 @@ static DWORD WINAPI MainThread(LPVOID param) {
     // This captures EIP, registers, and stack trace on any AV/illegal instruction
     // and logs them to runtime.log before the process terminates.
     AddVectoredExceptionHandler(1, CrashHandler);
-    LOG_W("sys.crash", "handler installed");
+    // Corrupted-indirect-call skip (registered AFTER CrashHandler so it runs
+    // before it at same priority). Guard::Handler registers later on first
+    // Scope use and therefore runs before this one — armed guards always win.
+    AddVectoredExceptionHandler(1, SkipCorruptCall);
+    LOG_W("sys.crash", "handler installed (crash + skipcorrupt)");
 
     RL::Config::Set("om.enable", "0");
+    // EnumVisibleObjects is guarded by a VEH longjmp guard (SafeEnumVisibleAt)
+    // so it is crash-safe from inside the Lua VM — full unit discovery stays
+    // enabled. om.enum defaults to 1 in ObjectManager.
     RL::Config::Set("taint.patch", "1");
     RL::Config::Flush();
 
@@ -271,6 +432,17 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
     RL::Lua::Init();
     LOG_I("sys.lua", "api=%s", RL::Lua::Ready() ? "1" : "0");
+
+    // Live-scan internal client functions (cooldown/time/spell-info) from the
+    // RUNNING process by walking verified handler bytecode. Self-updating every
+    // inject. Resolved addresses feed pure-C++ SpellCooldownMs/ValidateCast.
+    if (!secondary) {
+        auto resolved = RL::Game::Scan::ResolveInternals();
+        RL::Lua::SetResolvedInternals(
+            resolved.getCooldownInternal, resolved.getTimeInternal,
+            resolved.getSpellInfoInternal,
+            resolved.cooldownOk, resolved.timeOk, resolved.spellInfoOk);
+    }
 
     RL::Ipc::Start();
 
@@ -400,7 +572,36 @@ static DWORD WINAPI MainThread(LPVOID param) {
             const bool pathMedium = medium && mediumStreak >= needMedStr
                                     && settle >= needMedSet;
 
-            if ((pathStrong || pathMedium) && failBackoff == 0) {
+            // 2026-08-02 (CRASH FIX — "inject at any point"): NEVER Register
+            // unless a real player GUID is present via PURE MEMORY. During
+            // character load the ClntObjMgr has no active player yet ([mgr+0xC0]
+            // == 0) even though wf|conn|mgr (medium bits 0xE) are already lit —
+            // FrameScript_RegisterFunction from the worker then races the
+            // main thread's loading Lua VM and crashes it (documented load-crash
+            // family; live 15:31 heap corruption during load, seq 0). The pure
+            // GUID only becomes non-zero once the player spawns in-world.
+            const bool playerUp = (RL::Game::Addr::ActiveGuidPure() != 0);
+            if ((pathStrong || pathMedium) && !playerUp) {
+                // Diagnostic (rate-limited): registration is path-ready but the
+                // pure player GUID is 0. During load this is EXPECTED (wait);
+                // if it persists long after the world is loaded, the pure-memory
+                // guid sources (mgr global / 0xC7B098) are unreliable on this
+                // client and need re-verification — never Register mid-load.
+                static ULONGLONG s_lastNoPlayerLog = 0;
+                if (settle > 0 && (settle % 100) == 0
+                    && GetTickCount64() - s_lastNoPlayerLog > 5000ull) {
+                    s_lastNoPlayerLog = GetTickCount64();
+                    RL::Log::Warn(
+                        "br.no.player bits=0x%X settle=%d via=%s pureguid=0 (holding register)",
+                        (unsigned)wbits, settle, pathStrong ? "strong" : "medium");
+                }
+            }
+
+            if ((pathStrong || pathMedium) && playerUp && failBackoff == 0) {
+                // DEFERRED STEALTH: world is confirmed fully loaded and stable
+                // here — NOW is the safe moment to unlink from the PEB loader
+                // lists and wipe our headers (never during the load window).
+                RL::Stealth::ApplyDeferredStealth();
                 if (RL::Bridge::Register(true)) {
                     registered = true;
                     everRegistered = true;
@@ -410,6 +611,13 @@ static DWORD WINAPI MainThread(LPVOID param) {
                           RL::Bridge::Version(), L, (unsigned)wbits, settle,
                           strongStreak, mediumStreak,
                           pathStrong ? "strong" : "medium");
+                    // 2026-08-02 (0x512B07 ROOT-CAUSE FIX): the native frame-tick
+                    // hook is installed from the BRIDGE DISPATCH (main thread) —
+                    // see Lua_IsLinuxClient in Dispatch.cpp. Installing here from
+                    // the worker would race the game main thread executing
+                    // 0x7E5120 every frame (torn patch). The bridge install is
+                    // idempotent and happens on the first dispatch, which is
+                    // guaranteed to precede any OM-capable call.
                 } else {
                     LOG_W("br.regfail", "bits=0x%X settle=%d backoff=%d via=%s",
                           (unsigned)wbits, settle, kFailBackoff,
@@ -423,8 +631,11 @@ static DWORD WINAPI MainThread(LPVOID param) {
             }
         }
 
+        // Heartbeat is diagnostics-only; Trace level so it never floods the
+        // shipped runtime.log (Info filtered, Warn/Err shown). Re-enable LOG_W
+        // in debug builds when the worker state needs continuous visibility.
         if ((tick % 40) == 0) {
-            LOG_W("hb.worker", "reg=%d ever=%d bits=0x%X settle=%d str=%d med=%d L=%p wait=%d",
+            LOG_T("hb.worker", "reg=%d ever=%d bits=0x%X settle=%d str=%d med=%d L=%p wait=%d",
                   (int)registered, (int)everRegistered, (unsigned)wbits, settle,
                   strongStreak, mediumStreak, L,
                   (!registered && L) ? 1 : 0);
@@ -463,8 +674,13 @@ static DWORD WINAPI MainThread(LPVOID param) {
 BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
-        // Always-on load stealth: PEB unlink + PE header wipe (opt-out via env)
-        RL::Stealth::ApplyLoadStealth(h);
+        // DEFERRED stealth (2026-08-01): PEB unlink + PE header wipe are NOT
+        // applied here — mutating the process LDR lists / our headers during
+        // the game's world-load Lua VM window crashes the game's Lua VM
+        // (eip=0x0085C47A, NULL+0x28; worker never even registered). The
+        // worker applies them once the world is confirmed fully loaded, so
+        // absolute stealth is preserved at the safe moment.
+        RL::Stealth::RequestDeferredApply(h);
         HANDLE t = CreateThread(nullptr, 0, MainThread, h, 0, nullptr);
         if (t) CloseHandle(t);
     } else if (reason == DLL_PROCESS_DETACH) {

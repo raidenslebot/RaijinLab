@@ -396,20 +396,18 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 end
 
 -- Lightweight face/LoS recheck for a concrete GUID (cast path final gate).
+-- FACING (2026-08-01): NEVER hard-refuse here. The measurement can disagree
+-- with the client's real facing (+0x7AC lags visual; Lua GetPlayerFacing
+-- no-ops to 0.0). Refusing here starved the wire path (which TURNS the player
+-- toward the GUID then wires) — the rotation reported "wait facing:Blood
+-- Strike" forever while the user faced the target. Facing is the wire path's
+-- job: turn, re-measure, wire regardless (client is final authority). LOS
+-- stays: only a confident block refuses pre-wire.
 function BasicRules.guid_cast_gates(guid, opts)
     opts = opts or {}
     if not guid then return true, nil end
     local W = RaijinLab and RaijinLab.World
-    if not opts.skip_facing and W and W.is_not_facing_guid then
-        -- Only refuse when MEASURED not-facing (nil undetermined allows cast).
-        if W.is_not_facing_guid(guid, W.CAST_FACE_HALF_ARC) then
-            return false, "facing"
-        end
-    elseif not opts.skip_facing and W and W.is_facing_guid then
-        if W.is_facing_guid(guid, W.CAST_FACE_HALF_ARC) == false then
-            return false, "facing"
-        end
-    end
+    -- Facing: never block here (deferred to wire path with auto-face).
     if not opts.skip_los and W and W.is_los_guid then
         if W.is_los_guid(guid) == false then
             return false, "los"

@@ -10,6 +10,7 @@ void Init();
 bool Ready();
 
 int gettop(lua_State* L);
+void settop(lua_State* L, int idx);
 const char* tolstring(lua_State* L, int idx, size_t* len);
 double tonumber(lua_State* L, int idx);
 void pushnumber(lua_State* L, double n);
@@ -29,8 +30,17 @@ int PushNil(lua_State* L);
 int PushXYZ(lua_State* L, float x, float y, float z); // 3 returns if possible, else "x,y,z" string
 
 // Call Lua's GetSpellCooldown(spellId) from C++. Returns remaining cooldown in
-// milliseconds (0 if ready, -1 if unreadable). Thread-safe only on main thread.
+// milliseconds (0 if ready). When live-scanned internal addresses are
+// available, reads the client's internal cooldown table directly (pure C++,
+// zero Lua). Otherwise returns 0 (safe no-op).
 double SpellCooldownMs(lua_State* L, int spellId);
+
+// Set internal client function addresses resolved by LiveScan at inject time.
+// When set, the runtime reads cooldowns/time/spell-info from the client's own
+// internal C++ functions (no Lua pcall, no crash).
+void SetResolvedInternals(uintptr_t getCooldownInternal, uintptr_t getTimeInternal,
+                          uintptr_t getSpellInfoInternal,
+                          bool cooldownOk, bool timeOk, bool spellInfoOk);
 
 // Call Lua's GetTime() from C++. Returns game-time seconds or -1 on failure.
 double GameTimeFromLua(lua_State* L);

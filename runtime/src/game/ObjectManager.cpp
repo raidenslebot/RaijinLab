@@ -2,6 +2,7 @@
 #include "Offsets.h"
 #include "AddressDB.h"
 #include "GameTime.h"
+#include "Guard.h"
 #include "Mem.h"
 #include "core/Config.h"
 #include "core/Log.h"
@@ -35,6 +36,14 @@ std::vector<Object> g_all;
 std::vector<Object> g_byType[8];
 ULONGLONG g_lastRefresh = 0;
 
+// 2026-08-01 (0x512B07 crash fix): object enumeration must NOT run inside the
+// game's Lua VM call chain (it writes to objects mid-walk and, under the deep
+// Lua_IsLinuxClient -> Dispatch -> OM stack, corrupts the VM's stack/TValues ->
+// later "Lua calls 0x512B00 with garbage" crash). Set true by the bridge around
+// every RuntimeCall; enumeration is deferred while set. Thread-local is fine -
+// the bridge and the rotation all run on the game main thread.
+static thread_local bool g_inLuaContext = false;
+
 // After one AV, never re-enter EnumVisibleObjects for this process inject.
 // (Previously SafeEnumVisible swallowed the AV, Refresh "succeeded", and every
 //  frame retried -> thousands of 0xC0000005 log lines and possible heap damage.)
@@ -60,6 +69,9 @@ struct Pod {
     int faction;
     uint64_t unitTarget;
     float scale;
+    uint32_t goBytes1;
+    uint32_t npcFlags;
+    int creatureType; // CREATURE_TYPE_* (8 = CRITTER); -1 unknown (players/GO)
 };
 static constexpr size_t kMaxEnum = 2048;
 Pod g_pods[kMaxEnum];
@@ -134,32 +146,18 @@ int TypeFromGuid(uint64_t guid) {
     return (int)ObjectType::None;
 }
 
-// Safe thiscall outside the enum callback (PodsToVectors / accessors only).
-int SafeGetObjectType(uintptr_t ptr) {
-    if (!ptr || !Mem::Readable(ptr)) return -1;
-    using fnGetType = int(__thiscall*)(void*);
-    constexpr uintptr_t kGetObjectType = 0x004D3A40;
-    int t = -1;
-    __try {
-        t = reinterpret_cast<fnGetType>(kGetObjectType)(reinterpret_cast<void*>(ptr));
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        t = -1;
-    }
-    return t;
-}
+// CRASH ELIMINATED (2026-08-01): a "get object type" thiscall was pointed at
+// 0x004D3A40 — but disassembly shows 0x4D3A40 is the EPILOGUE of a SETTER
+// that WRITES [esi+0x2D0]/[esi+0x2D4] (esi = the object). Calling it on a
+// freed object was the exact AV_WRITE UAF at 0x004D3A40 (fault = obj+0x2D0)
+// seen on 01:11 and 01:34. The object type is read safely from ptr+0x14 and
+// the GUID hipart below — no game-function call needed.
 
 int ResolveType(uintptr_t ptr, uint64_t guid) {
     // 1) Single byte / dword at classic Type offset 0x14 (TypeID or TypeMask)
     uint32_t raw14 = Mem::Read<uint32_t>(ptr + 0x14);
     int t = TypeFromRaw(raw14 & 0xFF); // prefer low byte as TypeID
     if (t == (int)ObjectType::None) t = TypeFromRaw(raw14);
-
-    // 2) Engine GetObjectType thiscall (outside SEH-enum path only)
-    if (t == (int)ObjectType::None) {
-        int gt = SafeGetObjectType(ptr);
-        if (gt >= 0 && gt <= 7) t = gt;
-        else if (gt > 7) t = TypeFromRaw((uint32_t)gt);
-    }
 
     // 3) GUID hipart
     int gtype = TypeFromGuid(guid);
@@ -218,18 +216,39 @@ void FillPod(Pod* o) {
             o->dynamicFlags = Mem::Read<uint32_t>(d + Offsets::D().GoDynamic) & 0xFFFF;
             o->faction = 0;
             o->unitTarget = 0;
+            o->goBytes1 = Mem::Read<uint32_t>(d + Offsets::D().GoBytes1);
+            o->npcFlags = 0;
+            o->creatureType = -1;
         } else if (o->type == (int)ObjectType::Unit || o->type == (int)ObjectType::Player) {
             o->unitFlags = Mem::Read<uint32_t>(d + Offsets::D().Flags);
             o->dynamicFlags = Mem::Read<uint32_t>(d + Offsets::D().DynamicFlags);
             // Only unit/player descriptors are long enough for these fields.
             o->faction = Mem::Read<int>(d + Offsets::D().FactionTemplate);
             o->unitTarget = Mem::Read<uint64_t>(d + 0x48); // UNIT_FIELD_TARGET
+            o->npcFlags = Mem::Read<uint32_t>(d + 0x10C);  // UNIT_FIELD_NPC_FLAGS (pinned)
+            o->goBytes1 = 0;
+            // CREATURE TYPE (2026-08-02): the client's CGUnit_C::GetCreatureType
+            // reads [unit+0xD0] -> byte [ptr+0x1D3] (verified disasm 0x71F300,
+            // the same path lua_UnitCreatureType uses). CREATURE_TYPE_CRITTER=8.
+            // Critters must NEVER appear in AuraSearch/NearbyHostiles — the
+            // old faction-only hostile filter let them through (critters have
+            // a non-player faction -> "different faction => hostile").
+            o->creatureType = -1;
+            if (o->type == (int)ObjectType::Unit && o->ptr) {
+                uintptr_t ctPtr = Mem::Read<uintptr_t>(o->ptr + 0xD0);
+                if (ctPtr && Mem::Readable(ctPtr)) {
+                    o->creatureType = Mem::Read<uint8_t>(ctPtr + 0x1D3);
+                }
+            }
         } else {
             // Item/container/etc.: do NOT read unit descriptor tails (load crash).
             o->unitFlags = 0;
             o->dynamicFlags = 0;
             o->faction = 0;
             o->unitTarget = 0;
+            o->goBytes1 = 0;
+            o->npcFlags = 0;
+            o->creatureType = -1;
         }
         o->scale = Mem::Read<float>(d + Offsets::D().Scale);
         if (o->scale <= 0.f) o->scale = 1.f;
@@ -324,10 +343,11 @@ uintptr_t ObjectPtrOne(uint64_t guid, int mask) {
     auto fn = reinterpret_cast<fnObjectPtr3>(Offsets::F().ClntObjMgrObjectPtr);
     if (!fn || !guid) return 0;
     uintptr_t p = 0;
-    __try {
-        p = fn((uint32_t)guid, (uint32_t)(guid >> 32), mask);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        p = 0;
+    {
+        Guard::Scope g;
+        if (!g.Caught()) {
+            p = fn((uint32_t)guid, (uint32_t)(guid >> 32), mask);
+        }
     }
     // NEVER VirtualQuery (Committed) here: enum calls this 100s of times/frame
     // and that alone tanks FPS. NEVER reject high-2GB heap (LAA) — units live
@@ -338,6 +358,37 @@ uintptr_t ObjectPtrOne(uint64_t guid, int mask) {
 
 // Forward: full resolver (masks + hash).
 uintptr_t SafeObjectPtr(uint64_t guid);
+
+// ---- Snapshot-first object access (2026-08-02) ----------------------------
+// The rotation's per-unit reads (position / combat reach / bounding radius /
+// facing / type / flags) all target GUIDs that came FROM this snapshot. Read
+// them from the cached g_all instead of calling ObjectPtr (a game call that
+// AVs on stale GUIDs and corrupts the stack — the Guard-recovery crash vector,
+// live 1.10.69 RVA 0x788A while the addon scanned units per-tick).
+//
+// SAFETY: g_all is written ONLY on the game main thread (Refresh/SoftRefresh
+// via the bridge) and every accessor below is also main-thread, so a lock-free
+// scan is safe — and it avoids recursive-lock deadlocks (OmWalkAllowed calls
+// Position while BuildUnitSnapshotLocked holds g_mu). These are defined here
+// (before the packers) so AuraSearchPacked / NearbyHostilesPacked / SoftRefresh
+// use snapshot-only pointers too — never the ObjectPtr game call from the VM.
+static const Object* SnapByGuid(uint64_t guid) {
+    if (!guid) return nullptr;
+    const std::vector<Object>& v = g_all;
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i].guid == guid) return &v[i];
+    return nullptr;
+}
+
+// Snapshot-only object pointer for descriptor reads. The pointer is the
+// snapshot's cached ptr; subsequent descriptor reads are all VirtualQuery-
+// guarded Mem::Read (pure memory, can never AV). Returns 0 for GUIDs not in
+// the snapshot — callers treat 0/unknown as "no measurement" (never a hard
+// block, never a game call).
+static uintptr_t SnapPtr(uint64_t guid) {
+    if (const Object* o = SnapByGuid(guid)) return o->ptr;
+    return 0;
+}
 
 uintptr_t ObjectPtrMulti(uint64_t guid) {
     // Enum hot path ONLY — never CallHashLookup here (world-entry AV risk).
@@ -367,13 +418,16 @@ void PushPodAt(uintptr_t cur, uint64_t guidHint) {
     o->unitTarget = 0;
     o->scale = 1.f;
     if (!o->guid && Mem::Readable(cur + kObjGuidOff))
-        o->guid = *reinterpret_cast<uint64_t*>(cur + kObjGuidOff);
+        o->guid = Mem::Read<uint64_t>(cur + kObjGuidOff);
     FillPod(o);
     if (o->type >= 0 && o->type <= 7)
         ++g_podCount;
 }
 
-// Returns objects found this walk (into cleared g_pods). SEH-isolated.
+// Returns objects found this walk (into cleared g_pods). Reads are
+// VirtualQuery-guarded (Mem::Read) — SEH does not dispatch in this stealth
+// module, so the walk must never fault. The __try remains only as a belt-and-
+// suspenders net for game-function callers, not as the safety mechanism.
 int WalkListIntoPods(uintptr_t mgr, uintptr_t firstOff, uintptr_t nextOff) {
     g_podCount = 0;
     if (!mgr || !Mem::Readable(mgr)) return -3;
@@ -381,28 +435,19 @@ int WalkListIntoPods(uintptr_t mgr, uintptr_t firstOff, uintptr_t nextOff) {
     // that PodsToVectors would then hand out as "valid" garbage pointers.
     const size_t checkpoint = g_podCount;
     uintptr_t cur = 0;
-    __try {
-        cur = *reinterpret_cast<uintptr_t*>(mgr + firstOff);
-        g_listDiagFirst = (int)cur;
-        int iter = 0;
-        while (cur && cur != 0xFFFFFFFFu && iter < 8000 && g_podCount < kMaxEnum) {
-            ++iter;
-            if (!Mem::Readable(cur) || !Mem::Readable(cur + 0x40)) break;
-            PushPodAt(cur, 0);
-            uintptr_t next = *reinterpret_cast<uintptr_t*>(cur + nextOff);
-            if (next == cur) break;
-            cur = next;
-        }
-        g_listDiagIters = iter;
-        return (int)g_podCount;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Roll back to the pre-walk checkpoint. Before this rollback, a
-        // caught AV would leave up to `iter` fabricated pods in g_pods that
-        // the next PodsToVectors would then materialize and hand back to
-        // Lua, causing downstream crashes on stale ptrs.
-        g_podCount = checkpoint;
-        return -(int)GetExceptionCode();
+    cur = Mem::Read<uintptr_t>(mgr + firstOff);
+    g_listDiagFirst = (int)cur;
+    int iter = 0;
+    while (cur && cur != 0xFFFFFFFFu && iter < 8000 && g_podCount < kMaxEnum) {
+        ++iter;
+        if (!Mem::Readable(cur) || !Mem::Readable(cur + 0x40)) break;
+        PushPodAt(cur, 0);
+        uintptr_t next = Mem::Read<uintptr_t>(cur + nextOff);
+        if (next == cur) break;
+        cur = next;
     }
+    g_listDiagIters = iter;
+    return (int)g_podCount;
 }
 
 // Keep best single list walk (most objects). Staging buffer for candidate.
@@ -434,14 +479,12 @@ int SafeWalkObjectList() {
     // crashed character load on this client (2026-07-31). EnumVisibleObjects
     // supplies world units; list walk is a complement, not a matrix search.
     uintptr_t mgrA = 0;
-    __try {
-        if (Mem::Readable(kClientConnection)) {
-            uintptr_t conn = *reinterpret_cast<uintptr_t*>(kClientConnection);
-            g_listDiagConn = (int)conn;
-            if (conn && Mem::Readable(conn + kObjMgrOff))
-                mgrA = *reinterpret_cast<uintptr_t*>(conn + kObjMgrOff);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) { mgrA = 0; }
+    if (Mem::Readable(kClientConnection)) {
+        uintptr_t conn = Mem::Read<uintptr_t>(kClientConnection);
+        g_listDiagConn = (int)conn;
+        if (conn && Mem::Readable(conn + kObjMgrOff))
+            mgrA = Mem::Read<uintptr_t>(conn + kObjMgrOff);
+    }
     g_listDiagMgr = (int)mgrA;
     if (!mgrA || !Mem::Readable(mgrA)) return -1;
 
@@ -509,15 +552,44 @@ int __cdecl EnumCb(uint64_t guid, void*) {
     return EnumCbBody(guid);
 }
 
+// ---- EnumVisibleObjects VEH longjmp guard (2026-08-01, permanent) ----------
+// EnumVisibleObjects is a game function that WRITES to every visible object
+// while walking the OM (incl. object+0x2D0). A mob freed mid-walk => AV_WRITE
+// UAF at 0x004D3A40. SEH (__try) is a DEAD guard in this stealth module (PEB
+// unlink + header wipe => RtlIsValidHandler fails), so the AV propagated into
+// the game's Lua protected-call wrapper (0x858A16) which surfaced as the
+// "addon blocked" dialog and froze the rotation. Guard.h's VEH longjmp guard
+// catches the AV here, abandons the walk (the faulting write never landed),
+// marks the enum dead and retries later, and returns EXCEPTION_CONTINUE_
+// EXECUTION so the game's Lua wrapper NEVER sees the fault.
+// Module-level retry timestamp so the guard can schedule the retry.
+static ULONGLONG g_enumRetryAt = 0;
+
 int SafeEnumVisibleAt(uintptr_t fnAddr) {
     if (!fnAddr) return -1;
-    auto fn = reinterpret_cast<fnEnum>(fnAddr);
-    __try {
-        fn(&EnumCb, reinterpret_cast<void*>(static_cast<intptr_t>(-1)));
-        return 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return (int)GetExceptionCode();
+    int rc = 1;
+    {
+        Guard::Scope g;
+        if (!g.Caught()) {
+            auto fn = reinterpret_cast<fnEnum>(fnAddr);
+            fn(&EnumCb, reinterpret_cast<void*>(static_cast<intptr_t>(-1)));
+        } else {
+            rc = g.Code();
+        }
+        if (g.Caught()) {
+            if (!g_enumDeadLogged) {
+                g_enumDeadLogged = true;
+                RL::Log::Error(
+                    "EnumVisibleObjects AV 0x%08X — VEH guard, list-only until retry",
+                    rc);
+            }
+            g_enumDead = true;
+            g_enumRetryAt = GetTickCount64() + 10000ull;
+            g_podCount = 0;
+        }
     }
+    g_lastEnumRc = rc;
+    return rc;
 }
 
 int SafeEnumVisible() {
@@ -534,24 +606,38 @@ int SafeEnumVisible() {
 }
 
 uint64_t SafeGetActive() {
-    __try { return GetActive()(); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    // 2026-08-02 (CRASH FIX — "GetActivePlayer storm inside the Lua VM"):
+    // SafeGetActive is called by LocalGuid() from EVERY bridge accessor
+    // (Position/Facing/Reach/Health...), i.e. once per bridge call. GetActive
+    // is a GAME function (TLS->ClntObjMgr->hash) executing inside the Lua VM
+    // C-closure; the post-cast burst ran it 30+ times in ~15ms. A transient AV
+    // there (or in the old dead-`__try` MainThread path) propagated into the
+    // game's Lua protected-call wrapper 0x858A16 -> closure-table corruption ->
+    // the garbage-eip crash family (frame=0 ret=0x00858A16). The active player
+    // GUID does not change mid-session, so cache it ~120ms: the game call now
+    // runs ~8/sec instead of once per bridge call, and it stays VEH-guarded.
+    static ULONGLONG s_t = 0;
+    static uint64_t s_g = 0;
+    ULONGLONG now = GetTickCount64();
+    if ((now - s_t) < 120ull) return s_g;
+    s_t = now;
+    Guard::Scope g;
+    uint64_t r = 0;
+    if (!g.Caught()) r = GetActive()();
+    if (r) s_g = r;
+    return r;
 }
 
 // TLS -> ClntObjMgr* (same path stock ObjectPtr uses at 0x4D4DB0).
 // (Defined here; forward-declared near ObjectPtrOne for list walk.)
 static uintptr_t ClntObjMgrFromTls() {
-    uintptr_t mgr = 0;
-    __try {
-        uint32_t tlsIndex = *reinterpret_cast<uint32_t*>(0x00D439BC);
-        uintptr_t teb = __readfsdword(0x2C);
-        if (!teb) return 0;
-        uintptr_t slot = *reinterpret_cast<uintptr_t*>(teb + tlsIndex * 4);
-        if (!slot) return 0;
-        mgr = *reinterpret_cast<uintptr_t*>(slot + 8);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        mgr = 0;
-    }
+    // Reads are VirtualQuery-guarded (Mem::Read) — no __try dependency.
+    uint32_t tlsIndex = Mem::Read<uint32_t>(0x00D439BC);
+    uintptr_t teb = __readfsdword(0x2C);
+    if (!teb) return 0;
+    uintptr_t slot = Mem::Read<uintptr_t>(teb + tlsIndex * 4);
+    if (!slot) return 0;
+    uintptr_t mgr = Mem::Read<uintptr_t>(slot + 8);
     return (mgr && Mem::Readable(mgr)) ? mgr : 0;
 }
 
@@ -568,10 +654,11 @@ static uintptr_t AcceptObjPtr(uintptr_t p) {
 static uintptr_t CallObjectPtr3(uint32_t lo, uint32_t hi, int mask) {
     auto fn = reinterpret_cast<fnObjectPtr3>(0x004D4DB0);
     uintptr_t p = 0;
-    __try {
-        p = fn(lo, hi, mask);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        p = 0;
+    {
+        Guard::Scope g;
+        if (!g.Caught()) {
+            p = fn(lo, hi, mask);
+        }
     }
     return AcceptObjPtr(p);
 }
@@ -586,10 +673,11 @@ static uintptr_t CallHashLookup(uintptr_t mgr, uint32_t lo, uint32_t hi) {
     using fnHash = uintptr_t(__thiscall*)(uintptr_t, uint32_t, GuidPair*);
     auto hash = reinterpret_cast<fnHash>(0x004D4BB0);
     uintptr_t p = 0;
-    __try {
-        p = hash(mgr, lo, &gp);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        p = 0;
+    {
+        Guard::Scope g;
+        if (!g.Caught()) {
+            p = hash(mgr, lo, &gp);
+        }
     }
     return AcceptObjPtr(p);
 }
@@ -624,25 +712,50 @@ int SafeCastSpell(uintptr_t /*player*/, int spellId, uint64_t targetGuid) {
     if (!fn) return 0;
     uint32_t lo = (uint32_t)targetGuid;
     uint32_t hi = (uint32_t)(targetGuid >> 32);
-    __try {
+    Guard::Scope g;
+    if (!g.Caught()) {
         fn(spellId, 0, lo, hi, 0);
         return 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
     }
+    return -1;
 }
 
 uintptr_t SafeCamera() {
-    __try { return Cam()(); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    Guard::Scope g;
+    if (!g.Caught()) {
+        return Cam()();
+    }
+    return 0;
+}
+
+// 2026-08-02 (FACING ROOT CAUSE — RE-VERIFIED LIVE). The client's own
+// GetPlayerFacing handler (0x60A490) does NOT read the runtime's LocalPtr().
+// It resolves the player object EXACTLY like this:
+//   cam = GetCamera()                     (0x4F5960 = [[0xB7436C]+0x7E20])
+//   lo  = [cam+0x88], hi = [cam+0x8C]     (player GUID cached on the camera)
+//   obj = ClntObjMgrObjectPtr(lo, hi, 1)  (0x4D4DB0 — only 3 args are used)
+//   fn  = [[obj]+0x34]                    (vtable slot 0x0D = GetFacing)
+//   face = fn(obj)                        (0x6E6FC0 = `fld [ecx+0x7AC]; ret`)
+// Live proof of the bug: runtime PlayerFacing() = 0, but the client's native
+// GetPlayerFacing() = 1.4547 at the same moment. LocalPtr() returns a pointer
+// whose +0x7AC is 0 (stale/other object); the camera-resolved object has the
+// real live facing. So the facing read must use the CAMERA-RESOLVED pointer,
+// not LocalPtr(). All reads below are VirtualQuery-guarded Mem::Read.
+static uintptr_t CameraPlayerPtr() {
+    uintptr_t cam = SafeCamera();
+    if (!cam) return 0;
+    uint32_t lo = Mem::Read<uint32_t>(cam + 0x88);
+    uint32_t hi = Mem::Read<uint32_t>(cam + 0x8C);
+    if (!lo && !hi) return 0;
+    return CallObjectPtr3(lo, hi, 1); // mask 1 (Object) — exactly what the client uses
 }
 
 int SafeIntersect(Vec3* s, Vec3* e, Vec3* h, float* dist, uint32_t flags) {
-    __try {
+    Guard::Scope g;
+    if (!g.Caught()) {
         return Intersect()(s, e, h, dist, flags, 0) ? 1 : 0;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
     }
+    return -1;
 }
 
 // True when a float triple looks like a real world coord (not null-island / garbage).
@@ -677,36 +790,30 @@ static uintptr_t g_posC = 0; // pos off inside nested block
 static bool TryReadXYZ(uintptr_t base, uintptr_t off, float* x, float* y, float* z) {
     *x = *y = *z = 0.f;
     if (!base) return false;
-    __try {
-        float* v = reinterpret_cast<float*>(base + off);
-        *x = v[0]; *y = v[1]; *z = v[2];
-        return LooksLikeWorldPos(*x, *y, *z);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    // CRASH RULE (permanent): no raw __try derefs — SEH does not dispatch in
+    // this stealth module. Mem::Read is VirtualQuery-guarded (works always).
+    float v0 = Mem::Read<float>(base + off);
+    float v1 = Mem::Read<float>(base + off + 4);
+    float v2 = Mem::Read<float>(base + off + 8);
+    *x = v0; *y = v1; *z = v2;
+    return LooksLikeWorldPos(*x, *y, *z);
 }
 
 static uintptr_t SafeReadPtr(uintptr_t addr) {
-    uintptr_t v = 0;
-    __try { v = *reinterpret_cast<uintptr_t*>(addr); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { v = 0; }
+    uintptr_t v = Mem::Read<uintptr_t>(addr);
     return AcceptObjPtr(v);
 }
 
 // Camera at [[0xB7436C]+0x7E20]+0x08 - independent witness for layout pin.
 static bool ReadCameraXY(float* cx, float* cy, float* cz) {
     *cx = *cy = *cz = 0.f;
-    uintptr_t wf = 0, cam = 0;
-    __try {
-        wf = *reinterpret_cast<uintptr_t*>(0x00B7436C);
-        if (!wf) return false;
-        cam = *reinterpret_cast<uintptr_t*>(wf + 0x7E20);
-        if (!cam) return false;
-        float* p = reinterpret_cast<float*>(cam + 0x08);
-        *cx = p[0]; *cy = p[1]; *cz = p[2];
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    uintptr_t wf = Mem::Read<uintptr_t>(0x00B7436C);
+    if (!wf) return false;
+    uintptr_t cam = Mem::Read<uintptr_t>(wf + 0x7E20);
+    if (!cam) return false;
+    *cx = Mem::Read<float>(cam + 0x08);
+    *cy = Mem::Read<float>(cam + 0x0C);
+    *cz = Mem::Read<float>(cam + 0x10);
     return LooksLikeWorldPos(*cx, *cy, *cz);
 }
 
@@ -939,6 +1046,9 @@ void PodsToVectors() {
         o.faction = p.faction;
         o.unitTarget = p.unitTarget;
         o.scale = p.scale > 0.f ? p.scale : 1.f;
+        o.goBytes1 = p.goBytes1;
+        o.npcFlags = p.npcFlags;
+        o.creatureType = p.creatureType;
         int t = p.type;
         if (t >= 0 && t < 8) g_byType[t].push_back(o);
         g_all.push_back(std::move(o));
@@ -947,11 +1057,118 @@ void PodsToVectors() {
 
 } // namespace
 
+// Live local-player facing via the client's exact resolution path (camera →
+// GUID → ObjectPtr → +0x7AC). 1e9 on fail. Primary source for PlayerFacing.
+//
+// CRASH RULE (2026-08-02 — 0x512B07 RE-INTRODUCED BY ME, USER-CONFIRMED):
+// FacingLiveLocal() MUST be a PURE CACHE READ. It is called from the Lua VM
+// (PlayerFacing / Facing(localGuid) / ObjectIsFacing bridge paths), and the
+// camera→ObjectPtr resolution (SafeCamera + CallObjectPtr3) is a GAME FUNCTION
+// CALL. Calling game functions from inside the Lua VM corrupts the VM's
+// closures → the 0x512B07 AV_READ garbage-eip crash (live: crash.fatal right
+// after a clean CastQueue DRAIN; the GatherMate2/XPerl UI errors are the same
+// VM-corruption cascade). The ONLY context that may resolve the player via the
+// camera is the native FRAME HOOK (TickHookBody → RefreshLiveFacingCache, main
+// thread, no Lua on stack). If the cache is stale here, return 1e9 (undetermined)
+// — never resolve from the VM.
+static volatile float g_liveFacingCache = 1e9f;
+static volatile ULONGLONG g_liveFacingCacheT = 0;
+
+// NATIVE-ONLY (frame hook / main thread, no Lua on stack). Resolves the player
+// via the client's exact path and refreshes the cache every tick. This is the
+// ONLY caller of CameraPlayerPtr().
+void RefreshLiveFacingCache() {
+    // 2026-08-02 (0x512B07 hardening): rate-limit the game-call resolution
+    // (CameraPlayerPtr -> SafeCamera + ObjectPtr). This hook fires every frame
+    // and previously called those game functions on EVERY tick with no limit —
+    // a heavy hammer on the client's object machinery. The FacingLiveLocal TTL
+    // is 250ms; refresh at 50ms keeps the cache fresh during rapid turning
+    // (user directive 15:22: "more aware and in control" — a 200ms-stale face
+    // made the rotation wire a spell at a target the player had already turned
+    // away from). 50ms = ~4x fresher with still-5x-fewer calls than raw.
+    static volatile ULONGLONG s_lastFacingMs = 0;
+    ULONGLONG nowF = GetTickCount64();
+    if (s_lastFacingMs && (nowF - s_lastFacingMs) < 50ull) return;
+    s_lastFacingMs = nowF;
+    // Throttled live diagnostic (every 5s) — a stuck cache must be attributable
+    // in the log (cam=0? guid=0? obj=0? which path produced the value?).
+    static volatile ULONGLONG s_lastDiag = 0;
+    bool doDiag = (nowF - s_lastDiag) > 5000ull;
+    if (doDiag) s_lastDiag = nowF;
+
+    // 2026-08-02 (FACING CACHE ROBUSTNESS — live probe proved the cache went
+    // stale: runtime PFRAW=1e9 while client GetPlayerFacing()=3.795). Try the
+    // client's EXACT path first (camera → GUID → ObjectPtr → [obj+0x7AC]),
+    // then the client's own fallback ([cam+0x11C] camera facing), then the
+    // GetActive player object (the object the cast wrapper resolves).
+    float f = 1e9f;
+    uintptr_t cam = 0; uint32_t clo = 0, chi = 0; uintptr_t obj = 0;
+    uint64_t active = 0;
+    // Path 1 — client's exact GetPlayerFacing path.
+    cam = SafeCamera();
+    if (cam) { clo = Mem::Read<uint32_t>(cam + 0x88); chi = Mem::Read<uint32_t>(cam + 0x8C); }
+    if (clo || chi) obj = CallObjectPtr3(clo, chi, 1);
+    if (obj) {
+        float v = Mem::Read<float>(obj + 0x7AC);
+        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+    }
+    // Path 2 — camera's own facing (the client's fallback in GetPlayerFacing).
+    if (f >= 1e8f && cam) {
+        float v = Mem::Read<float>(cam + 0x11C);
+        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+    }
+    // Path 3 — GetActive player object (mask 0x10 = player; same object the
+    // cast wrapper resolves, guaranteed fresh).
+    if (f >= 1e8f) {
+        active = SafeGetActive();
+        if (active) {
+            uintptr_t pobj = CallObjectPtr3((uint32_t)active, (uint32_t)(active >> 32), 0x10);
+            if (pobj) {
+                float v = Mem::Read<float>(pobj + 0x7AC);
+                if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+            }
+        }
+    }
+    g_liveFacingCache = f;
+    g_liveFacingCacheT = nowF;
+    if (doDiag) {
+        // 2026-08-02 (FACING VERIFY): cross-check against the client's own
+        // GetPlayerFacing-equivalent — the camera object's [obj+0x7AC] read.
+        // Both are from the SAME object here, so log obj fields + whether the
+        // LocalPtr path agrees, so a stuck 0.0000 is attributable live.
+        float localFallback = 1e9f;
+        uintptr_t lp = RL::Game::OM::LocalPtr();
+        if (lp) {
+            float v = RL::Game::Mem::Read<float>(lp + 0x7AC);
+            if (!(v != v) && v >= -0.01f && v <= 6.30f) localFallback = v;
+        }
+        RL::Log::Warn("FacingLive: cam=0x%lX guid=%08X%08X obj=0x%lX face=%.4f active=0x%llX local=%.4f",
+                      (unsigned long)cam, (unsigned)chi, (unsigned)clo,
+                      (unsigned long)obj, f, (unsigned long long)active, localFallback);
+    }
+}
+
+// PURE CACHE READ — safe to call from the Lua VM (no game calls, no re-entry).
+// Returns the hook-refreshed live facing, or 1e9 (undetermined) if the cache
+// is stale (hook not yet installed / cold start). NEVER calls CameraPlayerPtr.
+float FacingLiveLocal() {
+    ULONGLONG now = GetTickCount64();
+    if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f)
+        return g_liveFacingCache;
+    return 1e9f; // undetermined — never resolve from the VM (0x512B07 rule)
+}
+
 void Invalidate() {
     std::lock_guard<std::mutex> lock(g_mu);
     g_lastRefresh = 0;
     // Do NOT clear g_enumDead - once the enum AVs, it stays off until re-inject.
 }
+
+// 0x512B07 crash fix: mark whether we are inside the game's Lua VM call chain
+// (the bridge dispatch sets this). Enumeration is deferred when true; the
+// bridge reads serve the last-built snapshot instead.
+void SetInLuaContext(bool inLua) { g_inLuaContext = inLua; }
+bool InLuaContext() { return g_inLuaContext; }
 
 // OM lifecycle (fundamental — do not "fix crashes" by disabling discovery):
 //   g_firstPlayerMs  — first time we saw a local player THIS warm epoch
@@ -1105,11 +1322,74 @@ void LogTypeSamples(size_t n) {
 // Forward: defined below with hostiles soft path (list-only, no enum).
 static void SoftRefreshListOnlyForHostiles();
 
+// ---- Snapshot epoch (2026-08-02) ----
+// Generational epoch: bumped ONLY when the unit list content actually changes
+// (cheap content signature). NearbyHostiles/NearbyUnits packers key their
+// string caches on (epoch, player pos/face quantized, range, maxN, faction) —
+// while the player is stationary and the world is unchanged, repeated reads
+// are O(1) cache hits: zero refresh, zero walk, zero vector alloc, zero sort,
+// zero format. This is the guide's "generational epoch + cache coherence"
+// pattern applied to OM reads.
+static volatile ULONGLONG g_snapGen = 0;
+static uint64_t g_snapSig = 0;
+static uint64_t SnapSignatureLocked() {
+    uint64_t sig = 0x9E3779B97F4A7C15ull;
+    for (size_t i = 0; i < g_podCount; ++i) {
+        sig = (sig << 5) | (sig >> 59);
+        sig ^= g_pods[i].guid;
+        sig ^= (uint64_t)(g_pods[i].entry & 0xFFFF) << 21;
+    }
+    sig ^= (uint64_t)g_podCount * 0x9E3779B97F4A7C15ull;
+    return sig;
+}
+
+// Read the local player's CACHED snapshot state (no game calls, no ObjectPtr).
+// Returns false when the snapshot has no local-player entry yet (cold start) —
+// callers then fall through to the live path.
+static bool SnapshotPlayerState(uint64_t local, Vec3* pos, float* face, int* fac) {
+    if (!local) return false;
+    std::lock_guard<std::mutex> lock(g_mu);
+    for (const auto& o : g_all) {
+        if (o.guid == local && o.type == ObjectType::Player) {
+            if (pos) *pos = o.pos;
+            if (face) *face = o.facing;
+            if (fac) *fac = o.faction;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Packed nearby units for /raijin nearby: "n|guid:entry:x:y:z:dist|..."
 std::string NearbyUnitsPacked(float maxRange, size_t maxN) {
     // Soft list-only when om frozen — same rule as hostiles (rotation needs units).
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
+
+    // EPOCH CACHE (2026-08-02) — same pattern as NearbyHostilesPacked: O(1)
+    // return while the player is stationary and the snapshot is unchanged.
+    static std::string s_cacheOut;
+    static ULONGLONG s_cacheGen = (ULONGLONG)-1;
+    static ULONGLONG s_cacheT = 0;
+    static uint64_t s_cacheLocal = 0;
+    static float s_cacheX = 1e30f, s_cacheY = 1e30f;
+    static float s_cacheRange = 0.f;
+    static size_t s_cacheMaxN = 0;
+    Vec3 cPos{};
+    float cFace = 0.f;
+    int cFac = -1;
+    if (SnapshotPlayerState(localGuid, &cPos, &cFace, &cFac)) {
+        ULONGLONG nowC = GetTickCount64();
+        if (s_cacheGen == g_snapGen && s_cacheLocal == localGuid
+            && (nowC - s_cacheT) < 250ull
+            && std::fabs(s_cacheX - cPos.x) < 1.5f
+            && std::fabs(s_cacheY - cPos.y) < 1.5f
+            && std::fabs(s_cacheRange - maxRange) < 0.5f
+            && s_cacheMaxN == maxN
+            && !s_cacheOut.empty())
+            return s_cacheOut;
+    }
+
     if (IsEnabled())
         Refresh(false);
     else
@@ -1178,7 +1458,13 @@ std::string NearbyUnitsPacked(float maxRange, size_t maxN) {
                                 (unsigned long long)hits[i].g, hits[i].entry,
                                 hits[i].x, hits[i].y, hits[i].z, hits[i].d);
     }
-    return std::string(out);
+    s_cacheOut.assign(out, off);
+    s_cacheGen = g_snapGen;
+    s_cacheT = GetTickCount64();
+    s_cacheLocal = localGuid;
+    s_cacheX = cPos.x; s_cacheY = cPos.y;
+    s_cacheRange = maxRange; s_cacheMaxN = maxN;
+    return s_cacheOut;
 }
 
 // UNIT_FIELD_FLAGS bits we treat as non-hostile / unusable.
@@ -1213,10 +1499,20 @@ static float AngleDiffRad(float from, float to) {
     return diff - 3.14159265f;
 }
 // arc = HALF-angle (radians). Default π/2 => |err|<=90° => 180° front cone.
+// 2026-08-02 (18:16 FACING CONVENTION FIX — the root of every facing error):
+// std::atan2 returns 0 = +X axis (east), increasing counter-clockwise, while
+// the client's facing (0x7AC / GetPlayerFacing) is 0 = +Y axis (north),
+// increasing CLOCKWISE. The two conventions are offset by 90°: a point due
+// east has facing_wow = π/2 = 1.5708 but atan2(0, +) = 0. The runtime compared
+// them directly, so targets the player FACED were reported NOT-facing (the
+// "wait facing:Blood Strike x82 at edge=0yd" freeze) and targets at a rotated
+// angle were reported facing (wired -> client "Out of range"/"in front of
+// you" refusals). Correct conversion: facing_wow = π/2 - atan2(dy, dx) (mod
+// 2π). AngleDiffRad normalizes.
 static bool IsFacingPos(float face, float ax, float ay, float bx, float by, float arc) {
     if (arc <= 0.f) arc = kDefaultCastFaceArc;
     if (!LooksLikeFacingEarly(face)) return false;
-    float ang = std::atan2(by - ay, bx - ax);
+    float ang = 1.5707963f - std::atan2(by - ay, bx - ax);
     return std::fabs(AngleDiffRad(face, ang)) <= arc;
 }
 
@@ -1248,6 +1544,13 @@ static bool SnapshotLooksHostileNpc(const Object& o, uint64_t localGuid) {
     if (o.pos.x == 0.f && o.pos.y == 0.f) return false;
     if (o.maxHealth > 0 && o.health <= 0) return false;
     if (o.dynamicFlags & (kDYN_DEAD | kDYN_DEAD2)) return false;
+    // 2026-08-02 (CRITTER FIX): CREATURE_TYPE_CRITTER (8) is never a combat
+    // hostile. The client's own GetCreatureType read ([unit+0xD0]→[ptr+0x1D3],
+    // disasm 0x71F300) is authoritative. Critters have a NON-player faction,
+    // so the faction-only hostile filter below let them into AuraSearch —
+    // the rotation was dotting squirrels/rabbits. Unknown (-1) is allowed
+    // through to the rest of the filter (players, weird custom units).
+    if (o.creatureType == 8) return false; // CREATURE_TYPE_CRITTER
     uint32_t f = o.unitFlags;
     if (f & kUF_NON_ATTACKABLE) return false;
     if (f & kUF_NOT_ATTACKABLE_1) return false;
@@ -1276,22 +1579,28 @@ static bool SnapshotLooksHostileNpc(const Object& o, uint64_t localGuid) {
     return false;
 }
 
-// SEH helpers (no C++ dtors) — MSVC forbids __try with lock_guard in same fn.
+// VEH-guarded wrappers (Guard.h). SafeWalkObjectList is pure VQ-guarded reads
+// and PodsToVectors is pure math on our buffers — they cannot fault, but the
+// guard guarantees no AV ever escapes the bridge into the game's Lua VM.
 static int SoftWalkSeh() {
-    __try {
+    Guard::Scope g;
+    if (!g.Caught()) {
         return SafeWalkObjectList();
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
     }
+    return -1;
 }
 static int SoftPodsSeh() {
-    __try {
+    Guard::Scope g;
+    if (!g.Caught()) {
         PodsToVectors();
         return 1;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
     }
+    return 0;
 }
+
+// ---- Snapshot epoch bump (2026-08-02) ----
+// (epoch statics + SnapSignatureLocked + SnapshotPlayerState live above, near
+// the packers; BuildUnitSnapshotLocked just bumps the epoch on content change)
 
 // Shared gate for SoftRefresh + Refresh unit discovery.
 static bool OmWalkAllowed(ULONGLONG now, uint64_t local) {
@@ -1331,21 +1640,40 @@ static bool BuildUnitSnapshotLocked() {
 
     g_podCount = 0;
     // Enum is the primary unit source on Ascension (list alone is often empty).
-    // After AV: fall back to list, but retry enum every 10s (not permanent death).
-    static ULONGLONG s_enumRetryAt = 0;
+    // After AV (caught by the VEH longjmp guard in SafeEnumVisibleAt): fall
+    // back to list, but retry enum every 10s (not permanent death).
     ULONGLONG nowEnum = GetTickCount64();
-    if (g_enumDead && nowEnum >= s_enumRetryAt) {
+    if (g_enumDead && nowEnum >= g_enumRetryAt) {
         g_enumDead = false;
         RL::Log::Info("EnumVisibleObjects retry after cooldown");
     }
+    // CRITICAL (2026-08-01, permanent): EnumVisibleObjects must NEVER crash the
+    // game when called from inside the Lua VM. It is a game function that
+    // WRITES to every visible object while walking the OM (incl. object+0x2D0);
+    // a mob freed mid-walk => AV_WRITE UAF at 0x004D3A40. SafeEnumVisibleAt
+    // now wraps it in a VEH longjmp guard: an AV is caught, the walk is
+    // abandoned, the enum is marked dead and retried later — the fault never
+    // reaches the game's Lua protected-call wrapper (no crash, no "addon
+    // blocked" dialog). Full unit discovery is therefore safe by default.
     const bool enumCfg = RL::Config::Get("om.enum", "1") != "0";
     // Warm gate: list-only for kListWarmWalks OR kEnumWarmMs after first player.
     const bool warmOk = (g_listWarmWalks >= kListWarmWalks)
         || (g_firstPlayerMs && (nowEnum - g_firstPlayerMs) >= kEnumWarmMs);
-    const bool wantEnum = !g_enumDead && enumCfg && warmOk;
+    // 2026-08-02 (0x512B07 ROOT CAUSE — 22:42 + 22:53 PROOF): EnumVisibleObjects
+    // is a game function that WRITES to every visible object while walking. When
+    // executed INSIDE the game's Lua VM call chain (Lua_IsLinuxClient ->
+    // Dispatch -> OM), it corrupts the VM's TValues/closure table — the persistent
+    // "Lua calls 0x512B00(GUID->object) with garbage" crash 6-16ms later, even
+    // with NO descriptor write and even with VEH guarding the walk itself
+    // (proven: crash on PLAIN CastSpell(guid) 22:53 with zero sync writes).
+    // Enumeration must ONLY run from a NON-Lua context (the native frame hook).
+    // The bridge serves the last snapshot built by the hook. List-only walk
+    // (SoftWalkSeh, pure memory) is safe anywhere and stays.
+    const bool inLua = InLuaContext();
+    const bool wantEnum = !g_enumDead && enumCfg && warmOk && !inLua;
     int enumRc = 1;
     if (wantEnum) {
-        enumRc = SafeEnumVisible(); // fills g_pods via callbacks
+        enumRc = SafeEnumVisible(); // fills g_pods via callbacks (VEH-guarded)
         if (enumRc != 1) {
             if (!g_enumDeadLogged) {
                 g_enumDeadLogged = true;
@@ -1354,7 +1682,7 @@ static bool BuildUnitSnapshotLocked() {
                     enumRc);
             }
             g_enumDead = true;
-            s_enumRetryAt = nowEnum + 10000ull;
+            g_enumRetryAt = nowEnum + 10000ull;
             g_lastEnumRc = enumRc;
             g_podCount = 0;
         }
@@ -1386,6 +1714,14 @@ static bool BuildUnitSnapshotLocked() {
     if (!SoftPodsSeh())
         return false;
 
+    // Epoch bump on real content change (2026-08-02): a re-enum that produced
+    // an identical set must be FREE for the pack caches (no rebuild).
+    uint64_t sig = SnapSignatureLocked();
+    if (sig != g_snapSig) {
+        g_snapSig = sig;
+        g_snapGen++;
+    }
+
     g_everWalkedOk = true;
     return true;
 }
@@ -1399,7 +1735,7 @@ static void SoftRefreshListOnlyForHostiles() {
     if (!OmWalkAllowed(now, local)) return;
     ULONGLONG minIv = kWalkMinIntervalMs;
     // Player combat flag: throttle SoftRefresh while walking OOC.
-    uintptr_t pp = Ptr(local);
+    uintptr_t pp = SnapPtr(local); // snapshot-only (no ObjectPtr game call)
     if (pp && AcceptObjPtr(pp)) {
         uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
         if (d && AcceptObjPtr(d)) {
@@ -1456,6 +1792,37 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     // (never EnumVisibleObjects while disabled — that is the crash vector).
     uint64_t localGuid = SafeGetActive();
     if (!localGuid) return "0";
+
+    // EPOCH CACHE (2026-08-02): stationary player + unchanged snapshot =>
+    // O(1) return of the last packed string. Cache keys are read from the
+    // snapshot (SnapshotPlayerState — pure memory, zero game calls). A 250ms
+    // time bound guarantees the world is still refreshed even when this call
+    // is the ONLY OM consumer. Epoch mismatch (real content change) is the
+    // authority — it always misses.
+    static std::string s_cacheOut;
+    static ULONGLONG s_cacheGen = (ULONGLONG)-1;
+    static ULONGLONG s_cacheT = 0;
+    static uint64_t s_cacheLocal = 0;
+    static float s_cacheX = 1e30f, s_cacheY = 1e30f, s_cacheFace = 1e30f;
+    static float s_cacheRange = 0.f;
+    static size_t s_cacheMaxN = 0;
+    static int s_cacheFac = -1;
+    Vec3 cPos{};
+    float cFace = 0.f;
+    int cFac = -1;
+    if (SnapshotPlayerState(localGuid, &cPos, &cFace, &cFac)) {
+        ULONGLONG nowC = GetTickCount64();
+        if (s_cacheGen == g_snapGen && s_cacheLocal == localGuid
+            && (nowC - s_cacheT) < 250ull
+            && std::fabs(s_cacheX - cPos.x) < 1.5f
+            && std::fabs(s_cacheY - cPos.y) < 1.5f
+            && std::fabs(s_cacheFace - cFace) < 0.15f
+            && std::fabs(s_cacheRange - maxRange) < 0.5f
+            && s_cacheMaxN == maxN && s_cacheFac == cFac
+            && !s_cacheOut.empty())
+            return s_cacheOut;
+    }
+
     if (IsEnabled()) {
         Refresh(false);
     } else {
@@ -1473,7 +1840,7 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
     if (localGuid) {
         playerPos = Position(localGuid);
         if (playerPos.x != 0.f || playerPos.y != 0.f) havePlayer = true;
-        uintptr_t pp = Ptr(localGuid);
+        uintptr_t pp = SnapPtr(localGuid); // snapshot-only (no ObjectPtr game call)
         if (pp && AcceptObjPtr(pp)) {
             uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
             if (d && AcceptObjPtr(d))
@@ -1570,7 +1937,13 @@ std::string NearbyHostilesPacked(float maxRange, size_t maxN) {
                                 h.x, h.y, h.z, h.center, h.edge,
                                 (unsigned)h.flags, h.hp, h.mhp, h.face);
     }
-    return std::string(out);
+    s_cacheOut.assign(out, off);
+    s_cacheGen = g_snapGen;
+    s_cacheT = GetTickCount64();
+    s_cacheLocal = localGuid;
+    s_cacheX = cPos.x; s_cacheY = cPos.y; s_cacheFace = cFace;
+    s_cacheRange = maxRange; s_cacheMaxN = maxN; s_cacheFac = cFac;
+    return s_cacheOut;
 }
 
 void NoteUnitAura(uint64_t guid, int spellId, int stacks, float durationSec) {
@@ -1638,7 +2011,9 @@ bool HasUnitAura(uint64_t guid, int spellId, int* outStacks) {
 
 std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size_t maxN) {
     // RUNTIME-FIRST multi-dot. Always soft-refresh capable so discovery works
-    // even when om.enable is 0 or Refresh is quiet. Cached ~80ms for 50Hz ticks.
+    // even when om.enable is 0 or Refresh is quiet. 2026-08-02 (18:16 user:
+    // "aura search extremely slow/not reactive") — cache reduced 120ms->50ms
+    // so a new target is picked up within ~1-2 frames instead of ~4-5.
     if (spellId <= 0) return "0";
     static ULONGLONG s_cacheT = 0;
     static ULONGLONG s_cacheGen = 0;
@@ -1651,7 +2026,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     if (s_cacheSid == spellId && s_cacheMissing == (wantMissing ? 1 : 0)
         && std::fabs(s_cacheRange - maxRange) < 0.5f && s_cacheMaxN == maxN
         && s_cacheGen == g_auraSearchGen
-        && s_cacheT && (now - s_cacheT) < 120ull && !s_cacheOut.empty()
+        && s_cacheT && (now - s_cacheT) < 50ull && !s_cacheOut.empty()
         && s_cacheOut != "0") {
         return s_cacheOut;
     }
@@ -1670,7 +2045,7 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     Vec3 playerPos = Position(localGuid);
     bool havePlayer = (playerPos.x != 0.f || playerPos.y != 0.f);
     s_playerFaction = 0;
-    uintptr_t pp = Ptr(localGuid);
+    uintptr_t pp = SnapPtr(localGuid); // snapshot-only (no ObjectPtr game call)
     if (pp && AcceptObjPtr(pp)) {
         uintptr_t d = Mem::Read<uintptr_t>(pp + Offsets::O().Descriptor);
         if (d && AcceptObjPtr(d))
@@ -1724,7 +2099,15 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                 edge = cx - 3.f;
                 if (edge < 0.f) edge = 0.f;
                 if (haveFace) {
-                    float ang = std::atan2(dy, dx);
+                    // 2026-08-02 (18:16 FACING CONVENTION — same fix as
+                    // IsFacingPos): std::atan2 is 0=+X(east)/CCW, the client's
+                    // facing (0x7AC / GetPlayerFacing) is 0=+Y(north)/CW — they
+                    // are offset 90°. Convert: facing_wow = π/2 - atan2(dy,dx).
+                    // Without this the aura-search `face` field disagrees with
+                    // the client's own arc check (targets the player faces get
+                    // marked not-facing and vice versa -> "in front of you"
+                    // refusals on non-faced wires).
+                    float ang = 1.5707963f - std::atan2(dy, dx);
                     float diff = ang - playerFace;
                     const float pi = 3.14159265f;
                     const float two = 6.2831853f;
@@ -1784,6 +2167,79 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
     return s_cacheOut;
 }
 
+// ---- Whole-OM snapshot (2026-08-02) --------------------------------------
+// ONE call returns the entire cached object list packed as ONE string — the
+// shared-memory / zero-copy pattern from the optimization guide. The runtime
+// IS the OM authority; the addon's Lua OM parses this instead of making ~5
+// bridge calls per object per tick (each an ObjectPtr game call = the lag +
+// Guard::Scope longjmp-recovery crash vector, live 1.10.68 RVA 0x785A).
+// Pack: "count|0xGUID:TYPE:ENTRY:FLAGS:DYNFLAGS:LVL:HP:MHP:X:Y:Z:FACE:FACTION:
+//        0xTARGET:SCALE:GOBYTES1:NPCFLAGS|..."
+// TYPE is the same bitmask ObjectTypeFlags returns (Object=1, Unit=32,
+// Player=64, GameObject=256, DynamicObject=512, Corpse=1024, ...).
+// Cost: one throttled Refresh + one sequential snprintf pass over g_all
+// (prefetch-friendly, zero per-object game calls, zero per-object allocs).
+std::string OmSnapshotPacked() {
+    // 100ms pack cache (2026-08-02): the Lua OM, corpse scan and gather all
+    // call this; one pack per window regardless of callers. The underlying
+    // Refresh is already throttled; this removes the redundant packing.
+    static ULONGLONG s_packT = 0;
+    static std::string s_packOut;
+    ULONGLONG nowPack = GetTickCount64();
+    if (s_packT && (nowPack - s_packT) < 100ull && !s_packOut.empty())
+        return s_packOut;
+
+    // Soft list-only when om frozen — same rule as the packers. Refresh(false)
+    // returns with g_all EMPTY when om.enable=0 (the soft path owns discovery
+    // while frozen); without this the Lua OM would see an empty world.
+    if (IsEnabled())
+        Refresh(false);
+    else
+        SoftRefreshListOnlyForHostiles();
+    // 2026-08-02 (CRASH FIX): build into a HEAP std::string, never a huge C
+    // stack array. OmSnapshotPacked runs inside the game's Lua VM call chain
+    // (Lua interpreter -> Lua_IsLinuxClient -> Dispatch -> here); a ~70KB
+    // `char out[4096 + 512*128]` on the C stack inside that deep chain risks
+    // smashing the VM's stack (live rotation-enable crash family). The runtime
+    // is a self-modifying stealth DLL — every byte of stack we burn is a byte
+    // of frame budget the game's Lua VM does not have. Object cap stays 512.
+    size_t n = g_all.size();
+    if (n > 512) n = 512;
+    std::string out;
+    out.reserve(4096 + n * 128);
+    out.append(std::to_string(n));
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        for (size_t i = 0; i < n; ++i) {
+            const Object& o = g_all[i];
+            int mask = 1; // Object
+            switch (o.type) {
+                case ObjectType::Item:          mask |= 2;              break;
+                case ObjectType::Container:     mask |= 2 | 4;          break;
+                case ObjectType::Unit:          mask |= 32;             break;
+                case ObjectType::Player:        mask |= 32 | 64;        break;
+                case ObjectType::GameObject:    mask |= 256;            break;
+                case ObjectType::DynamicObject: mask |= 512;            break;
+                case ObjectType::Corpse:        mask |= 1024;           break;
+                default:                                                 break;
+            }
+            char row[160];
+            int rl = snprintf(row, sizeof(row),
+                "|0x%llX:%d:%d:%u:%u:%d:%d:%d:%.1f:%.1f:%.1f:%.3f:%d:0x%llX:%.2f:%u:%u:%d",
+                (unsigned long long)o.guid, mask, o.entry,
+                (unsigned)o.unitFlags, (unsigned)o.dynamicFlags,
+                o.level, o.health, o.maxHealth,
+                o.pos.x, o.pos.y, o.pos.z, o.facing, o.faction,
+                (unsigned long long)o.unitTarget, o.scale,
+                (unsigned)o.goBytes1, (unsigned)o.npcFlags, o.creatureType);
+            if (rl > 0) out.append(row, (size_t)rl);
+        }
+    }
+    s_packT = nowPack;
+    s_packOut.swap(out);
+    return s_packOut;
+}
+
 void Refresh(bool force) {
     std::lock_guard<std::mutex> lock(g_mu);
 
@@ -1800,6 +2256,11 @@ void Refresh(bool force) {
         return;
     }
 
+    // 2026-08-01: enumeration is VEH-guarded (SafeEnumVisible) per the codebase
+    // design. Enumeration stays allowed here (the addon needs live hostile data
+    // to cast). The 0x512B07 corruption is handled by the crash-fix in
+    // Dispatch/Lua_IsLinuxClient (OM::SetInLuaContext no longer gates walking -
+    // that deadlocked casting when the native hook carrier was unavailable).
     const bool omOn = IsEnabled();
     if (!omOn) {
         // Soft path (SoftRefresh / AuraSearch) owns discovery while frozen.
@@ -1872,20 +2333,22 @@ const std::vector<Object>& All() { Refresh(false); return g_all; }
 
 uint64_t LocalGuid() { return SafeGetActive(); }
 
-// Local player object pointer. Prefer stock ObjectPtr(activeGuid) - PosProbe proved
-// that path returns a live pointer. Do NOT trust random statics as primary.
+// Local player object pointer — SNAPSHOT-FIRST (2026-08-02 crash fix).
+// SafeObjectPtr is a GAME call (ObjectPtr -> hash) that must not run from the
+// Lua VM hot path; the snapshot's cached o->ptr is pure memory and always
+// contains the player once the first Refresh/SoftRefresh has run. Fall back to
+// the VirtualQuery-guarded literal 0x00C7B098 (pure memory), then — ONLY as a
+// cold-start last resort — the VEH-guarded SafeObjectPtr (rare, never hot).
 uintptr_t LocalPtr() {
     uint64_t g = LocalGuid();
     if (g) {
-        if (uintptr_t p = SafeObjectPtr(g)) return p;
+        if (const Object* o = SnapByGuid(g))
+            if (o->ptr) return o->ptr;
+        uintptr_t p = Mem::Read<uintptr_t>(0x00C7B098);
+        if (AcceptObjPtr(p)) return p;
+        if (uintptr_t sp = SafeObjectPtr(g)) return sp;
     }
-    // Last-ditch: optional cached player pointer (may be null / stale).
-    uintptr_t p = 0;
-    __try {
-        p = *reinterpret_cast<uintptr_t*>(0x00C7B098);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        p = 0;
-    }
+    uintptr_t p = Mem::Read<uintptr_t>(0x00C7B098);
     return AcceptObjPtr(p);
 }
 
@@ -1897,18 +2360,39 @@ uintptr_t Ptr(uint64_t guid) {
 }
 
 ObjectType Type(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
-    if (!p) return ObjectType::None;
-    int t = Mem::Read<int>(p + Offsets::O().Type);
-    if (t < 0 || t > 7) t = TypeFromGuid(guid);
-    return static_cast<ObjectType>(t);
+    // Snapshot-only (crash fix): no ObjectPtr game-call fallback from the bridge.
+    if (const Object* o = SnapByGuid(guid)) return o->type;
+    return ObjectType::None;
 }
 
 Vec3 Position(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
-    if (!p) return {};
-    bool local = (guid != 0 && guid == LocalGuid());
-    return ReadPosOffsets(p, local);
+    // LOCAL PLAYER: LIVE read via LocalPtr() — snapshot-first, then the
+    // pure-memory 0x00C7B098 CGPlayer* (works BEFORE the snapshot exists), then
+    // a VEH-guarded SafeObjectPtr cold fallback. ReadPosOffsets is pure memory
+    // (camera-gated). This is REQUIRED by OmWalkAllowed (the walk gate reads
+    // Position(localGuid) BEFORE any snapshot is built — a snapshot-only read
+    // there deadlocked the whole OM: no walk -> empty g_all -> 0 positions ->
+    // casting/aura_search/facing all dead, live 15:17 1.10.69-runtime).
+    // NON-LOCAL: snapshot-only (o->pos) — no ObjectPtr game call from the VM.
+    if (guid == LocalGuid()) {
+        uintptr_t p = LocalPtr();
+        if (p) {
+            Vec3 v = ReadPosOffsets(p, true);
+            if (v.x != 0.f || v.y != 0.f || v.z != 0.f) return v;
+        }
+        // Cold/validation only (OmWalkAllowed gate, pre-snapshot, rate-limited):
+        // LocalPtr's pure-memory 0xC7B098 may be stale/garbage on this client —
+        // fall back to the VEH-guarded live ObjectPtr so the OM walk can ever
+        // start. This is NOT the per-call Lua hot path (that hits the snapshot).
+        if (uintptr_t sp = SafeObjectPtr(guid)) {
+            Vec3 v = ReadPosOffsets(sp, true);
+            if (v.x != 0.f || v.y != 0.f || v.z != 0.f) return v;
+        }
+        if (const Object* o = SnapByGuid(guid)) return o->pos;
+        return {};
+    }
+    if (const Object* o = SnapByGuid(guid)) return o->pos;
+    return {};
 }
 
 Vec3 PositionFromPtr(uintptr_t ptr) {
@@ -1938,21 +2422,31 @@ static inline bool LooksLikeFacing(float f) {
 }
 
 float Facing(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
-    if (!p) return 0.f;
-    // LOCAL PLAYER: the live value the client actually steers by is
-    // CMovement+0x24 == player+0x7AC (RE-verified: GetFacing @0x6E6FC0 is just
-    // `fld [ecx+0x7AC]; ret`). The generic orientation field at 0x7A4 is NOT that
-    // value and reads as garbage here, so prefer the live one when we can.
-    if (guid != 0 && guid == LocalGuid()) {
-        float live = Mem::Read<float>(p + 0x7AC);
-        if (LooksLikeFacing(live)) return live;
+    // LOCAL PLAYER: LIVE 0x7AC via LocalPtr() (works before the snapshot exists,
+    // same as Position). NON-LOCAL: snapshot o->facing only (no ObjectPtr game
+    // call from the VM). Unknown -> 0.f = "no measurement".
+    if (guid == LocalGuid()) {
+        // 2026-08-02 (FACING ROOT CAUSE — RE-VERIFIED LIVE): LocalPtr()+0x7AC
+        // reads 0 on this build (live: runtime PlayerFacing()=0 while the
+        // client's own GetPlayerFacing()=1.4547 at the same instant). The client
+        // resolves the player via camera → GUID → ClntObjMgrObjectPtr and reads
+        // [obj+0x7AC]. Use that RE-correct path FIRST; LocalPtr only as fallback.
+        float live = FacingLiveLocal();
+        if (live < 1e8f) return live;
+        uintptr_t p = LocalPtr();
+        if (p) {
+            float f = Mem::Read<float>(p + 0x7AC);
+            if (LooksLikeFacing(f)) return f;
+        }
+        if (const Object* o = SnapByGuid(guid)) {
+            if (LooksLikeFacing(o->facing)) return o->facing;
+        }
+        return 0.f;
     }
-    float f = Mem::Read<float>(p + Offsets::O().Facing);
-    if (LooksLikeFacing(f)) return f;
-    f = Mem::Read<float>(p + 0x7A4);
-    if (LooksLikeFacing(f)) return f;
-    return 0.f;                                     // unknown, but SAFE to use
+    if (const Object* o = SnapByGuid(guid)) {
+        if (LooksLikeFacing(o->facing)) return o->facing;
+    }
+    return 0.f;
 }
 
 // Trinity/MaNGOS defaults when descriptor field is 0.
@@ -2037,19 +2531,23 @@ float BoundingRadiusFromPtr(uintptr_t ptr) {
 }
 
 float CombatReach(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
-    if (!p) return 0.f;
-    return CombatReachFromPtr(p);
+    // Snapshot-only (crash fix): the ObjectPtr game-call fallback is deleted.
+    // Callers apply the Trinity 1.5 default when 0 is returned.
+    if (const Object* o = SnapByGuid(guid))
+        return CombatReachFromPtr(o->ptr);
+    return 0.f;
 }
 
 float BoundingRadius(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
-    if (!p) return 0.f;
-    return BoundingRadiusFromPtr(p);
+    // Snapshot-only (crash fix): no ObjectPtr game-call fallback.
+    if (const Object* o = SnapByGuid(guid))
+        return BoundingRadiusFromPtr(o->ptr);
+    return 0.f;
 }
 
 int Entry(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    if (const Object* o = SnapByGuid(guid)) return o->entry;
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     return d ? Mem::Read<int>(d + Offsets::D().Entry) : 0;
@@ -2060,7 +2558,7 @@ int Health(uint64_t guid) {
     // live crash 2026-07-31 when suite+rotation scanned enemies — thiscall on
     // non-unit / bad ptr requested ~2.8GB and killed the client (stack:
     // RuntimeCall ObjectHealth -> om_unit_is_hostile -> collect_nearby_enemies).
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return 0;
@@ -2076,7 +2574,7 @@ int Health(uint64_t guid) {
 }
 
 int MaxHealth(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return 0;
@@ -2091,14 +2589,14 @@ int MaxHealth(uint64_t guid) {
 }
 
 int Level(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     return d ? Mem::Read<int>(d + Offsets::D().Level) : 0;
 }
 
 uint32_t UnitFlags(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     return d ? Mem::Read<uint32_t>(d + Offsets::D().Flags) : 0;
@@ -2111,7 +2609,7 @@ uint32_t UnitFlags(uint64_t guid) {
 
 int UnitPower(uint64_t guid, int powerType) {
     if (powerType < 0 || powerType > 6) return -1;
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2128,7 +2626,7 @@ int UnitPower(uint64_t guid, int powerType) {
 
 int UnitMaxPower(uint64_t guid, int powerType) {
     if (powerType < 0 || powerType > 6) return -1;
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2144,7 +2642,7 @@ int UnitMaxPower(uint64_t guid, int powerType) {
 }
 
 int UnitPowerType(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2158,7 +2656,7 @@ int UnitPowerType(uint64_t guid) {
 }
 
 int UnitCombatState(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2171,25 +2669,17 @@ int UnitCombatState(uint64_t guid) {
     }
 }
 
-// Player casting state via Lua UnitCastingInfo pcall (cached ~50ms).
+// Player casting state — CRASH RULE (permanent): UnitCastingInfo via nested
+// lua_pcall from the bridge corrupts the Lua stack (proven). SAFE: always
+// reports "not casting" (-1, 0). The addon reads UnitCastingInfo via its own
+// Lua (Lua→Lua, safe).
 void PlayerCastState(int* outSpellId, int* outTotalMs, int* outElapsedMs) {
     *outSpellId = -1; *outTotalMs = 0; *outElapsedMs = 0;
-    static int s_cachedSid = -1, s_cachedTotal = 0;
-    static ULONGLONG s_cachedAt = 0;
-    ULONGLONG now = GetTickCount64();
-    if (s_cachedAt && (now - s_cachedAt) < 50ull) {
-        *outSpellId = s_cachedSid; *outTotalMs = s_cachedTotal;
-        return;
-    }
-    s_cachedAt = now;
-    // Delegate to Lua helper — one pcall, cached result
-    RL::Lua::PlayerCastInfo(&s_cachedSid, &s_cachedTotal);
-    *outSpellId = s_cachedSid; *outTotalMs = s_cachedTotal;
 }
 
 // ---- Mounted / movement impairment (verified descriptor offsets) -----------
 int IsUnitMounted(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2203,7 +2693,7 @@ int IsUnitMounted(uint64_t guid) {
 }
 
 int UnitMovementImpairing(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return -1;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return -1;
@@ -2263,7 +2753,7 @@ std::string PlayerStatePacked() {
 
 // ---- Unit target / shapeshift (verified descriptor + Lua pcall) -----------
 uint64_t UnitTargetGuid(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p || !Mem::Readable(p)) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d || !Mem::Readable(d)) return 0;
@@ -2274,14 +2764,11 @@ uint64_t UnitTargetGuid(uint64_t guid) {
     }
 }
 
+// CRASH RULE (permanent): GetShapeshiftForm via nested lua_pcall from the
+// bridge corrupts the Lua stack (proven). SAFE: -1 = unknown. The addon reads
+// GetShapeshiftForm/GetShapeshiftFormInfo via its own Lua (Lua→Lua, safe).
 int ShapeshiftForm() {
-    static int s_cached = -1;
-    static ULONGLONG s_cachedAt = 0;
-    ULONGLONG now = GetTickCount64();
-    if (s_cachedAt && (now - s_cachedAt) < 200ull) return s_cached;
-    s_cachedAt = now;
-    RL::Lua::ShapeshiftFormFromLua(&s_cached);
-    return s_cached;
+    return -1;
 }
 
 // ---- Unit relationship (faction-based, verified descriptor offsets) --------
@@ -2292,13 +2779,13 @@ const char* UnitRelationship(uint64_t guid) {
 
     // Read faction template from descriptor 0xDC
     int localFaction = 0, targetFaction = 0;
-    uintptr_t lp = Ptr(local);
+    uintptr_t lp = SnapPtr(local); // snapshot-only (no ObjectPtr game call)
     if (lp && AcceptObjPtr(lp)) {
         uintptr_t ld = Mem::Read<uintptr_t>(lp + Offsets::O().Descriptor);
         if (ld && AcceptObjPtr(ld))
             localFaction = Mem::Read<int>(ld + Offsets::D().FactionTemplate);
     }
-    uintptr_t tp = Ptr(guid);
+    uintptr_t tp = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (tp && AcceptObjPtr(tp)) {
         uintptr_t td = Mem::Read<uintptr_t>(tp + Offsets::O().Descriptor);
         if (td && AcceptObjPtr(td))
@@ -2324,23 +2811,12 @@ const char* UnitRelationship(uint64_t guid) {
     return "hostile";
 }
 
-// ---- Spell info cache (extends Actions.cpp range cache with more fields) ----
+// ---- Spell info — CRASH RULE (permanent): GetSpellInfo via nested lua_pcall
+// from the bridge corrupts the Lua stack (proven). SAFE: all fields -1
+// (unknown). The addon reads spell info via its own Lua (Lua→Lua, safe).
 std::string SpellInfoPacked(int spellId) {
-    if (spellId <= 0) return "maxRange=-1|castMs=-1|powerType=-1|school=-1";
-    float mr = -1.f; int castMs = -1, pt = -1;
-    void* L = RL::Game::Addr::LuaState();
-    if (L) {
-        RL::Lua::SpellInfoFromLua((lua_State*)L, spellId, &mr, &castMs, &pt);
-    }
-    // School: try Lua GetSpellInfo + resolve from spell name/description
-    int school = -1;
-    if (L) {
-        school = RL::Lua::SpellSchoolFromLua((lua_State*)L, spellId);
-    }
-    char buf[96];
-    snprintf(buf, sizeof(buf), "maxRange=%.1f|castMs=%d|powerType=%d|school=%d",
-             mr, castMs, pt, school);
-    return std::string(buf);
+    (void)spellId;
+    return "maxRange=-1|castMs=-1|powerType=-1|school=-1";
 }
 
 // ---- Runtime aura table query (zero Lua — reads g_auras directly) ----------
@@ -2491,7 +2967,8 @@ int RuneCooldownMs(int runeIndex) {
 // mask it - otherwise a timer bit lands on top of SPARKLE and every object in
 // the world looks interactable.
 uint32_t DynamicFlags(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    if (const Object* o = SnapByGuid(guid)) return o->dynamicFlags;
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d) return 0;
@@ -2505,7 +2982,7 @@ uint32_t DynamicFlags(uint64_t guid) {
 // numbers DOOR=0, so any naming here would just bake in a transcription we have
 // not verified. Return the dword and let the diagnostic show it.
 uint32_t GameObjectBytes1(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     if (Type(guid) != ObjectType::GameObject) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
@@ -2515,7 +2992,8 @@ uint32_t GameObjectBytes1(uint64_t guid) {
 // Object flags, likewise per type. GAMEOBJECT_FLAGS is a separate field from
 // UNIT_FIELD_FLAGS and the addon reads it through its own GameObjectFlags enum.
 uint32_t ObjectFlags(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    if (const Object* o = SnapByGuid(guid)) return o->unitFlags;
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     if (!d) return 0;
@@ -2536,7 +3014,7 @@ uint32_t ObjectFlags(uint64_t guid) {
 uint32_t Field(uint64_t guid, uint32_t byteOffset) {
     if (byteOffset & 0x3) return 0;          // must be dword aligned
     if (byteOffset > 0x1000) return 0;        // past any plausible descriptor
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 0;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     return d ? Mem::Read<uint32_t>(d + byteOffset) : 0;
@@ -2753,11 +3231,14 @@ static void MaybeQueryQuestGiverStatus(uint64_t guid, uintptr_t p) {
 
 static uintptr_t ResolveObjPtr(uint64_t guid) {
     if (!guid) return 0;
-    // Prefer live ObjectPtr; fall back to last OM snapshot pointer.
-    if (uintptr_t p = Ptr(guid)) return p;
-    if (const Object* o = ByGuid(guid)) {
+    // SNAPSHOT-FIRST (2026-08-02): the live ObjectPtr game call is the crash
+    // vector (Guard-longjmp inside the Lua VM). The snapshot's cached pointer
+    // is pure memory and is refreshed at 10Hz by every OM handler.
+    if (const Object* o = SnapByGuid(guid)) {
         if (o->ptr && Mem::Committed(o->ptr)) return o->ptr;
     }
+    // Rare cold miss: last-resort VEH-guarded live lookup (never the hot path).
+    if (uintptr_t p = Ptr(guid)) return p;
     return 0;
 }
 
@@ -2886,14 +3367,14 @@ std::string QuestGiverDiag(uint64_t guid) {
 }
 
 float Scale(uint64_t guid) {
-    uintptr_t p = Ptr(guid);
+    uintptr_t p = SnapPtr(guid); // snapshot-only (no ObjectPtr game call)
     if (!p) return 1.f;
     uintptr_t d = Mem::Read<uintptr_t>(p + Offsets::O().Descriptor);
     float s = d ? Mem::Read<float>(d + Offsets::D().Scale) : 1.f;
     return s > 0.f ? s : 1.f;
 }
 
-bool Exists(uint64_t guid) { return Ptr(guid) != 0; }
+bool Exists(uint64_t guid) { return SnapByGuid(guid) != nullptr; }
 
 float Distance(uint64_t a, uint64_t b) { return Position(a).Dist(Position(b)); }
 float DistancePos(const Vec3& a, const Vec3& b) { return a.Dist(b); }
@@ -2903,13 +3384,23 @@ bool IsFacing(uint64_t a, uint64_t b, float arcRadians) {
     Vec3 pa = Position(a), pb = Position(b);
     if ((pa.x == 0.f && pa.y == 0.f) || (pb.x == 0.f && pb.y == 0.f))
         return false;
+    // 2026-08-02 (18:16): with the angle-convention fix in IsFacingPos, the
+    // measurement is correct at ALL distances INCLUDING point-blank — a mob
+    // the player faces at 0.5yd is measured facing, a mob behind is measured
+    // not-facing (the old <1yd hard-true band-aid here caused FALSE-fACING and
+    // was masking the convention bug). Only a truly-degenerate heading (target
+    // at EXACTLY the viewer's position, dx²+dy² < 0.01 yd²) is undefined —
+    // treat that as facing (a target you are standing on cannot be "behind").
+    float dx = pb.x - pa.x, dy = pb.y - pa.y;
+    if ((dx * dx + dy * dy) < 0.01f) return true;
     float face = Facing(a);
     return IsFacingPos(face, pa.x, pa.y, pb.x, pb.y, arcRadians);
 }
 
 bool IsBehind(uint64_t a, uint64_t b) {
     Vec3 pa = Position(a), pb = Position(b);
-    float ang = std::atan2(pa.y - pb.y, pa.x - pb.x);
+    // Same WoW-convention conversion as IsFacingPos (0 = +Y/north, CW).
+    float ang = 1.5707963f - std::atan2(pa.y - pb.y, pa.x - pb.x);
     float face = Facing(b);
     float diff = std::fmod(ang - face + 3.14159265f, 6.2831853f);
     if (diff < 0.f) diff += 6.2831853f;
@@ -3008,17 +3499,21 @@ CamData CameraData() {
     c.ok = false;
     uintptr_t cam = SafeCamera();
     if (!cam || !Mem::Readable(cam + 0x44)) return c;
-    __try {
-        const float* p = reinterpret_cast<const float*>(cam + 0x08);
-        c.pos   = Vec3{ p[0], p[1], p[2] };
-        const float* m = reinterpret_cast<const float*>(cam + 0x14);
-        c.fwd   = Vec3{ m[0], m[1], m[2] };
-        c.right = Vec3{ m[3], m[4], m[5] };
-        c.up    = Vec3{ m[6], m[7], m[8] };
-        c.fov   = *reinterpret_cast<const float*>(cam + 0x40);
+    {
+        c.pos   = Vec3{ Mem::Read<float>(cam + 0x08),
+                        Mem::Read<float>(cam + 0x0C),
+                        Mem::Read<float>(cam + 0x10) };
+        c.fwd   = Vec3{ Mem::Read<float>(cam + 0x14),
+                        Mem::Read<float>(cam + 0x18),
+                        Mem::Read<float>(cam + 0x1C) };
+        c.right = Vec3{ Mem::Read<float>(cam + 0x20),
+                        Mem::Read<float>(cam + 0x24),
+                        Mem::Read<float>(cam + 0x28) };
+        c.up    = Vec3{ Mem::Read<float>(cam + 0x2C),
+                        Mem::Read<float>(cam + 0x30),
+                        Mem::Read<float>(cam + 0x34) };
+        c.fov   = Mem::Read<float>(cam + 0x40);
         c.ok = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        c.ok = false;
     }
     return c;
 }

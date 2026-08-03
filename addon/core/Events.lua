@@ -160,6 +160,34 @@ function RaijinLab:CoreOnEvent(event, ...)
         end
         variables_loaded = true
     end
+    if event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
+        -- 2026-08-02 (PERSISTENT blocked-action logger). The rotation frame that
+        -- used to register this handler is DESTROYED on stop — so the exact
+        -- protected function that pops "RaijinLab has been blocked from an
+        -- action only available to the Blizzard UI" was never captured. This
+        -- core frame is never destroyed; every blocked action is logged with the
+        -- protected function name + the blamed addon, so we can pinpoint and
+        -- remove the tainting call instead of guessing.
+        -- ADDON_ACTION_BLOCKED: (protectedFn, addon). ADDON_ACTION_FORBIDDEN:
+        -- (message, addon) on some builds — log whatever arrives.
+        local fn, addon = ...
+        -- Case-insensitive blame match: the game reports "RaijinLab" (capital
+        -- R); a plain case-sensitive find for "raijin" never matched, so the
+        -- blocked-action was NEVER captured (live 15:40: popup shown, dev log
+        -- silent). Lowercase both sides.
+        local blame = tostring(addon or ""):lower()
+        if blame:find("raijin", 1, true) then
+            RaijinLab._last_blocked_action = tostring(fn or "?")
+            if RaijinLab.DevLog and RaijinLab.DevLog.log then
+                RaijinLab.DevLog.log("rot", "BLOCKED ACTION event=%s fn=%s addon=%s",
+                    event, tostring(fn or "?"), blame)
+            end
+            if RaijinLab.DevLog and RaijinLab.DevLog.flush then
+                pcall(RaijinLab.DevLog.flush)
+            end
+        end
+        return
+    end
     if not variables_loaded then return end
     -- Real achievements reset the watchdog's stall timer. These are the events
     -- that unambiguously mean the run is going somewhere.

@@ -2606,57 +2606,25 @@ function Executor.attempt_action(action, ctx)
             --     genuine 1-tick skip, and the moment the player's facing is
             --     sufficient the native cache flips and this slot wires.
             if not last_why and not skip_face_cast and needs_enemy then
-                -- 2026-08-02 (18:11 — FACING FIX, NO EXEMPTION): every unit-
-                -- targeted cast face-gates on a confirmed-true verdict, melee
-                -- AND ranged, ALL distances. The 18:11 log showed Blood Strike
-                -- wiring at edge=2.0 via the OLD melee-point-blank exemption
-                -- (center < 5yd skipped the gate) while the player was NOT
-                -- facing -> client "target needs to be in front of you" errors
-                -- + phantom_grace. The runtime's <1yd special case already
-                -- handles the 0yd auto-attack case; 1yd+ the measurement is
-                -- exact. Fail-open: not-facing cycles to the next slot (a
-                -- 1-tick skip, never a hard wait).
-                local facing = W and W.is_facing_guid
-                    and W.is_facing_guid(cg, W.CAST_FACE_HALF_ARC)
-                -- 2026-08-02 (19:05 FAIL-OPEN FIX): block ONLY on a CONFIDENT
-                -- measured not-facing (facing == false). An UNDETERMINED
-                -- verdict (nil — the runtime could not place the player/target)
-                -- ALLOWS the cast: the client is the final authority, and a
-                -- refused cast is one phantom (recovered, fail-open) whereas
-                -- blocking on undetermined froze the rotation ("aura search did
-                -- not cast at all" + "wait facing:X" — the runtime returned a
-                -- confident false for unmeasured (0,0) positions).
-                if facing == false then
-                    -- 2026-08-02 (23:48 POINT-BLANK EXEMPTION, PRECISE): the
-                    -- runtime facing read (0x7AC) intermittently returns a
-                    -- confident-not-facing even when the player is STANDING ON
-                    -- the target and auto-attacking — live "wait facing:Blood
-                    -- Strike" / "wait facing:Icy Touch" at edge=0yd/2yd while
-                    -- fighting a single mob (proven three+ sessions). WoW
-                    -- AUTO-FACES melee the instant you engage (StartAttack /
-                    -- melee swing), so a target within true melee point-blank
-                    -- distance is by definition front-facing — it is impossible
-                    -- to be "behind" something you are inside. The 18:11
-                    -- problem was the OLD exemption was too WIDE (center<5yd
-                    -- skipped facing for ranged casts that genuinely needed
-                    -- it). This is NARROW: only exempt when (a) the spell is a
-                    -- MELEE-range cast AND (b) the candidate is within ~2yd
-                    -- (the client's melee auto-face band). Ranged / farther
-                    -- targets keep the strict runtime verdict.
-                    local pb_exempt = false
-                    if cand and cand.dist and tonumber(cand.dist) and
-                       tonumber(cand.dist) <= 2.0 then
-                        local om, omax = runtime_spell_melee(sid)
-                        -- melee==1 and max range is the ~5yd melee band (never
-                        -- a 20+ yd ranged spell) → point-blank exempt.
-                        if om == 1 and omax and omax <= 6 then
-                            pb_exempt = true
-                        end
-                    end
-                    if not pb_exempt then
-                        last_why = "facing"
-                    end
-                end
+                -- 2026-08-03 (ROUND 40 — facing is DETECTION-ONLY; the CLIENT is
+                -- the sole determinate authority; the rotation NEVER locks on a
+                -- facing guess). The developer-facing read on this Ascension
+                -- build is unreliable ([obj+0x7AC] intermittently returns 0.0),
+                -- so it misreport an engaged player as "not facing" and hard-
+                -- blocked every cast with 'wait facing:X x80+' (00:11: Blood
+                -- Strike + RANGED Icy Touch at edge=0yd). Full deterministic
+                -- behavior: WIRE and let the client decide — al=1 accepted or
+                -- al=0 refused ('not in front', recovered as one phantom),
+                -- never a multi-second hold. The client NEVER refuses a cast it
+                -- can accept based on a measurement we can't trust; a false
+                -- pre-block was the source of every lockup. Facing is still
+                -- used for candidate ORDERING (closest + facing-first in
+                -- AuraSearchPacked) but never holds the wire.
+                --
+                -- (Removed: the earlier point-blank exemption and the
+                -- 'if facing == false then last_why="facing" end' block — both
+                -- were band-aids on the unreliable read; the fixed behavior is
+                -- to not gate on it at all and let the client be the referee.)
             end
             -- WIRE (range was already validated in live_castable; facing gate above)
             -- 2026-08-02 (MULTI-CANDIDATE RANGE FIX): live_castable range-checks
@@ -2831,20 +2799,30 @@ function Executor.attempt_action(action, ctx)
             if not cg2 then
                 last_why = "no_target"
             else
-                local facing = W and W.is_facing_guid
-                    and W.is_facing_guid(cg2, W.CAST_FACE_HALF_ARC)
                 local _c_los = true
                 if W and W.is_los_guid and not is_ground_self_aoe(sid, name) then
                     if W.is_los_guid(cg2) == false then
                         _c_los = false
                     end
                 end
-                -- 2026-08-02 (19:05 FAIL-OPEN FIX): same as the candidate gate —
-                -- block only on a CONFIDENT measured not-facing; undetermined
-                -- (nil) allows (client is the authority, phantom recovery).
-                if facing == false then
-                    last_why = "facing"
-                elseif not _c_los then
+                -- 2026-08-03 (ROUND 40 — facing is DETECTION-ONLY, never a hard
+                -- block; the CLIENT is the sole determinate authority). The
+                -- developer-facing read on this Ascension build is unreliable:
+                -- [obj+0x7AC] intermittently returns 0.0, so an engaged player
+                -- staring at a mob was misreported as "not facing" and the
+                -- rotation hard-blocked the cast with 'wait facing:X x80+"
+                -- (00:11 session: Blood Strike at edge=0yd, and even RANGED
+                -- Icy Touch at edge=0yd). User directive (repeated): facing is
+                -- detection-only, NO single ability may lock up the rotation,
+                -- and nothing may be a guess. The fully deterministic answer is
+                -- to WIRE the cast and let the client be the referee: it
+                -- returns al=1 (accepted) or al=0 (refused 'not in front',
+                -- recovered as one phantom, logged) — a determinate outcome
+                -- either way, NEVER a multi-second stall. We keep only the LoS
+                -- confident-block (a real, reliable measurement the user has
+                -- always accepted). Facing is surfaced for tuning but never
+                -- holds the wire.
+                if not _c_los then
                     last_why = "los"
                 else
                     if Act.CastQueued then

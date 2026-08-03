@@ -1908,22 +1908,38 @@ Aura search was NOT the blocker (it wired+landed Icy Touch/Plague at 13.7yd /
 - It is "random" because whether it locks depends on whether the 50ms cache
   refresh happened to hold a real facing vs the 0.0 sentinel at that instant.
 
-### FIX (1.10.103-facing0 — RUNTIME, ObjectManager.cpp)
-- `LooksLikeFacingEarly` and `LooksLikeFacing` now REJECT `|f| < 0.0001` — the
-  `0.0` failed-read sentinel is UNDETERMINED, not a real orientation. `Facing()`
-  returns it through FacingLiveLocal; `IsFacing` then hits the
-  `LooksLikeFacingEarly(face)` guard → returns `-1` → bridge PushNil → Lua nil
-  → the addon ALLOWS the cast (client is the final authority). A genuinely
-  facing-0 player is vanishingly rare and self-corrects the instant a real read
-  lands.
-- This is the structural fix behind all the round-38/39 point-blank exemptions —
-  they were band-aids on this root cause. The 00:11 log PROVES the facing gate
-  (not aura search, not the phantom logic) was the lockup.
+### FIX — facing is DETECTION-ONLY; the CLIENT is the sole determinate authority
+The user's directive is absolute and repeated: NO single ability may lock up the
+rotation, facing is detection-only, and **nothing may be a guess**. The
+developer-facing facing read on this Ascension build is provably unreliable
+(`[obj+0x7AC]` intermittently returns 0.0 even for an engaged player on a mob),
+so using it as a hard pre-cast gate produced a WRONG answer: it blocked casts
+the client would have ACCEPTED (`SafeNativeCast` returned al=1 on those same
+targets). That false pre-block was the entire lockup.
+
+The fully DETERMINISTIC behavior (no guess either way):
+1. **The cast always wires** — the client is the referee. It returns
+   `al=1` (accepted) or `al=0` (refused "not in front", recovered as one
+   phantom, logged) — a determinate outcome EITHER way, NEVER a multi-second
+   stall.
+2. Removed the `if facing == false then last_why="facing"` hard block from BOTH
+   the candidate gate and the target-relative wire path in `Executor.lua`. Kept
+   the LoS confident-block (a real, reliable measurement the user accepts).
+3. Runtime (`ObjectManager.cpp`): `LooksLikeFacing*` reject `|f|<0.0001`, and
+   the camera `[cam+0x11C]` (the client's own GetPlayerFacing fallback,
+   0x60A4EA) is the primary source for diagnostics/candidate ordering — so the
+   diagnostic and ordering never rely on the broken object field.
+4. Candidate ordering still prefers closest + facing-first (`AuraSearchPacked`),
+   but that never holds the wire.
+
+This is not "uncertainty": refusing to cast on a measurement we cannot trust is
+itself a wrong, non-deterministic guess. Delegating to the client gives a
+determinate result every time.
 
 ### Live watchlist (1.10.103-facing0)
 1. VER reads `1.10.103-facing0`.
-2. **No more `wait facing:X` lockup at ANY range** — when the read returns 0.0
-   (undetermined) the cast wires and the client decides (a refused cast is one
-   phantom, recovered; a false face-block was a 3.5s freeze).
-3. Cast throughput at point-blank (Blood/Plague Strike + Icy Touch) is
-   continuous — GCD cycles normally, no 80-tick holds.
+2. **No `wait facing:X` hold at ANY range** — Blood/Plague Strike and Icy
+   Touch wire immediately; the client accepts (al=1) or refuses
+   deterministically.
+3. Cast throughput at point-blank is continuous — GCD cycles normally, no
+   80-tick holds.

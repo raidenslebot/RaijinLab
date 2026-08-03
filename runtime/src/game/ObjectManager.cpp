@@ -1143,21 +1143,32 @@ void RefreshLiveFacingCache() {
     float f = 1e9f;
     uintptr_t cam = 0; uint32_t clo = 0, chi = 0; uintptr_t obj = 0;
     uint64_t active = 0;
-    // Path 1 — client's exact GetPlayerFacing path.
     cam = SafeCamera();
     if (cam) { clo = Mem::Read<uint32_t>(cam + 0x88); chi = Mem::Read<uint32_t>(cam + 0x8C); }
-    if (clo || chi) obj = CallObjectPtr3(clo, chi, 1);
-    if (obj) {
-        float v = Mem::Read<float>(obj + 0x7AC);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
-    }
-    // Path 2 — camera's own facing (the client's fallback in GetPlayerFacing).
-    if (f >= 1e8f && cam) {
+    // 2026-08-03 (ROUND 40 — the render-facing off overrides the broken object
+    // field on this Ascension build). The client's OWN GetPlayerFacing
+    // (0x60A490) falls back to the CAMERA's facing [esi+0x11C] whenever the
+    // player-object vtable GetFacing can't be trusted (0x60A4EA). Live proof on
+    // this build: the object [obj+0x7AC] reads 0.0000 even for an engaged
+    // player staring at a mob (FacingLive face=0.0000 every line) — the object
+    // field is not populated, so using it made every cast "not facing". The
+    // camera [cam+0x11C] holds the real value (the client's own fallback). So
+    // the CAMERA facing is the PRIMARY, deterministic source for the PLAYER's
+    // facing; the object field is only a cross-check when the camera is absent.
+    // This is not a "guess": it is the exact source the client's own
+    // GetPlayerFacing prefers when the object method cannot be relied on, and
+    // it always holds a live value on this build.
+    if (cam) {
         float v = Mem::Read<float>(cam + 0x11C);
         if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
     }
-    // Path 3 — GetActive player object (mask 0x10 = player; same object the
-    // cast wrapper resolves, guaranteed fresh).
+    // Path 1 — client's exact path object field, only when no camera facing.
+    if (f >= 1e8f && (clo || chi)) obj = CallObjectPtr3(clo, chi, 1);
+    if (f >= 1e8f && obj) {
+        float v = Mem::Read<float>(obj + 0x7AC);
+        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+    }
+    // Path 3 — GetActive player object (mask 0x10 = player).
     if (f >= 1e8f) {
         active = SafeGetActive();
         if (active) {

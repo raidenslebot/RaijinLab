@@ -256,28 +256,14 @@ static int SafeNativeCast(int spellId, uint64_t targetGuid, uint64_t registerTar
             Mem::Write<uint32_t>(0xD3C00E14u + 0u, lo);
             Mem::Write<uint32_t>(0xD3C00E14u + 4u, hi);
         }
-        // 2026-08-03 (ROUND 43 — 0xB450EDDC resolver AV, the "ui errors"
-        // suspect): the cast-feedback GUID-resolver (0x512B00, reads the
-        // 8-byte GUID struct at [esi]/[esi+4]) is dispatched ~6-15ms after
-        // EVERY cast with a pointer to ANOTHER uncommitted static slot at
-        // 0xB450EDDC — the crash shield logged esi=0xB450EDDC on ALL 833 AVs
-        // in the 12:59 session (one per cast, including guid=0 Consecration).
-        // Each AV is recovered by substituting a zero-GUID, but 833 recovered
-        // AVs inside the client's Lua/cast-feedback path per session is an
-        // undetermined state (user rule: nothing undetermined) and the UI-error
-        // suspect. Commit the page so the resolver reads VALID zero-filled
-        // memory — byte-identical outcome to the shield's zero-GUID
-        // substitution (ObjectPtr(0,0,8)=0 -> walk skips), with NO AV and NO
-        // shield involvement. Same pattern as the 0xD3C00E14 commit above
-        // (proven round 17:26). Never write a GUID here: the shield's zero
-        // behavior is the proven-clean one.
-        {
-            static volatile LONG s_slotB450Committed = 0;
-            if (InterlockedCompareExchange(&s_slotB450Committed, 1, 0) == 0) {
-                LPVOID pageB = (LPVOID)(0xB450EDDCu & ~0xFFFu);
-                VirtualAlloc(pageB, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
-            }
-        }
+        // 2026-08-03 (ROUND 43b — REVERTED the static 0xB450EDDC commit):
+        // VirtualQuery on the LIVE client proved the resolver's faulting GUID
+        // pointer is NOT a fixed BSS static — the address is MEM_FREE and
+        // SESSION-DEPENDENT (13:16 session AV'd at 0xD1AC736B, not 0xB450EDDC),
+        // so a one-time page commit can never cover it. The crash shield in
+        // main.cpp now commits the faulting page DYNAMICALLY on the first AV
+        // per address (guarded to user-space), turning the per-cast AV storm
+        // into one AV per unique address. No static commit needed here.
         // 2026-08-02 (19:25 CORRUPTION FIX — THE FALSE "Can't attack while
         // charmed"): the round-18 [player+0xd0]+0x18 write was a corruption
         // source because it used PlayerPtr(), whose MainThread snapshot stores

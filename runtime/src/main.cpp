@@ -296,6 +296,22 @@ static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
     // The process NEVER dies from this AV. Belt-and-suspenders on top of the
     // 1.10.79 GUIDCAST cast-path fix (register + Spell_C(GUID) = the game's
     // own proven path). Rate-limited log so a recurrence is visible.
+    //
+    // 2026-08-03 (ROUND 43b — DYNAMIC PAGE COMMIT, live 1.10.104-aa): the
+    // faulting GUID pointer is NOT a fixed BSS static — VirtualQuery on the
+    // live client shows MEM_FREE at the faulting address, and the address is
+    // SESSION-DEPENDENT (13:16 session: 0xD1AC736B; 12:59 session:
+    // 0xB450EDDC) — the client's cast-feedback GUID buffer lands in unmapped
+    // address space on this build. A static commit (SafeNativeCast page) can
+    // never cover it. FIX: commit the faulting page HERE, on the first AV per
+    // address, so every LATER dispatch to the same address reads valid
+    // zero-filled memory (ObjectPtr(0,0,8)=0 -> walk skips) with NO AV and NO
+    // shield involvement — the same outcome as the register substitution
+    // below, minus the AV. That turns 800+ recovered AVs per session into one
+    // per unique address. Guards: only plausible user-space addresses
+    // (>= 64KB, < 0x7FFF0000) — never NULL-ish/garbage low pointers; a
+    // VirtualAlloc failure is harmless (the register substitution below still
+    // recovers the current fault).
     if (code == EXCEPTION_ACCESS_VIOLATION &&
         (ip == 0x00512B07 || ip == 0x00512B0A)) {
         static uint64_t s_resolverZeroGuid = 0;   // valid 8-byte zero GUID struct
@@ -304,6 +320,10 @@ static LONG WINAPI CrashHandler(_EXCEPTION_POINTERS* ep) {
         if (n <= 4 || (n & 63) == 1)
             RL::Log::Warn("0x512B07 SHIELD: recovered resolver AV (count=%ld) "
                           "esi=0x%08X", (long)n, (unsigned)ctx->Esi);
+        uintptr_t fa = (uintptr_t)ctx->Esi & ~0xFFFu;
+        if (fa >= 0x10000u && fa < 0x7FFF0000u) {
+            VirtualAlloc((LPVOID)fa, 0x1000u, MEM_COMMIT, PAGE_READWRITE);
+        }
         ctx->Esi = (uintptr_t)&s_resolverZeroGuid;
         ctx->Eax = 0;
         ctx->Ecx = 0;

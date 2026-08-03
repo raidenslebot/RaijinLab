@@ -2048,3 +2048,39 @@ is the proven-clean one).
 3. NO `0x512B07 SHIELD` lines at all (previously 833/session) — the resolver
    reads committed memory.
 4. No UI-error regression: casts still land (al=1), no new refusals.
+
+### LIVE EVIDENCE — 13:16 session (1.10.104-aa injected at 13:15:57)
+- Boot: `sys.boot ... ver=1.10.104-aa`, `Register OK`, `br.online
+  ver=1.10.104-aa`, bridge SEAL, frame tick hook ACTIVE. New runtime LIVE.
+- Auto Attack engage REACHES SafeNativeCast: `SafeNativeCast rc=0x00000000
+  al=0 id=6603 guid=0xF1300005E500781B` — the round-23 6603 disable is GONE
+  (it cast). al=0 = the client refused this particular engage (one phantom;
+  not a lockup — the slot re-attempts). The addon latch is removed so it
+  keeps trying; whether it accepts depends on melee range/state at test time.
+- Normal casts LAND: `id=500357 al=1 nrc=1`, `id=45477 (Icy Touch) al=1`,
+  `id=26573 (Consecration) al=1` — no regression from the engage re-enable.
+- **0x512B07 SHIELD still fires — at a DIFFERENT address.** Live scan:
+  `recovered resolver AV (count=1..4) esi=0xD1AC736B` (the 12:59 session
+  AV'd at 0xB450EDDC). VirtualQuery on the LIVE client proved both addresses
+  are **MEM_FREE** (unmapped, not uncommitted-BSS) and the address is
+  SESSION-DEPENDENT — the resolver's GUID pointer lands in unmapped space on
+  this build. A static commit can never cover it.
+
+### ROUND 43b (1.10.105-aa, built) — DYNAMIC SHIELD PAGE-COMMIT
+The shield in main.cpp now VirtualAlloc-commits the FAULTING page on the
+first 0x512B07/0x512B0A AV per address (guarded: only 0x10000..0x7FFF0000,
+failure harmless). Every later dispatch to that address reads valid zero
+memory (ObjectPtr(0,0,8)=0 → walk skips) with NO AV and NO shield
+involvement — turning ~800 recovered AVs/session into ONE per unique address.
+Removed the useless static 0xB450EDDC commit from SafeNativeCast (the address
+is session-dependent). kVersion 1.10.105-aa, BUILD OK, Validate ok=46 bad=0.
+NOT yet injected — the user's next inject picks it up from build_x86.
+
+### Live watchlist (1.10.105-aa)
+1. VER reads `1.10.105-aa`.
+2. Auto Attack: in-melee engage wires (6603 al=1, `Attack engage id=6603
+   ... ok`) and the character swings; the slot stays at `already_attacking`
+   only while the client's AttackTargetGuid matches.
+3. `0x512B07 SHIELD` appears at most a handful of times (one per unique
+   address) instead of ~833/session.
+4. Casts still land (al=1); no UI-error regression.

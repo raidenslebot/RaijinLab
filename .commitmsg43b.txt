@@ -1,0 +1,27 @@
+fix(runtime 1.10.105-aa): resolver AV is a session-dependent MEM_FREE pointer — commit the faulting page dynamically in the crash shield
+
+Live evidence (1.10.104-aa, injected 13:15:57):
+- boot ver=1.10.104-aa, bridge online; Auto Attack engage NOW reaches
+  SafeNativeCast (id=6603) — the round-23 6603 disable is gone (al=0 = one
+  refused engage, re-attempts, no lockup).
+- Normal casts LAND (500357 / 45477 Icy Touch / 26573 Consecration all
+  al=1 nrc=1) — no regression from the engage re-enable.
+- BUT the 0x512B07 SHIELD still fired, at a DIFFERENT address
+  (esi=0xD1AC736B vs 0xB450EDDC in the 12:59 session).
+
+VirtualQueryEx on the LIVE client proved the truth: 0xD1AC736B, 0xB450EDDC
+and 0xD3C00E14 are all MEM_FREE (unmapped) — NOT uncommitted-BSS — and the
+resolver's GUID pointer address is SESSION-DEPENDENT. A static page commit
+can never cover it. (0xD3C00E14 works only because SafeNativeCast commits
+that exact free address and writes the GUID there each session.)
+
+Fix: the crash shield in main.cpp now VirtualAlloc-commits the FAULTING page
+on the first 0x512B07/0x512B0A AV per address (guarded to 0x10000..
+0x7FFF0000; VirtualAlloc failure is harmless — the register substitution
+still recovers). Every later dispatch to that address reads valid zero-filled
+memory (ObjectPtr(0,0,8)=0 -> walk skips) with NO AV and NO shield
+involvement — ~800 recovered AVs/session becomes ONE per unique address.
+
+Removed the useless static 0xB450EDDC commit from SafeNativeCast (its
+address is session-dependent). kVersion 1.10.105-aa; BUILD OK;
+RaijinLabValidate ok=46 bad=0. Re-inject to pick up from build_x86.

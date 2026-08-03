@@ -949,3 +949,37 @@ page once (idempotent VirtualAlloc) before every reset — the reset is now real
    longer corrupted by our writes.
 5. Aura search casts on found targets; Icy Touch stays inside its real range.
 6. Repo is pushed: `dd04f40` (round 20) on origin/main.
+
+---
+
+## 2026-08-02 (21st round, 19:40) — THE TARGET DROP: the attack engage → 1.10.86-engagefix
+
+19:26 (1.10.85): no more false charm, but a NEW hard failure — the user's
+target is DROPPED the instant the auto-attack engage runs (`tgt=no` right
+after FIRE #1 Auto Attack), then EVERY cast refuses `al=0` (silent) and aura
+search never lands.
+
+Root cause: the attack engage (`AttackTargetFor`) registered the target via
+`NativeSetTarget` (0x524BF0) — `SafeNativeCast(6603, 0, targetGuid)`. That
+setter flips the player's `[0xd0]` cast-record pointer from the static slot
+(0xD3C00DFC) to a HEAP record. Spell_C's synchronous target resolution
+(0x80CD4A reads `[0xd0]+0x18`) then reads the heap record's garbage GUID →
+every subsequent cast refused `al=0`, and the failed engage dropped the
+client's selection. The 18:11 "clean" sessions never exercised the engage (no
+6603 casts in that log) — it was the one unproven path, and it was the bug.
+
+FIX: `AttackTargetFor` now casts EXACTLY like the proven-clean rotation
+direct-GUID path — `SafeNativeCast(6603, targetGuid, 0)`:
+- target GUID → static walk slot (0xD3C00E14) + arg4 GUID holder → the
+  feedback walk resolves it;
+- registerTarget=0 → NO NativeSetTarget, ZERO selection touch, ZERO
+  `[0xd0]` flip, NO unitframe change, NO target drop.
+
+### Live watchlist (1.10.86-engagefix)
+1. VER reads `1.10.86-engagefix`.
+2. Selecting a target KEEPS it — the unitframe no longer drops.
+3. Auto-attack engages the current target via direct-GUID (walk slot), then
+   rotation casts land (no silent al=0).
+4. Aura search casts on found targets; Icy Touch stays inside its real range.
+5. No "Can't attack while charmed", no blocked dialog, no XPerl flood.
+6. Repo is pushed: `657a690` (round 21) on origin/main.

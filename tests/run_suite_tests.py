@@ -554,6 +554,71 @@ ct("satisfied requirement never violates", Contract.evaluate(spec, 5000) ~= "vio
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_search_oracle() -> list:
+    """Suite.search_oracle: a search waypoint must never aim inside a building.
+
+    questing/Suite.lua had no test group. The live symptom is in its own comment:
+    18 consecutive search legs pointed at the inside of the same building,
+    because the belief field is pure probability and knows nothing about
+    geometry.
+
+    The subtle half is that it must stay THREE-VALUED. walkable() answers UNKNOWN
+    for a STRUCTURE cell - the footprint is an axis-aligned box that also covers
+    the courtyard - so the oracle cannot simply trust walkable. It vetoes on a
+    definite structure or a proven no, and returns nil (ignorance) otherwise. An
+    unloaded tile is not a wall, and collapsing that to false would veto most of
+    the world.
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    lua.execute("RaijinLab = {}")
+    src = (ADDON / "modules/questing/Suite.lua").read_text(encoding="utf-8")
+    lua.execute("Suite = (function()" + chr(10) + src + chr(10) + "end)()")
+    lua.execute(
+        r"""
+so_fails = {}
+local function so(name, cond) if not cond then so_fails[#so_fails+1] = name end end
+
+-- No navgrid at all: ignorance, never a veto.
+RaijinLab.NavGrid = nil
+so("no navgrid cannot veto", Suite.search_oracle(10, 10) == nil)
+
+local at_code, walk_verdict
+RaijinLab.NavGrid = {
+  STRUCTURE = 7,
+  at        = function() return at_code end,
+  walkable  = function() return walk_verdict end,
+}
+
+-- THE BUG: a cell inside a building footprint must be refused outright.
+at_code, walk_verdict = 7, true
+so("a structure cell is vetoed", Suite.search_oracle(1, 1) == false)
+
+-- Open ground the grid calls walkable is NOT a veto (and not a promise either).
+at_code, walk_verdict = 1, true
+so("open walkable ground is not vetoed", Suite.search_oracle(2, 2) ~= false)
+
+-- A proven no from walkable still vetoes, structure or not.
+at_code, walk_verdict = 1, false
+so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
+
+-- UNKNOWN MUST NOT COLLAPSE TO A VETO. An unloaded tile is ignorance.
+at_code, walk_verdict = 1, nil
+so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
+
+-- A throwing NG.at must not take the oracle down or invent a refusal.
+RaijinLab.NavGrid.at = function() error("no tile loaded") end
+walk_verdict = true
+so("a throwing at() does not veto", Suite.search_oracle(5, 5) ~= false)
+"""
+    )
+    t = lua.eval("so_fails")
+    n = int(lua.eval("#so_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

@@ -59,6 +59,30 @@ void TraceBridgeCall(const char* name, int arg) {
     }
 }
 
+// Packed recent-call trace for the ADDON_ACTION_FORBIDDEN correlator.
+// "name:+ms|name:+ms|..." newest first. The forbidden event is raised on a
+// LATER frame than the offending call (live-proven), so synchronous per-call
+// capture cannot attribute it - the addon dumps this on the event and matches
+// by elapsed time instead.
+static std::string RecentCallsPacked(int maxN) {
+    if (maxN <= 0 || maxN > 60) maxN = 24;
+    uint32_t s = g_callSeq.load();
+    uint32_t now = (uint32_t)(GetTickCount() & 0xFFFFFFFFu);
+    std::string out;
+    int printed = 0;
+    char item[96];
+    for (int i = 0; i < 128 && printed < maxN; ++i) {
+        uint32_t idx = (s - i) % 128;
+        CallTrace& c = g_lastCalls[idx];
+        if (c.seq == 0 || c.name[0] == 0) continue;
+        snprintf(item, sizeof(item), "%s%s:+%d", printed ? "|" : "",
+                 c.name, (int)(now - c.t_ms));
+        out += item;
+        ++printed;
+    }
+    return out;
+}
+
 } // namespace
 
 // Dump the most recent bridge calls (newest first, capped at 40) to the log.
@@ -71,7 +95,7 @@ void DumpRecentBridgeCalls() {
     for (int i = 0; i < 128 && printed < 40; ++i) {
         uint32_t idx = (s - i) % 128;
         CallTrace& c = g_lastCalls[idx];
-        if (c.seq == 0 || c.name[0] == '\0') continue;
+        if (c.seq == 0 || c.name[0] == 0) continue;
         RL::Log::Warn("forensics: +%dms #%u %s arg=%d",
                       (int)((uint32_t)(GetTickCount() & 0xFFFFFFFFu) - c.t_ms),
                       (unsigned)c.seq, c.name, c.arg);
@@ -1064,6 +1088,13 @@ static int Handle(lua_State* L, const char* name) {
         int bit = (int)RL::Lua::optnumber(L, 2, -1);
         bool down = RL::Lua::optnumber(L, 3, 0) != 0;
         return RL::Lua::PushBool(L, RL::Game::Actions::RequestInput(bit, down));
+    }
+    // Recent bridge-call trace, newest first, with elapsed ms. Used by the
+    // ADDON_ACTION_FORBIDDEN handler to attribute an event the client raises a
+    // frame or more AFTER the offending call.
+    if (!std::strcmp(name, "RecentCalls")) {
+        int n = (int)RL::Lua::optnumber(L, 2, 24);
+        return PushString(L, RecentCallsPacked(n).c_str());
     }
     if (!std::strcmp(name, "RunMacroText")) {
         return RL::Lua::PushBool(L, false);

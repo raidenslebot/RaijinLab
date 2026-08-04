@@ -188,6 +188,21 @@ function RaijinLab:CoreOnEvent(event, ...)
         -- what could not be verified.
         print("|cffff5555RaijinLab BLOCKED|r event=" .. tostring(event)
             .. " fn=" .. tostring(fn) .. " addon=" .. tostring(addon))
+        -- ATTRIBUTE IT. The client raises this event a frame or more AFTER the
+        -- offending call, which is why per-call capture kept reading zero and
+        -- why one coincidental hit was mistaken for proof. The runtime keeps a
+        -- timestamped ring of every bridge call; dump it here and the culprit
+        -- is whatever sits at the smallest elapsed time.
+        if RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
+            local okc, trace = pcall(RaijinLab.RuntimeCall, RaijinLab, "RecentCalls", 16)
+            if okc and type(trace) == "string" and trace ~= "" then
+                print("|cffff5555  recent bridge calls (newest first):|r " .. trace)
+                RaijinLab._last_blocked_trace = trace
+                if RaijinLab.DevLog and RaijinLab.DevLog.log then
+                    RaijinLab.DevLog.log("rot", "BLOCKED trace: %s", trace)
+                end
+            end
+        end
         if blame:find("raijin", 1, true) then
             RaijinLab._last_blocked_action = tostring(fn or "?")
             if RaijinLab.DevLog and RaijinLab.DevLog.log then

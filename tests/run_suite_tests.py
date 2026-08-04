@@ -100,6 +100,27 @@ def _source_guards() -> list:
         fails.append("Suite.ALLOW_BELIEF_SEARCH must ship as false "
                      "(no probability-driven destinations)")
 
+    # A SEARCH WAYPOINT IS A STEP IN A SWEEP, NEVER A DESTINATION.
+    # goto_point's "arrived" leaking to the caller ended the hunt at the FIRST
+    # waypoint. test_search_oracle covers Suite.on_leg_arrived's behaviour, but
+    # a unit test CANNOT see whether search_for still CALLS it - standing inside
+    # search_for needs ppos/QDB/SearchField/perception/DevLog/Navigator mocked.
+    # Mutating the call site to `return kind .. ":arrived"` was MISSED by the
+    # unit tests and is caught here. This is the seam extraction leaves behind:
+    # extraction proves the LOGIC, a source guard proves the WIRING.
+    if "Suite.on_leg_arrived" not in suite:
+        fails.append("Suite.on_leg_arrived must exist - the leg-arrival handler "
+                     "that stops goto_point's 'arrived' ending the search")
+    else:
+        import re as _re
+        m = _re.search('if gst == "arrived" then(.{0,240}?)' + chr(10) + "    end",
+                       suite, _re.S)
+        if not m:
+            fails.append("search_for's 'arrived' branch not found - re-point this guard")
+        elif "on_leg_arrived" not in m.group(1):
+            fails.append("search_for's 'arrived' branch must delegate to "
+                         "Suite.on_leg_arrived, not return an arrival to the caller")
+
     # Click-to-move is forbidden, but the check belongs where it already lives:
     # tools/rl.py's gate_ctm distinguishes USING it from DISABLING it. A naive
     # substring scan here flagged DisableCTM.lua and every runtime file that
@@ -655,6 +676,34 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 -- UNKNOWN MUST NOT COLLAPSE TO A VETO. An unloaded tile is ignorance.
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
+
+-- ARRIVING AT A LEG MUST NOT END THE SEARCH.
+-- goto_point's "arrived" leaking to the caller ended the hunt at the FIRST
+-- waypoint: the bot walked to one ring point and declared the search over.
+-- Arriving means the LEG finished - clear the target so the next tick picks a
+-- new one, and keep reporting "searching".
+-- ASSERT EXISTENCE UNCONDITIONALLY. Wrapping the block in `if
+-- Suite.on_leg_arrived then` alone means deleting the function SKIPS every
+-- assertion silently and the group still passes - which is exactly the
+-- decorative-test shape this whole session has been about removing.
+so("Suite.on_leg_arrived exists", type(Suite.on_leg_arrived) == "function")
+if Suite.on_leg_arrived then
+  local st = { tx = 10, ty = 20, tz = 30, legs = 3 }
+  local field = { mass = function() return 42.7 end }
+  local out = Suite.on_leg_arrived(st, "objective", "Boar", field)
+  so("arriving clears the leg target", st.tx == nil)
+  so("arriving does NOT report arrived", tostring(out):find("arrived") == nil)
+  so("it reports still searching", tostring(out):find("searching") ~= nil)
+  so("it names what is being sought", tostring(out):find("Boar") ~= nil)
+  so("it carries the remaining belief mass", tostring(out):find("mass=43") ~= nil)
+  so("it carries the leg count", tostring(out):find("legs=3") ~= nil)
+
+  -- a field that throws or is missing must not take the search down
+  local st2 = { tx = 1, ty = 2, tz = 3, legs = 0 }
+  local okc = pcall(Suite.on_leg_arrived, st2, "npc", "Guard", nil)
+  so("a missing field does not crash the leg handler", okc == true)
+  so("and the target is still cleared", st2.tx == nil)
+end
 
 -- SEARCH GEOMETRY INVARIANTS. These are constants, but the two documented live
 -- bugs WERE the values, so pinning the RELATIONSHIPS is a real test rather than

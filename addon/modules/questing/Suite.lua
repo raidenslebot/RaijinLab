@@ -1280,6 +1280,28 @@ function Suite.search_oracle(x, y)
     return nil
 end
 
+-- A SEARCH WAYPOINT IS A STEP IN A SWEEP, NEVER A DESTINATION.
+--
+-- Letting goto_point's "arrived" reach the caller ended the search outright at
+-- the first waypoint - the bot walked to one ring point and declared the hunt
+-- over. Arriving means the LEG is done: clear the target so the next tick picks
+-- a new one, and report that we are STILL SEARCHING.
+--
+-- Extracted so the defect is testable without mocking ppos/QDB/SearchField/
+-- perception/DevLog/Navigator, which is what standing in search_for requires.
+-- Same house pattern as Navigator.next_wall_bend and BasicRules.aura_state_has.
+function Suite.on_leg_arrived(st, kind, label, field)
+    st.tx = nil
+    local mass = 0
+    if field and field.mass then
+        local ok, m = pcall(field.mass, field)
+        if ok then mass = tonumber(m) or 0 end
+    end
+    return kind .. ":searching " .. tostring(label)
+        .. " (mass=" .. string.format("%.0f", mass)
+        .. ", legs=" .. tostring(st.legs) .. ")"
+end
+
 function Suite.search_for(kind, label, q)
     local px, py, pz = ppos()
     if not px then return kind .. ":searching (no position)" end
@@ -1506,12 +1528,7 @@ function Suite.search_for(kind, label, q)
     end
     local gst = goto_point(st.tx, st.ty, st.tz, 18, { no_fly = true })
     if gst == "arrived" then
-        -- A search waypoint is a step in a sweep, never a destination. Letting
-        -- goto_point's "arrived" reach the caller ended the search outright.
-        st.tx = nil
-        return kind .. ":searching " .. tostring(label)
-            .. " (mass=" .. string.format("%.0f", field:mass())
-            .. ", legs=" .. tostring(st.legs) .. ")"
+        return Suite.on_leg_arrived(st, kind, label, field)
     end
     if gst == "failed" or gst == "no_path" or gst == "stuck"
         or gst == "fell" or gst == "idle" then

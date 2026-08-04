@@ -2490,7 +2490,25 @@ function Navigator.step()
     -- known-good for an unknown, which is exactly the two-steps-forward-one-back
     -- pattern this project keeps paying for. The arc work needs those two
     -- scenarios understood first, not the assertion loosened.
-    local fwd_on = (err < cone) and (not block or following)
+    -- RUN WHILE YOU TURN, LIKE A PERSON.
+    -- Closed-loop: keep forward on while the heading error is CLOSING, capped
+    -- at 90 degrees. Orbiting IS "error not closing", so that failure switches
+    -- forward off by construction rather than being excluded by a constant.
+    local closing = false
+    do
+        local prev = a.err_prev
+        a.err_prev = err
+        if prev and err < prev - 0.001 then closing = true end
+    end
+    -- NOT WHILE ROUNDING A WALL. The obstacle layer bends the heading every
+    -- frame, so `err` oscillates against a moving target and `closing` flickers
+    -- - forward flips on and off mid-round and the bot reverses (traced:
+    -- y=-84 back to y=-23, then into the wall face). Wall-following already has
+    -- its own steering, tuned for the fixed cone; arcing is for travelling to
+    -- an OPEN goal, which is where the pivot-in-place looked robotic.
+    local arc_ok = closing and err < 1.5707963
+        and (a.wall_side or 0) == 0 and not a.block_void
+    local fwd_on = ((err < cone) or arc_ok) and (not block or following)
     -- Soft force: only walk while turning if still within ~70deg. Never at 90deg+.
     if a.opts and a.opts.force_forward and not block and err < 1.2 then
         fwd_on = true

@@ -624,11 +624,14 @@ def gate_harness(paths=None) -> list[str]:
                        "tests/simulate.py", "tools/dbload.py", "tools/rl.py"}
     errs = []
     # GLOBBED, NOT LISTED. This was a hardcoded five-file tuple, so
-    # tools/_rebuild_main.py - which GENERATES main() of the suite - was never
+    # tools/_rebuild_main.py - which GENERATED main() of the suite - was never
     # checked. Proven 2026-08-03: appending an unterminated string to it left
     # this gate reporting "[PASS] harness clean" and verify exiting 0, which is
-    # how a syntactically broken generator sat unnoticed. A hardcoded list also
-    # means every tool added later is invisible by default; a glob cannot rot.
+    # how a syntactically broken generator sat unnoticed. (That generator has
+    # since been archived - its anchor marker no longer exists in the suite, so
+    # running it DUPLICATED main(); see tools/_archive/README.md.) A hardcoded
+    # list also means every tool added later is invisible by default; a glob
+    # cannot rot.
     _files = sorted(set(list((ROOT / "tests").glob("*.py"))
                         + list((ROOT / "tools").glob("*.py"))))
     for f in _files:

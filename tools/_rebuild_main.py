@@ -1,3 +1,24 @@
+"""DO NOT RUN THIS SCRIPT AS-IS (2026-08-03).
+
+It rewrites the GENERATED TAIL of tests/run_suite_tests.py, and that tail holds
+BOTH _source_guards and the GROUPS dispatch. Both have drifted from the module:
+
+  * 16 dispatch entries name test_* functions that no longer exist (regenerating
+    dispatches 46 groups against 36 real ones and fails dispatch integrity);
+  * 5 real groups are never dispatched and have therefore never run:
+    test_chain, test_runtime_arm, test_ipc, test_object_esp, test_selftest;
+  * the embedded _source_guards resurrects a RETIRED guard,
+    "no C_Timer.After defer in Executor cast path".
+
+That last one is why this warning exists. The guard is stale; the code is right.
+Executor.lua's C_Timer.After(0) is a deliberate fix - running the tick inside
+the game's protected event dispatch CORRUPTED THE LUA VM (live rotation-enable
+crash). Regenerating therefore yields a suite that stays red until someone
+"fixes" the Executor by reintroducing a client crash.
+
+Reconcile this file against tests/run_suite_tests.py before running it.
+"""
+
 """Rebuild the truncated main() of tests/run_suite_tests.py.
 
 WHY THIS EXISTS. A patch script ate everything from partway through main() to

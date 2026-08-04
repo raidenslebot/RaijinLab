@@ -261,7 +261,16 @@ end
 --
 -- Applies ONLY to unit-targeted player casts that the client face-checks.
 -- Ground self-AoE / self / no-unit-target spells never call this path.
-World.CAST_FACE_HALF_ARC = math.pi / 2   -- half-angle radians
+-- THE CLIENT'S ARC IS NARROWER THAN A HEMISPHERE (2026-08-03).
+-- This was pi/2 as a HALF-angle, i.e. a 180-degree total arc: a target
+-- 89 degrees off your shoulder counted as 'facing'. The client's own
+-- cast check is roughly +/-45-50 degrees, so every candidate in that
+-- outer band was approved here and then REFUSED by the client - which is
+-- precisely 'it spams abilities that cannot be cast where I am facing'.
+-- The read was correct all along (runtime facing matches the client to
+-- 0.0000); the ARC we compared it against was twice too permissive.
+-- 0.7854 rad = 45 degrees half-angle = the 90-degree cone WoW uses.
+World.CAST_FACE_HALF_ARC = 0.7854   -- 45 deg half-angle (90 deg cone)
 World.CAST_FACE_FULL_ARC = math.pi       -- full cone (documentation / Trinity M_PI)
 
 -- ROUND 51 (RUNTIME-ONLY RESOURCE GATE): the client's IsUsableSpell is

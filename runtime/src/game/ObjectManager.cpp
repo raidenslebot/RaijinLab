@@ -1613,7 +1613,10 @@ static constexpr uint32_t kDYN_DEAD2 = 0x00000040u;
 //   - ground self-AoE (Consecration), self buffs, no unit target: no face check
 //   - NPC casters often skip face check; we only gate player casts
 // This constant is ONLY the half-angle of the unit-target face test.
-static constexpr float kDefaultCastFaceArc = 1.5707963f; // π/2 rad = 90° half-angle
+static constexpr float kDefaultCastFaceArc = 0.7854f; // 45 deg half-angle
+// Was 1.5707963f - a 180-degree TOTAL arc, so anything in the front
+// hemisphere read as 'facing' and the client then refused it. See the
+// matching note on World.CAST_FACE_HALF_ARC.
 static inline bool LooksLikeFacingEarly(float f) {
     if (f != f) return false;
     if (f < -6.30f || f > 12.60f) return false;

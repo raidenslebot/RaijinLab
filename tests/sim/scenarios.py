@@ -1027,6 +1027,85 @@ end
         return []
 
 
+
+class DoesNotChargeBackwards(Scenario):
+    """Pins the 90-degree cap on arc movement.
+
+    Round 82 let forward stay on while the heading error is CLOSING, so the bot
+    runs while it turns instead of pivoting in place for a dozen frames. The cap
+    that stops it driving forward at a target BEHIND it was reasoning, not
+    evidence: mutating it from 1.5707963 to 3.2 rad still passed all 17
+    scenarios, which means nothing covered the case at all.
+
+    Here the goal is directly BEHIND the spawn heading. A bot that honours the
+    cap turns first and then closes; one that does not drives away from the goal
+    before its heading catches up, and the distance grows before it shrinks.
+    """
+
+    # NOT REGISTERED YET - and the reason matters.
+    #
+    # Written to pin the 90-degree arc cap (mutating it to 3.2 rad passed all 17
+    # scenarios, so nothing covered it). On first run it did not merely fail the
+    # cap assertion: the bot made NO movement at all toward a goal 60 yards
+    # directly BEHIND it - "STALLED from t=10s, position never changed". Turning
+    # alone should close a 180-degree error and then let the cone open.
+    #
+    # That looks like a genuine defect, not a bad fixture (the spawn was moved
+    # off the (0,0,0) ObjectPosition sentinel and it did not change). But an
+    # UNVALIDATED failing scenario in the registry makes the board lie about the
+    # other 17, and a red board that cries wolf is how this project lost 51
+    # rounds to a dead harness. So: kept, documented, unregistered.
+    #
+    # NEXT: run `rl.py why does_not_charge_backwards` after registering it, and
+    # find out whether the bot turns at all at err=180 degrees. If it does not,
+    # that is a real bug in the turn path, not in this test.
+    name = "does_not_charge_backwards"
+    why = ("arc movement kept forward on while the aim was closing; without a "
+           "90-degree cap that also drives forward at a target behind you")
+    seconds = 30.0
+
+    def build(self) -> World:
+        w = World()
+        # NOT at the origin: (0,0,0) is the ObjectPosition failure sentinel,
+        # and spawning there made the bot never move at all (60.0 -> 60.0).
+        w.player.x, w.player.y, w.player.z = 500.0, 500.0, 0.0
+        w.player.facing = 0.0                      # looking down +X
+        # Goal is straight BEHIND: heading error starts at ~180 degrees.
+        w.add_unit(Unit(guid="behind", name="Behind", entry=12, x=440.0, y=500.0))
+        return w
+
+    def setup(self, run: SimRun) -> None:
+        run.boot()
+        run.lua.execute("""
+if RaijinLab.Navigator and RaijinLab.Navigator.pathfind_to then
+  RaijinLab.Navigator.pathfind_to({ x = 440, y = 500, z = 0 }, { arrive_dist = 5 })
+end
+""")
+        self._start_d = 60.0
+        self._worst = 0.0
+
+    def tick(self, run: SimRun) -> None:
+        p = run.w.player
+        d = math.hypot(440.0 - p.x, 500.0 - p.y)
+        if d > self._worst:
+            self._worst = d
+
+    def check(self, run: SimRun, res) -> list[str]:
+        f = []
+        p = run.w.player
+        d = math.hypot(440.0 - p.x, 500.0 - p.y)
+        # It must not have run AWAY from a goal behind it before turning. A
+        # little drift while the turn completes is fine; a charge is not.
+        if self._worst > self._start_d + 4.0:
+            f.append("drove AWAY from a goal behind it: distance grew %.1f -> "
+                     "%.1f before turning (the 90-degree arc cap is not holding)"
+                     % (self._start_d, self._worst))
+        if d >= self._start_d:
+            f.append("made no progress toward a goal behind it (%.1f -> %.1f)"
+                     % (self._start_d, d))
+        return f
+
+
 ALL: list[type[Scenario]] = [
     NavGridDrivesPlanning,
     ReachesUnknownObjective,

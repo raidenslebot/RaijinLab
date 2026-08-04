@@ -101,14 +101,31 @@ def main():
     out.append('')
     out.append('>>> Runtime pick = LAST candidate above (matches LiveScan).')
 
-    # STEP 2: disassemble the most likely InternalGetCooldown (last candidate).
-    if cds:
-        target = cds[-1]
-        out.append('')
-        out.append('#' * 78)
-        out.append('# STEP 2: InternalGetCooldown 0x%08X (find the GCD/category storage)' % target)
-        out.append('#' * 78)
-        out += disasm_range(data, target, 0x400, 'InternalGetCooldown', WATCH)
+    # STEP 2: disassemble 0x809000 — the REAL cooldown reader (called directly
+    # at 0x540F98 inside the handler). The runtime's LiveScan 'last candidate'
+    # heuristic picked 0x5EEB70, which is a copy/container function — WRONG.
+    # 0x809000 takes (spellIndex, spellId?, &dur, &start, &unk) and computes
+    # remaining from the category table at 0xBE7D98 — where the GCD lives.
+    out.append('')
+    out.append('#' * 78)
+    out.append('# STEP 2: InternalGetCooldown 0x00809000 (REAL, from handler call at 0x540F98)')
+    out.append('#   category table 0x00BE7D98 (cap 0x400, count [0x00BE8DA4])')
+    out.append('#   spell table     0x00BE6D88 (count [0x00BE8D98])')
+    out.append('#   cooldown record start/duration/remaining computed here')
+    out.append('#' * 78)
+    COOLDOWN_WATCH = dict(WATCH)
+    COOLDOWN_WATCH[0x00BE7D98] = 'CATEGORY table (GCD here)'
+    COOLDOWN_WATCH[0x00BE6D88] = 'SPELL table'
+    COOLDOWN_WATCH[0x00BE8DA4] = 'category count'
+    COOLDOWN_WATCH[0x00BE8D98] = 'spell count'
+    out += disasm_range(data, 0x00809000, 0x300, 'InternalGetCooldown(0x809000)', COOLDOWN_WATCH)
+
+    # STEP 2b: also 0x540670 (GetCooldownIndex helper that fills the index).
+    out.append('')
+    out.append('#' * 78)
+    out.append('# STEP 2b: GetCooldownIndex helper 0x00540670')
+    out.append('#' * 78)
+    out += disasm_range(data, 0x00540670, 0x120, 'GetCooldownIndex(0x540670)', COOLDOWN_WATCH)
 
     # STEP 3: GetTime internal (for the ms clock the expiry is compared against).
     times = collect_internal_calls(data, HANDLER_GET_TIME)

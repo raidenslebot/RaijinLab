@@ -486,6 +486,50 @@ ex("and hands back the NEW rotation object", b ~= a)
 RaijinLabDB.active_rotation = "Alpha"
 local c, cn = E.get_active_rotation()
 ex("switching back resolves again", cn == "Alpha")
+
+-- THE GCD IS NOT A COOLDOWN (this session's lockup fix, previously undefended).
+-- GetSpellCooldown reports the GLOBAL cooldown as this spell's (start,duration)
+-- whenever the spell has no cooldown of its own. Live 15:49:53 showed
+-- "Renew=gcd_cd:cooldown" for five seconds - and Renew has no cooldown at all.
+-- The GCD is already tracked in _gcd_until, so counting it here is double
+-- gating, and the full-denial sleep then slept on it. That is the lockup.
+local now_t = 1000
+GetTime = function() return now_t end
+local req_by_sid = {}
+RaijinLab.World = { spell_req = function(sid) return req_by_sid[sid] end }
+
+-- a 1.5s GCD reported against a spell the record says has NO cooldown
+GetSpellCooldown = function() return now_t, 1.5 end
+
+req_by_sid[100] = { cd = 0, catcd = 0 }
+ex("gcd is not counted as a cooldown", E.spell_ready_remaining(100, "Renew") == 0)
+
+-- the same client answer for a spell that DOES have a cooldown must be kept
+req_by_sid[101] = { cd = 5000, catcd = 0 }
+ex("a real cooldown is still honoured", E.spell_ready_remaining(101, "Strike") > 0)
+
+-- category cooldown counts as its own cooldown too
+req_by_sid[102] = { cd = 0, catcd = 8000 }
+ex("category cooldown counts as its own", E.spell_ready_remaining(102, "Cat") > 0)
+
+-- NO RECORD = UNKNOWN, and unknown must stay CONSERVATIVE here: without the
+-- record we cannot prove the duration is only the GCD, so it is respected.
+ex("no record falls back to trusting the client", E.spell_ready_remaining(999, "Mystery") > 0)
+
+-- THE RUNTIME COOLDOWN PATH NEEDS THE SAME GATE, and testing it needs the
+-- bridge mocked. Without these two lines runtime_cooldown_remaining returns 0
+-- at its HasRuntime guard, every mutation aimed at that branch lands in dead
+-- code, and the suite reports a false CAUGHT-nothing. A test environment that
+-- omits a dependency tests a DIFFERENT BRANCH, not a simpler one.
+RaijinLab.HasRuntime = function() return true end
+RaijinLab.RuntimeCall = function(_, cmd) if cmd == "SpellCooldownMs" then return 9000 end end
+E._in_event = nil
+
+req_by_sid[200] = { cd = 0, catcd = 0 }
+ex("runtime cooldown is gated too", E.spell_ready_remaining(200, "NoCd") == 0)
+req_by_sid[201] = { cd = 3000, catcd = 0 }
+ex("runtime cooldown is used when real", E.spell_ready_remaining(201, "RealCd") > 0)
+
 """
     )
     t = lua.eval("ex_fails")

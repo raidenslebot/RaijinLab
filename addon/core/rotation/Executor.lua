@@ -199,6 +199,11 @@ local function spell_ready_remaining(sid, name)
     end
     return best
 end
+-- Exported for testing, following the house pattern (Navigator.next_wall_bend,
+-- BasicRules.aura_state_has): the GCD-is-not-a-cooldown fix is the fix for the
+-- live rotation LOCKUP and it shipped with no test, which in this project means
+-- it is the fix most likely to be silently undone next.
+Executor.spell_ready_remaining = spell_ready_remaining
 
 local function refuse_is_not_ready(reason)
     reason = string.lower(tostring(reason or ""))

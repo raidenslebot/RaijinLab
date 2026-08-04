@@ -362,6 +362,78 @@ end
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_gatherer() -> list:
+    """Gathering opt-in and the fishing tool gate.
+
+    Gatherer.lua had no test group. Both documented live bugs live here:
+    fishing DEFAULTING ON (demanding a rod the moment gathering is enabled) and
+    casting Fishing with NO POLE - the "never fall through to a tool-requiring
+    action on an unrelated negative" rule.
+
+    Opt-in is the important half. An unset option must read as NO, never as yes:
+    a gathering suite that turns itself on is the same presence-is-not-capability
+    error as an empty rotation being treated as a usable one.
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    lua.execute("RaijinLab = {}")
+    # Know MUST be loaded. Without it RaijinLab.Know is nil, the `if Kn then`
+    # branches are dead, and every opt-in mutation lands in unreachable code -
+    # the mutation "fishing defaults ON" read as MISSED for exactly that reason
+    # until this line existed. A test environment that omits a dependency does
+    # not test a simpler version of the code; it tests a different branch.
+    kn = (ADDON / "core/Know.lua").read_text(encoding="utf-8")
+    lua.execute("RaijinLab.Know = (function()" + chr(10) + kn + chr(10) + "end)()")
+    src = (ADDON / "modules/gathering/Gatherer.lua").read_text(encoding="utf-8")
+    lua.execute("Gatherer = (function()" + chr(10) + src + chr(10) + "end)()")
+    lua.execute(
+        r"""
+ga_fails = {}
+local function ga(name, cond) if not cond then ga_fails[#ga_fails+1] = name end end
+
+-- OPT-IN: nothing configured at all. Every gathering profession must read as
+-- NOT enabled. Defaulting to true is the mutation "fishing defaults ON".
+RaijinLabDB = {}
+if Gatherer.profession_enabled then
+  local ok, v = pcall(Gatherer.profession_enabled, "fishing")
+  ga("unset fishing opt-in is not enabled", (not ok) or v ~= true)
+  -- Only FISHING is opt-in (Gatherer.OPT_IN = { fishing = true }); herbalism
+  -- defaults ON by design. Asserting otherwise would pin a behaviour the code
+  -- never had - my first draft did exactly that and this group caught it.
+  ga("fishing is the opt-in profession", Gatherer.OPT_IN and Gatherer.OPT_IN.fishing == true)
+  ga("herbalism is not opt-in gated", not (Gatherer.OPT_IN and Gatherer.OPT_IN.herbalism))
+end
+
+-- Explicitly OFF must stay off.
+RaijinLabDB = { gather = { professions = { fishing = false } } }
+if Gatherer.profession_enabled then
+  local ok, v = pcall(Gatherer.profession_enabled, "fishing")
+  ga("explicit false stays disabled", (not ok) or v ~= true)
+end
+
+-- TOOL GATE: with no pole, fishing must refuse and SAY WHY. Removing this is
+-- the mutation "casts Fishing with no pole equipped".
+RaijinLabDB = { gather = { professions = { fishing = true } } }
+if Gatherer.tick_fishing then
+  local ok, v, why = pcall(Gatherer.tick_fishing)
+  ga("no pole refuses fishing", (not ok) or v ~= true)
+  if ok and why ~= nil then
+    ga("refusal names the missing tool", tostring(why):find("pole") ~= nil)
+  end
+end
+if Gatherer.has_fishing_pole then
+  local ok, v = pcall(Gatherer.has_fishing_pole)
+  ga("no pole is not reported as equipped", (not ok) or v ~= true)
+end
+"""
+    )
+    t = lua.eval("ga_fails")
+    n = int(lua.eval("#ga_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

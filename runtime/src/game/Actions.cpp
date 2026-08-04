@@ -2201,6 +2201,23 @@ bool SpellStopCasting() {
 
 bool ExecSecure(const char* luaCode) {
     SoftHardwareUnlock();
+    // BRIDGE-ORIGIN ExecSecure IS STRUCTURALLY REFUSED (2026-08-03).
+    //
+    // This is the last unguarded FrameScript_Execute in the runtime, and it is
+    // THE taint primitive: driving protected Lua from a bridge dispatch pops
+    // "blocked from an action only available to the Blizzard UI" and then poisons
+    // every addon on that execution path (the GatherMate2/XPerl flood). The addon
+    // stopped calling it (round 62) and a build gate forbids reintroducing the
+    // call - but the runtime command itself was still live, so a single stray
+    // dispatch could taint again. Guard it exactly like SpellStopCasting: when a
+    // Lua state is on the stack (i.e. we are inside a bridge dispatch), refuse.
+    // Only a genuine non-bridge main-thread path (g_currentL == nullptr) may run
+    // it. Defense in depth: the addon gate and this guard now both have to fail
+    // for a taint to occur.
+    if (g_currentL) {
+        RL::Log::Warn("ExecSecure refused on the bridge (taint guard): %.48s", luaCode);
+        return false;
+    }
     return SafeFSExec(luaCode) > 0;
 }
 

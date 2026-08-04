@@ -28,7 +28,7 @@ conditions → wire.
 | 2 | Ability intent vs target relationship | **done** | `check_intent` via `World.spell_target_class` (implicit-target ids) |
 | 3 | Direct-cast vs existing-target | **done** | `Engine.slot_target_policy` (`require` / `optional` / `forbid` / `corpse`) |
 | 4 | Heal/buff automatic friendly allowance | **done** | `check_target_relationship` — only an *enemy-targeted* spell refuses a friendly selection |
-| 5 | Dead / corpse / special unit type | **partial - blocked on measurement** | `target_is_dead` and corpse policy done. passenger / minipet / vehicle need `UNIT_FIELD_FLAGS_2`; `Flags2 = 0xF0` was derived by ARITHMETIC from the verified `Flags = 0xEC` and has never been read live. Gating on an unverified offset is exactly what left #20 silently dead for months, so it stays unwired |
+| 5 | Dead / corpse / special unit type | **partial - two unknowns, not one** | `target_is_dead` and corpse policy done. passenger / minipet / vehicle need `UNIT_FIELD_FLAGS_2`. **The OFFSET is nearly settled by bracketing**: `Flags = 0xEC` is index 59 and verified in use, `0xF4` is index 61 and reads non-zero live, so index 60 (`0xF0`) sits between two confirmed fields with no room for a shift - the same argument that pinned `BYTES_0` at `0x5C` immediately before `HEALTH`. **But the BIT MEANINGS are still unknown**, and a gate needs both. Guessing bit meanings is exactly what left #20 dead, so it stays unwired until one live read confirms the word and a vehicle/pet observation names a bit |
 | 6 | Unit flags interaction | **done** | `check_target_flags` — NON_ATTACKABLE / IMMUNE_TO_PC / NOT_SELECTABLE |
 
 ## Ability intent / effect type

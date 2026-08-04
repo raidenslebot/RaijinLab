@@ -2885,6 +2885,44 @@ function Executor.attempt_action(action, ctx)
             -- SpellMeleeInfo decodes the real Spell.dbc range entry (max=%.2f).
             -- Prefer it; fall back to GetSpellInfo; only fail-closed when BOTH
             -- are unavailable (then the client is the final authority).
+            -- DIRECT-TARGET CASTS NEED A RANGE GATE TOO (2026-08-03).
+            --
+            -- The block below requires `search`, so it only ever ran for
+            -- aura_search slots. Plain casts at the client target (search=n:
+            -- Plague Strike, Blood Strike) had NO range validation anywhere:
+            -- BasicRules.check_range reads ctx.spell_in_range, and that came
+            -- from IsSpellInRange, which round 51 removed as protected without
+            -- replacing it. So every direct cast was wired blind and the client
+            -- answered "You are too far away!".
+            --
+            -- Use the same authorities the search path uses: the runtime's
+            -- measured distance to the GUID and the spell's decoded max range.
+            -- Only a CONFIDENT overshoot skips - unknown distance or unknown
+            -- range still wires and lets the client referee, so this can never
+            -- become a silent "never casts".
+            if not last_why and not search and cg and needs_enemy
+                and not is_ground_self_aoe(sid, name)
+                and not (policy == "optional" or policy == "forbid") then
+                local _, cmaxR = spell_range_info(cast_sid)
+                local _, rt_maxR = runtime_spell_melee(cast_sid)
+                if rt_maxR and rt_maxR > 0 then cmaxR = rt_maxR end
+                -- Measured centre distance, runtime-only (ObjectPosition +
+                -- GetDistanceBetweenPositions are both native reads).
+                local d = nil
+                if RaijinLab and RaijinLab.ObjectPosition then
+                    local okp, px, py, pz = pcall(RaijinLab.ObjectPosition, RaijinLab, "player")
+                    local okt, tx, ty, tz = pcall(RaijinLab.ObjectPosition, RaijinLab, cg)
+                    if okp and okt and px and tx then
+                        local dx, dy, dz = tx - px, ty - py, (tz or 0) - (pz or 0)
+                        d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    end
+                end
+                if cmaxR and cmaxR > 0 and type(d) == "number" and d > 0 and d < 900 then
+                    if d > cmaxR then
+                        last_why = "oor"
+                    end
+                end
+            end
             if not last_why and search and cand and not is_ground_self_aoe(sid, name)
                 and not (policy == "optional" or policy == "forbid") then
                 local cdist = tonumber(cand.dist or cand.dist_center or cand.dist_aoe)

@@ -2480,7 +2480,34 @@ std::string OmSnapshotPacked() {
     // smashing the VM's stack (live rotation-enable crash family). The runtime
     // is a self-modifying stealth DLL — every byte of stack we burn is a byte
     // of frame budget the game's Lua VM does not have. Object cap stays 512.
-    size_t n = g_all.size();
+    // PACK WHAT THE SOFT PATH FOUND, NOT ONLY g_all (2026-08-03).
+    //
+    // g_all is filled by Refresh(), and Refresh MUST NOT run inside the Lua VM
+    // call chain (the permanent 0x512B07 rule documented in ObjectManager.h) -
+    // which is exactly the context this function is called from, since the Lua
+    // object manager reaches it through the bridge. So g_all was reliably
+    // EMPTY here and OmSnapshot returned "0" while GetObjectCount reported 198
+    // objects and NearbyHostiles returned seven hostiles with full geometry.
+    // The Lua manager then parsed an empty snapshot and classified nothing:
+    // "bridge=34 npcs=0 ... manager classified NOTHING". That is the questing
+    // blindness - the classifier was correct, it was fed an empty world.
+    //
+    // SoftRefreshListOnlyForHostiles (called above when frozen) populates
+    // g_byType, which is the store NearbyHostiles and AuraSearch already read
+    // successfully from this very context. So: prefer g_all when a genuine
+    // native-context Refresh has filled it, and otherwise flatten g_byType -
+    // the same data, from the path that is safe to use here.
+    std::vector<const Object*> src;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        if (!g_all.empty()) {
+            for (const auto& o : g_all) src.push_back(&o);
+        } else {
+            for (int t = 0; t < 8; ++t)
+                for (const auto& o : g_byType[t]) src.push_back(&o);
+        }
+    }
+    size_t n = src.size();
     if (n > 512) n = 512;
     std::string out;
     out.reserve(4096 + n * 128);
@@ -2488,7 +2515,7 @@ std::string OmSnapshotPacked() {
     {
         std::lock_guard<std::mutex> lock(g_mu);
         for (size_t i = 0; i < n; ++i) {
-            const Object& o = g_all[i];
+            const Object& o = *src[i];
             int mask = 1; // Object
             switch (o.type) {
                 case ObjectType::Item:          mask |= 2;              break;

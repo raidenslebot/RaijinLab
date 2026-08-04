@@ -3079,6 +3079,43 @@ function BuyMerchantItem(i,n) end
 local msg = Vendor.do_business()
 vc("do_business reports what it did", type(msg) == "string" and msg:find("vendor:") ~= nil)
 vc("do_business sold the junk", #used >= 1)
+
+-- KNOW-GATED VENDOR PLANNING. Unreachable until Know was wired in (0ec2d2b).
+--
+-- "I do not know where a vendor is" and "there is no vendor" are different
+-- answers with opposite consequences: unknown should keep looking / defer,
+-- a definite no should stop the trip. Collapsing unknown into no makes the
+-- suite give up permanently the first time POI or position is unavailable -
+-- and position is unavailable during every loading screen.
+local Kn = RaijinLab and RaijinLab.Know
+local function st(k) return (type(k) == "table" and k.state) or tostring(k) end
+if Kn and Vendor and Vendor.has_plan_k then
+  local saved_at, saved_poi, saved_pos = Vendor.at_merchant, RaijinLab.POI, RaijinLab.ObjectPosition
+  Vendor.at_merchant = function() return false end
+
+  RaijinLab.POI = nil
+  vc("no POI service reads unknown, not no", st(Vendor.has_plan_k("vendor")) == "unknown")
+
+  RaijinLab.POI = { nearest = function() return nil end }
+  RaijinLab.ObjectPosition = function() return nil end
+  vc("no player position reads unknown, not no", st(Vendor.has_plan_k("vendor")) == "unknown")
+
+  -- with everything available, a genuine absence IS a definite no
+  RaijinLab.ObjectPosition = function() return 1, 2, 3 end
+  vc("no vendor known is a definite no", st(Vendor.has_plan_k("vendor")) == "no")
+
+  -- and a known vendor is a yes
+  RaijinLab.POI = { nearest = function() return { x = 1, y = 2 } end }
+  vc("a known vendor reads yes", st(Vendor.has_plan_k("vendor")) == "yes")
+
+  -- standing at a merchant short-circuits everything
+  Vendor.at_merchant = function() return true end
+  RaijinLab.POI = nil
+  vc("standing at a merchant is yes regardless", st(Vendor.has_plan_k("vendor")) == "yes")
+
+  Vendor.at_merchant, RaijinLab.POI, RaijinLab.ObjectPosition = saved_at, saved_poi, saved_pos
+end
+
 '''
 
 def test_vendor() -> list:

@@ -154,6 +154,33 @@ function QuestOM.giver_status(obj)
     end
     QuestOM._status_asked = QuestOM._status_asked + 1
     st = tonumber(st)
+    -- UNIT_NPC_FLAGS IS THE RELIABLE GIVER SIGNAL ON THIS BUILD (2026-08-03).
+    --
+    -- Measured live over 147 objects: ObjectNpcFlags found TEN quest givers
+    -- (QUESTGIVER bit 0x2 set, e.g. nf=14) while ObjectQuestGiverStatus
+    -- returned 0 for every single one - which is exactly the quester's
+    -- "scan=33/status0/db0/spark0" and why it found no giver to walk to.
+    -- CGObject+0x90 either is not the status field on this client or is only
+    -- populated after the server answers a status query we never trigger.
+    --
+    -- The flag is a DESCRIPTOR field that is always present, so it answers
+    -- "this NPC gives quests" with certainty. It cannot distinguish available
+    -- (!) from turn-in (?) - the status byte's job - so the status value still
+    -- wins whenever it is non-zero; the flag only rescues the case where the
+    -- status is silent, instead of reporting "no giver" and standing still.
+    if (not st or st == 0) and RaijinLab.ObjectNpcFlags then
+        local okn, nf = pcall(RaijinLab.ObjectNpcFlags, RaijinLab, g)
+        nf = okn and tonumber(nf) or nil
+        if nf and math.floor(nf / 2) % 2 == 1 then
+            QuestOM._giver_by_flag = (QuestOM._giver_by_flag or 0) + 1
+            -- AVAILABLE_UNKNOWN: a giver we know exists but whose ! / ? state
+            -- the client has not told us. Callers treat it as "worth
+            -- approaching", which is the honest action.
+            local FLAG_ST = QuestOM.STATUS_FLAG_ONLY or 7
+            QuestOM._st_cache[g] = { st = FLAG_ST, t = t }
+            return FLAG_ST
+        end
+    end
     if st and st ~= 0 then
         QuestOM._status_nonzero = QuestOM._status_nonzero + 1
         QuestOM._st_hist[st] = (QuestOM._st_hist[st] or 0) + 1

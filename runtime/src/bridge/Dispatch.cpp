@@ -1134,9 +1134,73 @@ static int Handle(lua_State* L, const char* name) {
         !std::strcmp(name, "UnitMovementFlags") || !std::strcmp(name, "UnitCreatureTypeId") ||
         !std::strcmp(name, "UnitCreatureFamilyId") || !std::strcmp(name, "UnitCreatureField") ||
         !std::strcmp(name, "UnitCastingTarget") || !std::strcmp(name, "UnitTransport") ||
-        !std::strcmp(name, "GetNoClipModes") ||
-        !std::strcmp(name, "ReadMemory") || !std::strcmp(name, "GetMemoryOffset"))
+        !std::strcmp(name, "GetNoClipModes"))
         return PushNil(L);
+    // RAW GUARDED MEMORY READ (2026-08-03). This was a nil-stub, which is why
+    // every address claim in this project - the facing field, the aura table,
+    // the cooldown tables - had to be argued from disassembly instead of
+    // MEASURED. Six Ascension-specific offsets have already been found wrong
+    // this session; an unverifiable address is a liability.
+    //
+    // ReadMemory(addr, kind) where kind: "u32" (default) | "i32" | "u16" |
+    // "u8" | "f32" | "ptr". Every read goes through Mem::Read, which is
+    // VirtualQuery-guarded, so an unmapped or freed page returns nil rather
+    // than killing the client. READ-ONLY BY DESIGN - there is deliberately no
+    // WriteMemory counterpart; verification never needs one, and a stray write
+    // through a wrong address is unrecoverable.
+    // Named client globals, so a probe does not have to hardcode a VA that may
+    // differ per build. Returns nil for an unknown name - never a guess.
+    if (!std::strcmp(name, "GetMemoryOffset")) {
+        const char* k = RL::Lua::checkstring(L, 2);
+        if (!k || !k[0]) return PushNil(L);
+        if (!_stricmp(k, "SpellTable"))    return PushNumber(L, (double)0x00AD49D0);
+        if (!_stricmp(k, "SpellCompress")) return PushNumber(L, (double)0x00C5DEA0);
+        if (!_stricmp(k, "RangeStoreMin")) return PushNumber(L, (double)0x00AD4998);
+        if (!_stricmp(k, "RangeStoreMax")) return PushNumber(L, (double)0x00AD4994);
+        if (!_stricmp(k, "RangeStoreBase"))return PushNumber(L, (double)0x00AD49A8);
+        if (!_stricmp(k, "BlockedCastCounter")) return PushNumber(L, (double)0x00D3F604);
+        if (!_stricmp(k, "LuaState"))      return PushNumber(L, (double)0x00D3F78C);
+        if (!_stricmp(k, "WorldFrame"))    return PushNumber(L, (double)0x00B7436C);
+        return PushNil(L);
+    }
+    if (!std::strcmp(name, "ReadMemory")) {
+        double da = RL::Lua::optnumber(L, 2, 0.0);
+        if (da < 65536.0) return PushNil(L);          // reject the NULL page
+        uintptr_t addr = (uintptr_t)da;
+        if (!RL::Game::Mem::Readable(addr)) return PushNil(L);
+        const char* kind = RL::Lua::checkstring(L, 3);
+        if (!kind || !kind[0]) kind = "u32";
+        if (!std::strcmp(kind, "f32")) {
+            float v = RL::Game::Mem::Read<float>(addr);
+            if (v != v) return PushNil(L);
+            return PushNumber(L, (double)v);
+        }
+        if (!std::strcmp(kind, "u8"))
+            return PushNumber(L, (double)RL::Game::Mem::Read<uint8_t>(addr));
+        if (!std::strcmp(kind, "u16"))
+            return PushNumber(L, (double)RL::Game::Mem::Read<uint16_t>(addr));
+        if (!std::strcmp(kind, "i32"))
+            return PushNumber(L, (double)RL::Game::Mem::Read<int32_t>(addr));
+        return PushNumber(L, (double)RL::Game::Mem::Read<uint32_t>(addr));
+    }
+    // Read a run of dwords: "v0,v1,..." - one call instead of N round trips
+    // when walking a table or bracketing an unknown struct.
+    if (!std::strcmp(name, "ReadMemoryRange")) {
+        double da = RL::Lua::optnumber(L, 2, 0.0);
+        int count = (int)RL::Lua::optnumber(L, 3, 8);
+        if (da < 65536.0 || count < 1 || count > 128) return PushNil(L);
+        uintptr_t addr = (uintptr_t)da;
+        std::string out;
+        char item[24];
+        for (int i = 0; i < count; ++i) {
+            uintptr_t a = addr + (uintptr_t)i * 4;
+            if (!RL::Game::Mem::Readable(a)) break;
+            snprintf(item, sizeof(item), "%s%u", i ? "," : "",
+                     (unsigned)RL::Game::Mem::Read<uint32_t>(a));
+            out += item;
+        }
+        return PushString(L, out.c_str());
+    }
     // GetAuraCount was a nil-stub in that list for a whole era ("runtime stubs
     // owed"): named, dispatchable, always nil. Now real - the direct walk's
     // count, or nil when the layout does not validate (unknown stays unknown).

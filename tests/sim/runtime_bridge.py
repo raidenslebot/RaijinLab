@@ -212,6 +212,14 @@ class RuntimeBridge:
                 5: ("TurnRightStart", "TurnRightStop"),
                 6: ("PitchUpStart", "PitchUpStop"),
                 7: ("PitchDownStart", "PitchDownStop"),
+                # Vertical swim/fly. Added to the carrier in round 79;
+                # omitting them here made "ascend was never held" - the
+                # addon staged bit 8 and the mock silently dropped it, so
+                # the bot drowned in breath_panic_surfaces with the addon
+                # perfectly correct. A harness must model EVERY bit of the
+                # transport it is testing, not most of them.
+                8: ("AscendStart", "AscendStop"),
+                9: ("DescendStart", "DescendStop"),
             }
             pair = names.get(bit)
             if not pair:

@@ -2478,14 +2478,19 @@ function Navigator.step()
     --
     -- The hard cap stays: past ~90 degrees the target is genuinely behind us
     -- and turning first is what a person does too.
-    local closing = false
-    do
-        local prev = a.err_prev
-        a.err_prev = err
-        if prev and err < prev - 0.001 then closing = true end
-    end
-    local arc_ok = closing and err < 1.5707963
-    local fwd_on = ((err < cone) or arc_ok) and (not block or following)
+    -- REVERTED PENDING PROPER WORK (2026-08-03). The closed-loop version of
+    -- this - keep running while the heading error is CLOSING, capped at 90
+    -- degrees - is the right idea for "move like a person instead of pivoting
+    -- in place for twelve frames". But it failed plans_around_walls_at_range
+    -- and breath_panic_surfaces: running while turning changes wall-rounding
+    -- and swim-surfacing behaviour, and I had not reasoned about either.
+    --
+    -- The scenarios are correct to reject it. Shipping a behaviour change that
+    -- breaks two proven scenarios to satisfy a feel complaint would trade a
+    -- known-good for an unknown, which is exactly the two-steps-forward-one-back
+    -- pattern this project keeps paying for. The arc work needs those two
+    -- scenarios understood first, not the assertion loosened.
+    local fwd_on = (err < cone) and (not block or following)
     -- Soft force: only walk while turning if still within ~70deg. Never at 90deg+.
     if a.opts and a.opts.force_forward and not block and err < 1.2 then
         fwd_on = true

@@ -2400,7 +2400,24 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
             {
                 int st = 0;
                 int f = 0;
-                direct = AuraWalk(o.ptr, [&](int sid, int stacks, int, int, int) {
+                // RESOLVE THE POINTER THE WAY THE WORKING PATH DOES.
+                //
+                // This walked o.ptr straight from the snapshot, which goes
+                // stale, so AuraWalk returned -1 (unknown) and every candidate
+                // fell back to the combat-log note store. Measured live: 16
+                // hostiles present, "missing Frost Fever" returned 0 and "has
+                // Frost Fever" returned 8 - while a probed mob provably had
+                // ZERO auras (UnitAuras -> "0|src=d"). The note store was
+                // answering for all of them, and its staleness is precisely the
+                // "aura search is insanely inconsistent" report.
+                //
+                // UnitAurasPacked resolves SnapPtr then SafeObjectPtr and works
+                // from this same context; use it here too and fall back to
+                // o.ptr only if both miss.
+                uintptr_t ap = SnapPtr(o.guid);
+                if (!ap) ap = SafeObjectPtr(o.guid);
+                if (!ap) ap = o.ptr;
+                direct = AuraWalk(ap, [&](int sid, int stacks, int, int, int) {
                     if (sid == spellId) { f = 1; st = stacks; return false; }
                     return true;
                 });

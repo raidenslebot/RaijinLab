@@ -2692,6 +2692,42 @@ Mount.set_enabled(true)
 mounts = {}
 mc("no mounts known -> no attempt", (function()
      local ok, why = Mount.should_mount(500); return ok == false and why == "no_mounts" end)())
+
+-- KNOW.PROVEN: one successful mount permanently outranks "no skill".
+-- This branch was UNREACHABLE until Know was wired into the group (0ec2d2b),
+-- and reachable-but-unasserted after that - a mutation replacing Kn.proven with
+-- an unconditional yes went undetected. These are the assertions that close it.
+--
+-- The semantic matters: riding skill is read from the spellbook, which lies on
+-- this server for custom mounts. A single OBSERVED mount is harder evidence
+-- than any skill lookup, so it must win - but only in the positive direction.
+local Kn = RaijinLab and RaijinLab.Know
+local function st(k) return (type(k) == "table" and k.state) or tostring(k) end
+if Kn and Mount.can_ride_k then
+  local skill_answer
+  Mount.has_riding_skill_k = function() return skill_answer end
+
+  Mount._proven = false
+  skill_answer = Kn.no("no_skill")
+  mc("no skill and never mounted reads no", st(Mount.can_ride_k()) == "no")
+
+  Mount._proven = true
+  mc("one mount outranks no skill", st(Mount.can_ride_k()) == "yes")
+
+  Mount._proven = false
+  skill_answer = Kn.yes(true, "has_skill")
+  mc("skill alone is enough", st(Mount.can_ride_k()) == "yes")
+
+  Mount._proven = true
+  skill_answer = nil
+  mc("proven survives an unknown skill", st(Mount.can_ride_k()) == "yes")
+
+  -- and it must NOT invent a no: unproven + unknown stays unknown
+  Mount._proven = false
+  skill_answer = nil
+  mc("unproven and unknown stays unknown", st(Mount.can_ride_k()) ~= "no")
+end
+
 '''
 
 def test_mount() -> list:

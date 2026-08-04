@@ -656,6 +656,30 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
 
+-- SEARCH GEOMETRY INVARIANTS. These are constants, but the two documented live
+-- bugs WERE the values, so pinning the RELATIONSHIPS is a real test rather than
+-- a restatement:
+--
+--   * SEARCH_SIGHT at 400 marked ground as "checked" that was never looked at -
+--     the object manager only surfaces objectives within objective_scan_dist
+--     (120yd), so the bot drained the cell holding its target without ever
+--     getting close enough to see it, then orbited its own field at ~500yd.
+--   * SEARCH_MAX_LEG at 120 was SMALLER THAN THE FIELD ITSELF, so every leg
+--     past 120yd was refused as absurd and the search could not cross its own
+--     search area.
+--
+-- Sight bounds DETECTION, max-leg bounds TRAVEL. Conflating them breaks the
+-- search in opposite directions, which is why both directions are asserted.
+local scan = 120  -- cfg().objective_scan_dist
+so("sight is at least the scan distance", Suite.SEARCH_SIGHT >= scan)
+so("sight does not over-claim what was seen", Suite.SEARCH_SIGHT <= scan * 1.5)
+so("travel bound exceeds the field radius", Suite.SEARCH_MAX_LEG > Suite.SEARCH_MAX)
+so("travel bound exceeds sight", Suite.SEARCH_MAX_LEG > Suite.SEARCH_SIGHT)
+so("a cell is observable in one look", Suite.SEARCH_CELL < Suite.SEARCH_SIGHT)
+so("rings start inside the give-up radius", Suite.SEARCH_START < Suite.SEARCH_MAX)
+so("rings actually grow", Suite.SEARCH_STEP > 0)
+so("more than one spoke", Suite.SEARCH_SPOKES > 1)
+
 -- SEARCH FIELD CACHING. The belief field is the bot's memory of ground it has
 -- already swept. search_field MUST return the SAME field for the same key: build
 -- a new one per call and every observation is thrown away each tick, so the

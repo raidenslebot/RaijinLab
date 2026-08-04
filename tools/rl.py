@@ -619,10 +619,20 @@ def gate_harness(paths=None) -> list[str]:
     and is counted as passing.
     """
     import ast as _ast
+    # Files where a defined-but-never-called function means a DISABLED CHECK.
+    _DEADCODE_SCOPE = {"tests/run_suite_tests.py", "tests/discriminate.py",
+                       "tests/simulate.py", "tools/dbload.py", "tools/rl.py"}
     errs = []
-    for rel in ("tests/run_suite_tests.py", "tests/discriminate.py",
-                "tests/simulate.py", "tools/dbload.py", "tools/rl.py"):
-        f = ROOT / rel
+    # GLOBBED, NOT LISTED. This was a hardcoded five-file tuple, so
+    # tools/_rebuild_main.py - which GENERATES main() of the suite - was never
+    # checked. Proven 2026-08-03: appending an unterminated string to it left
+    # this gate reporting "[PASS] harness clean" and verify exiting 0, which is
+    # how a syntactically broken generator sat unnoticed. A hardcoded list also
+    # means every tool added later is invisible by default; a glob cannot rot.
+    _files = sorted(set(list((ROOT / "tests").glob("*.py"))
+                        + list((ROOT / "tools").glob("*.py"))))
+    for f in _files:
+        rel = f.relative_to(ROOT).as_posix()
         if not f.exists():
             continue
         src = f.read_text(encoding="utf-8")
@@ -650,6 +660,14 @@ def gate_harness(paths=None) -> list[str]:
             # module and asking which groups it actually resolves.
             derived = ("_discover_groups" in literals or "test_" in literals
                        or node.name.startswith("test_"))
+            # DEAD-CODE CHECK IS SCOPED; THE PARSE CHECK IS NOT.
+            # "defined but never called" means a GUARD THAT NEVER RUNS in the
+            # harness files (that is how _check_no_probability hid). In a one-off
+            # tool script an unused helper is untidy, not a defect - failing on it
+            # would push someone to narrow the glob again and re-open the hole
+            # that let a syntactically broken generator pass.
+            if rel not in _DEADCODE_SCOPE:
+                continue
             if uses == 0 and node.name not in literals and not derived:
                 errs.append(f"{rel}:{node.lineno} {node.name}() is defined but "
                             f"NEVER CALLED - a check that cannot run")

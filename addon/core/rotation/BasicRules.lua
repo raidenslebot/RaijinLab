@@ -430,6 +430,63 @@ local function check_intent(ctx, sid, slot)
     return true
 end
 
+-- Vertical range (checklist item 15) and ground-location validity (item 14).
+--
+-- Both concern geometry the horizontal range gate cannot see. A target 40
+-- yards up a cliff is "in range" on the flat but unreachable by a 30-yard
+-- spell, and a ground AoE dropped where there is no floor is refused outright.
+-- Neither had ANY implementation - they were the two rows the audit listed as
+-- missing, and they are the reason a ground cast could still land somewhere
+-- the client rejects.
+--
+-- Positive evidence only: no z, no verdict. The horizontal gate already ran,
+-- so this only ADDS refusals it could not have caught.
+local function check_vertical(ctx, sid, slot, name)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local maxR = tonumber(req.rmax) or 0
+    if maxR <= 0 or maxR >= 500 then return true end   -- unbounded / unknown
+    local dz = ctx and ctx.target_dz
+    if dz == nil then
+        local guid = cast_guid(ctx)
+        if not guid or not (RaijinLab and RaijinLab.ObjectPosition) then return true end
+        local okp, _, _, pz = pcall(RaijinLab.ObjectPosition, RaijinLab, "player")
+        local okt, _, _, tz = pcall(RaijinLab.ObjectPosition, RaijinLab, guid)
+        if not (okp and okt and pz and tz) then return true end
+        dz = math.abs(tz - pz)
+    end
+    if type(dz) ~= "number" then return true end
+    -- The client measures true 3D distance; a vertical gap alone can exceed
+    -- the spell's reach while the horizontal projection looks fine.
+    if dz > maxR then return false, "too_high" end
+    return true
+end
+
+-- Ground-targeted casts need a floor under the chosen point.
+local function check_ground_location(ctx, sid, slot, name)
+    local W = RaijinLab and RaijinLab.World
+    if not (W and W.spell_is_self_area and W.spell_is_self_area(sid) == true) then
+        return true                                    -- not ground-targeted
+    end
+    -- Self-centred AoE lands on the caster; only a DEST_LOCATION spell picks a
+    -- point that can be invalid.
+    local req = W.spell_req and W.spell_req(sid)
+    local targets = req and tonumber(req.targets) or 0
+    if math.floor(targets / 0x40) % 2 ~= 1 then return true end
+    local gz = ctx and ctx.ground_z_at_cast
+    if gz == nil then
+        local GC = RaijinLab and RaijinLab.GroundCache
+        if not (GC and GC.ground and RaijinLab.ObjectPosition) then return true end
+        local okp, px, py, pz = pcall(RaijinLab.ObjectPosition, RaijinLab, "player")
+        if not (okp and px) then return true end
+        gz = GC.ground(px, py, pz)
+    end
+    if gz == nil then return true end                  -- unknown -> pass
+    if gz == false then return false, "no_ground" end
+    return true
+end
+
 local function check_target_relationship(ctx, sid, slot, name)
     local policy = policy_of(slot, ctx)
     if policy == "optional" or policy == "forbid" or policy == "corpse" then
@@ -620,6 +677,12 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 
     ok, why = check_range(ctx, sid, slot, name)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="range", why=why}; return false, why end
+
+    ok, why = check_vertical(ctx, sid, slot, name)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="vertical", why=why}; return false, why end
+
+    ok, why = check_ground_location(ctx, sid, slot, name)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="ground", why=why}; return false, why end
 
     -- Facing / LoS after relationship so we do not TraceLine/face-check no-target.
     -- aura_search slots: face/LoS are re-checked against the discovered GUID later.

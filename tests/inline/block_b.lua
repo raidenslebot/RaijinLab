@@ -639,6 +639,27 @@ do
         (BasicRules.check(base({ target_unit_flags = 0 }), 922)) == true)
   check("unknown flags -> pass (never invent a refusal)",
         (BasicRules.check(base(), 922)) == true)
+  -- VERTICAL RANGE (checklist 15) and GROUND LOCATION (checklist 14) - the two
+  -- rows the audit listed as outright missing.
+  RaijinLab.World.spell_req = function(sid)
+    if sid == 930 then return { rmax = 30, targets = 0, cd = 0, catcd = 0 } end
+    if sid == 931 then return { rmax = 30, targets = 0x40, cd = 0, catcd = 0 } end
+    return nil
+  end
+  RaijinLab.World.spell_is_self_area = function(sid) return sid == 931 end
+  check("target far above blocks a 30yd spell",
+        (BasicRules.check(base({ target_dz = 45 }), 930)) == false)
+  check("target within vertical reach passes",
+        (BasicRules.check(base({ target_dz = 10 }), 930)) == true)
+  check("unknown vertical offset -> pass",
+        (BasicRules.check(base(), 930)) == true)
+  check("ground AoE with no floor blocks",
+        (BasicRules.check(base({ ground_z_at_cast = false }), 931)) == false)
+  check("ground AoE with a floor passes",
+        (BasicRules.check(base({ ground_z_at_cast = 61.5 }), 931)) == true)
+  check("unknown ground -> pass",
+        (BasicRules.check(base(), 931)) == true)
+  RaijinLab.World.spell_is_self_area = nil
   RaijinLab.World.spell_target_class = nil
   RaijinLab.World.spell_req = nil
 end

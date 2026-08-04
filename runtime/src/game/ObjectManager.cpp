@@ -7,6 +7,7 @@
 #include "core/Config.h"
 #include "core/Log.h"
 #include "lua/Lua.h"
+#include "Actions.h"
 #include <mutex>
 #include <cmath>
 #include <algorithm>
@@ -4103,6 +4104,60 @@ std::string ProcFreezeState() {
     char head[24];
     snprintf(head, sizeof(head), "%d", n);
     return std::string(head) + (n ? "|" : "") + out;
+}
+
+// ---- ProcForce (2026-08-03) -----------------------------------------------
+// Drive a passive proc (Stormbringer 273056) that fires spell 273057 at the
+// target. We mimic the proc by queueing a NATIVE cast (Actions::QueueCast →
+// Spell_C from the frame hook) of procSpell at the current target on an ICD.
+// This is byte-identical to the normal spell-cast a real proc makes — the
+// server sees ordinary "Nature damage spell at target", indistinguishable from
+// a genuine roll. Deterministic, wire-safe, CLI-driven.
+namespace {
+volatile uint32_t g_pfForceProcSpell = 0;   // 0 = disabled
+volatile uint32_t g_pfForceIcdMs = 300;
+volatile ULONGLONG g_pfForceNextTs = 0;     // next allowed fire (inclusive)
+} // namespace
+
+int ProcForceAdd(uint32_t procSpell, uint32_t icdMs) {
+    if (procSpell == 0) return 0;
+    g_pfForceProcSpell = procSpell;
+    g_pfForceIcdMs = icdMs ? icdMs : 300;
+    g_pfForceNextTs = 0;                       // fire immediately on next tick
+    RL::Log::Info("ProcForce: enable procSpell=%u icd=%ums", procSpell, g_pfForceIcdMs);
+    return 1;
+}
+
+int ProcForceRemove() {
+    int had = (g_pfForceProcSpell != 0) ? 1 : 0;
+    g_pfForceProcSpell = 0;
+    g_pfForceNextTs = 0;
+    if (had) RL::Log::Info("ProcForce: disable");
+    return had;
+}
+
+void ProcForceClear() { ProcForceRemove(); }
+
+int ProcForceTick() {
+    uint32_t spell = g_pfForceProcSpell;
+    if (!spell) return 0;
+    ULONGLONG now = GetTickCount64();
+    if (g_pfForceNextTs != 0 && now < g_pfForceNextTs) return 0; // ICD pending
+    // Require a current target to fire at.
+    uint64_t local = LocalGuid();
+    uint64_t tgt = local ? UnitTargetGuid(local) : 0;
+    if (!tgt) return 0;                       // no target -> nothing to proc on
+    // Queue the native cast of the proc spell at the victim. NO_TARGET_CHANGE:
+    // do NOT alter the player's targeting (same acquire-off rule as rotation).
+    bool ok = RL::Game::Actions::QueueCast((int)spell, tgt, RL::Game::Actions::kCastNoTargetChange);
+    g_pfForceNextTs = now + g_pfForceIcdMs;
+    return ok ? 1 : 0;
+}
+
+std::string ProcForceState() {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%u|%u", (unsigned)g_pfForceProcSpell, (unsigned)g_pfForceIcdMs);
+    return std::string(buf);
 }
 
 } // namespace RL::Game::OM

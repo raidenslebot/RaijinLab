@@ -3531,6 +3531,9 @@ function Executor._tick_body()
     -- spell via the CLI/pipe. ZERO packets emitted - proc is client-authoritative.
     if RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
         pcall(RaijinLab.RuntimeCall, RaijinLab, "ProcFreezeTick")
+        -- 2026-08-03 (ProcForce): fire the configured proc spell at the current
+        -- target on an ICD via the native cast queue. No-op unless ProcForceAdd.
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "ProcForceTick")
     end
     local Engine = RaijinLab.RotationEngine
     local Conditions = RaijinLab.Conditions

@@ -47,8 +47,8 @@ conditions → wire.
 | 11 | Physical range | **done** | `check_range` + per-candidate and direct-cast gates in `Executor` |
 | 12 | Line of sight | **done** | `check_los` / `World.is_los_guid`, per-candidate in the try-list |
 | 13 | FOV / facing | **done** | `World.spell_needs_facing` (FacingCasterFlags) + 45° half-arc |
-| 14 | Ground location validity | **missing** | ground-targeted spells are not validated against terrain |
-| 15 | Height / vertical range | **missing** | no vertical tolerance check |
+| 14 | Ground location validity | **done** | `check_ground_location` — DEST_LOCATION spells need a floor (GroundCache) |
+| 15 | Height / vertical range | **done** | `check_vertical` — |dz| vs the spell's decoded max range |
 
 ## Resource, cooldown, availability
 
@@ -88,12 +88,13 @@ conditions → wire.
 
 ## Honest totals
 
-**22 done · 6 partial · 2 missing · 2 n/a.**
+**24 done · 6 partial · 0 missing · 2 n/a.**
 
-The two outright missing (14 ground-location validity, 15 vertical range) both
-concern ground-targeted casting, which this rotation does not yet use — but
-they are the reason a ground AoE could still be placed somewhere the client
-rejects.
+Items 14 and 15 were the two outright missing rows in the first pass of this
+audit and are now implemented and mutation-proven. Vertical range matters even
+without ground casting: a target forty yards up a cliff reads as "in range" on
+the horizontal projection while a 30-yard spell cannot reach it, and the client
+measures true 3D distance.
 
 The six partials are each a *narrower* gap than the row suggests: sitting,
 per-school lockout, reactive aura-*states*, chain/cone shapes, and the exotic
@@ -102,6 +103,6 @@ so none can block a legal cast — they can only miss an illegal one, which the
 client then refuses once and the refusal floor absorbs.
 
 Coverage note: the gates carrying tests are identity, gcd/cd, resources,
-equipment, stance, aura requirements, silence, mounted, target flags, intent
-and target relationship. Each was mutation-checked — a deliberate break fails
+equipment, stance, aura requirements, silence, mounted, target flags, intent,
+target relationship, vertical range and ground location. Each was mutation-checked — a deliberate break fails
 the suite. Gates without a mutation test are not proven, only present.

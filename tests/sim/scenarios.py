@@ -1052,12 +1052,20 @@ class DoesNotChargeBackwards(Scenario):
     # unproven, and saying otherwise would be the kind of green-that-means-
     # nothing this project has already paid for twice.
     #
-    # IT ALSO FOUND A REAL DEFECT. At EXACTLY 180 degrees (goal dead behind,
-    # y offset 0) the bot never moves at all: "STALLED from t=10s, position
-    # never changed". Nudging the goal to ~161 degrees makes it PASS, so the
-    # failure is specific to the antipodal singularity, not to goals behind in
-    # general. angle_diff returns +pi there (d > math.pi is false at exactly
-    # pi), so the sign is defined and the cause is further in - unresolved.
+    # IT ALSO FOUND A REAL DEFECT, AND THE CAUSE IS NOT TURNING.
+    #
+    # At EXACTLY 180 degrees (goal dead behind, y offset 0) the bot never moves.
+    # The trace shows why: nav state reads "arrived" from t=15 onward while the
+    # player sits SIXTY YARDS from the goal. It is not failing to turn - it
+    # believes it is already there, so there is nothing to turn toward.
+    # angle_diff is fine (it returns +pi; `d > math.pi` is false at exactly pi),
+    # which is why chasing the turn path found nothing.
+    #
+    # Nudging the goal to ~161 degrees passes, so this is specific to the
+    # antipodal case. Suspect a degenerate path: a route to a point directly
+    # behind collapses to a single node at/behind the player, node 1 is
+    # immediately within arrive_dist, and the path completes. UNRESOLVED -
+    # reproduce by setting the goal y back to 500.0 and reading nav.state.
     #
     # Written to pin the 90-degree arc cap (mutating it to 3.2 rad passed all 17
     # scenarios, so nothing covered it). On first run it did not merely fail the

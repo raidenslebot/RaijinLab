@@ -3,10 +3,13 @@
 It rewrites the GENERATED TAIL of tests/run_suite_tests.py, and that tail holds
 BOTH _source_guards and the GROUPS dispatch. Both have drifted from the module:
 
-  * 16 dispatch entries name test_* functions that no longer exist (regenerating
-    dispatches 46 groups against 36 real ones and fails dispatch integrity);
-  * 5 real groups are never dispatched and have therefore never run:
-    test_chain, test_runtime_arm, test_ipc, test_object_esp, test_selftest;
+  * THE MODULE NOW USES GROUPS = _discover_groups(), derived from its own
+    namespace, while this script still emits a HAND-MAINTAINED list. The comment
+    beside _discover_groups explains why the list was abandoned: "A registry that
+    can disagree with the functions beside it will eventually disagree silently."
+    Regenerating downgrades the suite straight back into that failure mode;
+  * that stale list carries 16 entries naming test_* functions that no longer
+    exist (regenerating dispatches 46 groups against 36 real ones);
   * the embedded _source_guards resurrects a RETIRED guard,
     "no C_Timer.After defer in Executor cast path".
 

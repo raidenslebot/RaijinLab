@@ -3218,6 +3218,42 @@ Death.tick({ goto_fn = function() end })
 __t = __t + 1000
 Death.tick({ goto_fn = function() end })
 dc("a stalled corpse run counts an attempt", (r2.attempts or 0) >= 1)
+
+-- KNOW-GATED DEATH STATE. Unreachable until Know was wired in (0ec2d2b).
+--
+-- The default direction is the whole safety property: an UNKNOWN death state
+-- must assume ALIVE. Assuming dead sends a living character into corpse
+-- recovery - it would run to a graveyard mid-fight. Kn.assume(k, false, ...)
+-- encodes that, and flipping the default is silent because the common case
+-- (the API answering normally) is unaffected.
+local Kn = RaijinLab and RaijinLab.Know
+local function st(k) return (type(k) == "table" and k.state) or tostring(k) end
+if Kn and Death and Death.is_dead_k then
+  -- API missing entirely: unknown, and therefore ALIVE.
+  local saved_dead, saved_ghost = UnitIsDeadOrGhost, UnitIsGhost
+  UnitIsDeadOrGhost = nil
+  dc("no death api reads unknown", st(Death.is_dead_k()) == "unknown")
+  dc("unknown death state assumes ALIVE", Death.is_dead() == false)
+
+  -- API that throws is also ignorance, not death.
+  UnitIsDeadOrGhost = function() error("no such unit") end
+  dc("a throwing death api assumes ALIVE", Death.is_dead() == false)
+
+  -- and it must still report a real death
+  UnitIsDeadOrGhost = function() return true end
+  dc("a real death is reported", Death.is_dead() == true)
+  UnitIsDeadOrGhost = function() return false end
+  dc("alive is reported", Death.is_dead() == false)
+
+  UnitIsGhost = nil
+  dc("no ghost api reads unknown", st(Death.is_ghost_k()) == "unknown")
+  dc("unknown ghost state assumes NOT ghost", Death.is_ghost() == false)
+  UnitIsGhost = function() return true end
+  dc("a real ghost is reported", Death.is_ghost() == true)
+
+  UnitIsDeadOrGhost, UnitIsGhost = saved_dead, saved_ghost
+end
+
 '''
 
 LUA_TRAINER_BODY = r'''tn_fails = {}

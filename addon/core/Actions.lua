@@ -474,14 +474,19 @@ end
 --   Descend(true/false) -> SitStandOrDescendStart / DescendStop
 -- A one-shot Jump pulse while swimming is not "depth control" - the client only
 -- keeps rising while the ascend key is held.
+local function stage(bit, start)
+    if not A.ensure() then return false end
+    return not not rt("StageInput", bit, start and 1 or 0)
+end
+
 function A.Ascend(start)
     if not A.ensure() then return false end
-    return not not rt(start and "AscendStart" or "AscendStop")
+    return stage(8, start)   -- kIN_Ascend
 end
 
 function A.Descend(start)
     if not A.ensure() then return false end
-    return not not rt(start and "DescendStart" or "DescendStop")
+    return stage(9, start)   -- kIN_Descend
 end
 
 function A.StopMoving()
@@ -515,10 +520,6 @@ end
 -- free and a staged halt clears all intent (nothing re-presses after a stop).
 -- Fixing it HERE fixed all 30 Navigator sites at once - they route through
 -- these wrappers already. Bit order matches Actions.h InputBit.
-local function stage(bit, start)
-    if not A.ensure() then return false end
-    return not not rt("StageInput", bit, start and 1 or 0)
-end
 
 function A.MoveForward(start)
     if not A.ensure() then return false end

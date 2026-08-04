@@ -3207,7 +3207,25 @@ function World.find_aura_search_targets(opts)
 
     -- Seed only on cache miss (throttled inside). Never before cache hit -
     -- that forced NoteUnitAura + gen-bump every frame (1.10.34 lag regression).
-    if World.seed_visible_aura_notes then
+    -- DO NOT SEED THE NOTE STORE WHEN THE DIRECT WALK WORKS (2026-08-03).
+    --
+    -- This ran a Lua UnitDebuff/UnitBuff scan across unit tokens on EVERY
+    -- search, purely to feed the combat-log note store. That store is no longer
+    -- the authority: the runtime reads auras straight off the unit and tags its
+    -- answer src=d. So this is a per-search Lua fan whose only product is data
+    -- the runtime already has - and it is the reason aura search feels slow.
+    --
+    -- Seed only when the walk cannot validate (src=n), which is the one case
+    -- the note store still answers. One cheap probe decides it, cached by the
+    -- runtime's own 80ms pack cache.
+    local need_seed = true
+    if RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
+        local okp, pk = pcall(RaijinLab.RuntimeCall, RaijinLab, "UnitAuras")
+        if okp and type(pk) == "string" and pk:find("src=d", 1, true) then
+            need_seed = false
+        end
+    end
+    if need_seed and World.seed_visible_aura_notes then
         pcall(World.seed_visible_aura_notes, spell_id, aura_name)
     end
 

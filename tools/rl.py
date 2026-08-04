@@ -458,6 +458,10 @@ PROTECTED_COMMANDS = (
     "TurnLeftStart", "TurnLeftStop", "TurnRightStart", "TurnRightStop",
     "PitchUpStart", "PitchUpStop", "PitchDownStart", "PitchDownStop",
     "StopMoving", "CommitMovement", "MouselookStart", "MouselookStop",
+    # MISSED in the first pass, and the gate's own blind spot is why:
+    # a list of protected commands is only as good as its completeness,
+    # so these went on dispatching raw while the gate read "clean".
+    "AscendStart", "AscendStop", "DescendStart", "DescendStop",
 )
 
 

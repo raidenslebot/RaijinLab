@@ -2461,7 +2461,31 @@ function Navigator.step()
     -- into a cliff. block_void is never overridden, by this or anything else.
     local following = (a.wall_side or 0) ~= 0 and (a.wall_bend or 0) > 0
         and not a.block_void
-    local fwd_on = (err < cone) and (not block or following)
+    -- RUN WHILE YOU TURN, LIKE A PERSON (2026-08-03).
+    --
+    -- A fixed cone makes the bot stand PERFECTLY STILL and pivot before taking
+    -- a step - live: twelve consecutive frames at the identical position while
+    -- the heading swung 1.78 -> 2.52. Nobody plays that way; a human starts
+    -- running immediately and ARCS onto the line.
+    --
+    -- Widening the cone is not the answer either: it was 2.4 rad once and
+    -- produced circles. The difference between arcing and orbiting is not the
+    -- angle, it is whether the aim is CLOSING. So this is closed-loop: keep
+    -- running while the heading error is actually shrinking, and fall back to
+    -- pivot-in-place the moment it stops shrinking. Orbiting IS "error not
+    -- closing", so the failure mode switches forward off by construction
+    -- rather than being excluded by a magic constant.
+    --
+    -- The hard cap stays: past ~90 degrees the target is genuinely behind us
+    -- and turning first is what a person does too.
+    local closing = false
+    do
+        local prev = a.err_prev
+        a.err_prev = err
+        if prev and err < prev - 0.001 then closing = true end
+    end
+    local arc_ok = closing and err < 1.5707963
+    local fwd_on = ((err < cone) or arc_ok) and (not block or following)
     -- Soft force: only walk while turning if still within ~70deg. Never at 90deg+.
     if a.opts and a.opts.force_forward and not block and err < 1.2 then
         fwd_on = true

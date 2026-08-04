@@ -1685,7 +1685,12 @@ volatile uint64_t g_deferredInteract = 0;
 // the same heading costs nothing and cannot spam the client.
 enum InputBit {
     kIN_Forward = 0, kIN_Backward, kIN_StrafeL, kIN_StrafeR,
-    kIN_TurnL, kIN_TurnR, kIN_PitchU, kIN_PitchD, kIN_COUNT
+    kIN_TurnL, kIN_TurnR, kIN_PitchU, kIN_PitchD,
+    // Vertical swim/fly controls. MISSED in the first carrier pass and
+    // live-attributed by the RecentCalls correlator: AscendStop/DescendStop
+    // sat closest in time to a raised forbidden action while every other
+    // input was already staged.
+    kIN_Ascend, kIN_Descend, kIN_COUNT
 };
 static volatile uint32_t g_inputWanted = 0;   // bitmask, written from Lua side
 static volatile uint32_t g_inputApplied = 0;  // bitmask, owned by the hook
@@ -1717,6 +1722,8 @@ static void ApplyInputDiff() {
             case kIN_TurnR:    TurnRight(down);    break;
             case kIN_PitchU:   PitchUp(down);      break;
             case kIN_PitchD:   PitchDown(down);    break;
+            case kIN_Ascend:   Ascend(down);       break;
+            case kIN_Descend:  Descend(down);      break;
             default: break;
         }
     }

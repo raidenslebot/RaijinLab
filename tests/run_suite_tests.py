@@ -300,6 +300,68 @@ sc("pinned budget honored", Scheduler.stats().budget == 5)
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_navigator() -> list:
+    """Navigator's PURE steering math.
+
+    Navigator.lua carries the largest mutation count in the project (14 in
+    discriminate.CHECKS) and had NO test group, which is the single biggest
+    contributor to the 36/97 detection rate. The harness was not broken - it ran
+    everything it had, and it had nothing here.
+
+    Only the pure, client-free functions are covered: they are the ones a
+    mutation can silently change and the ones whose regressions are documented
+    as live symptoms (grinding along walls, trusting a clear trace over unloaded
+    collision, condemning a working turn primitive).
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    lua.execute("RaijinLab = {}")
+    src = (ADDON / "core/Navigator.lua").read_text(encoding="utf-8")
+    lua.execute("Navigator = (function()" + chr(10) + src + chr(10) + "end)()")
+    lua.execute(
+        r"""
+nv_fails = {}
+local function nv(name, cond) if not cond then nv_fails[#nv_fails+1] = name end end
+
+-- WALL BEND must ESCALATE and CLAMP. A constant bend keeps ~62% of speed
+-- pointed into the surface, so a long wall gets leaned on forever - the live
+-- "runs into a wall and grinds along it" symptom.
+if Navigator.next_wall_bend then
+  nv("wall bend seeds from bend0+step", Navigator.next_wall_bend(nil, 0.25, 1.9, 0.9) == 1.15)
+  nv("wall bend escalates",             Navigator.next_wall_bend(1.0, 0.25, 1.9, 0.9) == 1.25)
+  nv("wall bend clamps at cap",         Navigator.next_wall_bend(1.8, 0.25, 1.9, 0.9) == 1.9)
+  nv("wall bend never exceeds cap",     Navigator.next_wall_bend(5.0, 0.25, 1.9, 0.9) == 1.9)
+  nv("wall bend is not constant",
+     Navigator.next_wall_bend(1.0, 0.25, 1.9, 0.9) ~= Navigator.next_wall_bend(1.25, 0.25, 1.9, 0.9))
+else
+  nv("Navigator.next_wall_bend exists", false)
+end
+
+-- LOS SHORTCUT: the BINDING guard is the bare distance cap, not LOS_TRUST_RANGE
+-- (200), which never binds behind it. Trusting a clear trace over UNLOADED
+-- collision is how the bot walks into walls.
+if Navigator.LOS_SHORTCUT_MAX then
+  nv("los shortcut cap is the binding guard", Navigator.LOS_SHORTCUT_MAX <= 20)
+  nv("los shortcut cap is positive",          Navigator.LOS_SHORTCUT_MAX > 0)
+end
+
+-- TURN EFFECTIVENESS must not condemn a working primitive: too few samples, or
+-- an unmeasured effectiveness, are NOT evidence of failure.
+if Navigator.turn_ineffective then
+  nv("nil effectiveness is not failure",  Navigator.turn_ineffective(50, nil) ~= true)
+  nv("too few samples is not failure",    Navigator.turn_ineffective(2, 0.0) ~= true)
+  nv("sustained zero turn IS failure",    Navigator.turn_ineffective(50, 0.0) == true)
+  nv("a turning character is fine",       Navigator.turn_ineffective(50, 1.0) ~= true)
+end
+"""
+    )
+    t = lua.eval("nv_fails")
+    n = int(lua.eval("#nv_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

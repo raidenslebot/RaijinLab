@@ -1166,7 +1166,7 @@ void RefreshLiveFacingCache() {
     // it always holds a live value on this build.
     // 2026-08-03 (ROUND 46 — 0.0 failed-read sentinel, live-proven): the
     // camera read returns 0.0000 on many frames (FacingLive face=0.0000
-    // constantly). The old acceptance test `v >= -0.01f && v <= 6.30f` treats
+    // constantly). The old acceptance test `v > -6.30f && v < 6.30f` treats
     // 0.0 as a REAL facing of north → g_liveFacingCache=0.0 → OM::IsFacing
     // computes a confident WRONG verdict → the addon's melee facing gate
     // blocked engaged players / wired spells the client refused "target needs
@@ -1202,12 +1202,12 @@ void RefreshLiveFacingCache() {
     if (clo || chi) obj = CallObjectPtr3(clo, chi, 1);
     if (obj) {
         float v = Mem::Read<float>(obj + 0x7A8);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+        if (!(v != v) && v > -6.30f && v < 6.30f) { if (v < 0.f) v += 6.2831853f; f = v; }
     }
     if (f >= 1e8f && cam) {
         float v = Mem::Read<float>(cam + 0x11C);
         if (!(v != v) && !(v > -0.0001f && v < 0.0001f)
-            && v >= -0.01f && v <= 6.30f) f = v;
+            && v > -6.30f && v < 6.30f) { if (v < 0.f) v += 6.2831853f; f = v; }
     }
     // Path 3 — GetActive player object (mask 0x10 = player).
     if (f >= 1e8f) {
@@ -1216,7 +1216,7 @@ void RefreshLiveFacingCache() {
             uintptr_t pobj = CallObjectPtr3((uint32_t)active, (uint32_t)(active >> 32), 0x10);
             if (pobj) {
                 float v = Mem::Read<float>(pobj + 0x7A8);
-                if (!(v != v) && v >= -0.01f && v <= 6.30f) f = v;
+                if (!(v != v) && v > -6.30f && v < 6.30f) { if (v < 0.f) v += 6.2831853f; f = v; }
             }
         }
     }
@@ -1232,7 +1232,7 @@ void RefreshLiveFacingCache() {
         uintptr_t lp = RL::Game::OM::LocalPtr();
         if (lp) {
             float v = RL::Game::Mem::Read<float>(lp + 0x7A8);
-            if (!(v != v) && v >= -0.01f && v <= 6.30f) localFallback = v;
+            if (!(v != v) && v > -6.30f && v < 6.30f) localFallback = v;
         }
         RL::Log::Warn("FacingLive: cam=0x%lX guid=%08X%08X obj=0x%lX face=%.4f active=0x%llX local=%.4f",
                       (unsigned long)cam, (unsigned)chi, (unsigned)clo,
@@ -1266,8 +1266,18 @@ float FacingLiveLocal() {
     uintptr_t p = g_liveFacingPtr;
     if (p && (now - g_liveFacingCacheT) < 250ull) {
         float v = Mem::Read<float>(p + 0x7A8);
-        if (!(v != v) && v >= -0.01f && v <= 6.30f)
-            return v;               // 0.0 = due north, a real reading
+        // THIS CLIENT RETURNS SIGNED FACING (2026-08-03, live-proven).
+        // GetPlayerFacing() reported -1.3622 while the old acceptance range
+        // [-0.01, 6.30] threw it away as garbage, so PlayerFacing answered 1e9
+        // (undetermined) the moment the player turned past zero - exact while
+        // standing still, broken while turning. That is the FOURTH validator
+        // this session calibrated on stock assumptions and rejecting real
+        // custom data (after the 0.0 sentinel, the 2M aura-id cap, and the
+        // pi/2 arc). Accept the signed range and normalise to [0, 2pi).
+        if (!(v != v) && v > -6.30f && v < 6.30f) {
+            if (v < 0.f) v += 6.2831853f;
+            return v;
+        }
     }
     if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f)
         return g_liveFacingCache;   // pointer gone: last good hook value

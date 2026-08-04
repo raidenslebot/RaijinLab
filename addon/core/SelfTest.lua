@@ -437,6 +437,10 @@ SelfTest.CHECKS = {
             if not GetPlayerFacing then return nil, "no GetPlayerFacing here" end
             local truth = GetPlayerFacing()
             if type(truth) ~= "number" then return nil, "client gave no facing" end
+            -- THIS CLIENT RETURNS SIGNED FACING (live: -1.3622). Normalise
+            -- before comparing, or a legitimate negative reads as a huge error
+            -- and the check false-fails while everything is correct.
+            if truth < 0 then truth = truth + 6.28318 end
             local f = call("PlayerFacing")
             if type(f) ~= "number" then return false, "PlayerFacing not wired" end
             if f >= 1e8 then
@@ -469,8 +473,10 @@ SelfTest.CHECKS = {
             local tx, ty = RaijinLab:ObjectPosition(tgt)
             if not (px and tx) then return nil, "no positions" end
             local face = GetPlayerFacing()
+            if face < 0 then face = face + 6.28318 end   -- signed on this client
             -- Orientation 0 is +X, so the bearing compares directly.
             local bearing = math.atan2(ty - py, tx - px)
+            if bearing < 0 then bearing = bearing + 6.28318 end
             local d = bearing - face
             while d > math.pi do d = d - 2 * math.pi end
             while d < -math.pi do d = d + 2 * math.pi end

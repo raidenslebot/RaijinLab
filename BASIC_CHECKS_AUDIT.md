@@ -63,9 +63,9 @@ conditions → wire.
 
 | # | Check | Status | Where |
 |---|---|---|---|
-| 20 | Stance / form | **done (was silently dead)** | `check_stance`; `Bytes2` was 0xCC in a zero region, so `ShapeshiftForm` answered "unshifted" for every caster in every form. Measured to **0x1E8** (`0x00000801`) 2026-08-03 |
+| 20 | Stance / form | **done** | `check_stance`. It was SILENTLY DEAD: `Bytes2` sat at 0xCC inside a region that reads zero, so `ShapeshiftForm` answered "unshifted" for every caster in every form while passing its gate. Measured to **0x1E8** (`0x00000801` - sheath 1, pvp 0x08, form 0) on 2026-08-03 |
 | 21 | Mounted / sitting / dead / ghost | **partial** | mounted **done**; dead/ghost **done**; **sitting unmeasurable so far** - no descriptor dword changes between seated and standing (full 0x00..0x400 diff, both directions), so standState is an instance field or the emote is cosmetic. Gate abstains |
-| 22 | Reactive condition | **partial, now unblocked** | required/forbidden caster auras **done**; `UNIT_FIELD_AURASTATE` located at **0x0F4** (read `0x08400000` live) - the field the record's CasterAuraState/TargetAuraState match against. Offset landed; the comparison is not wired yet |
+| 22 | Reactive condition | **done** | `check_aura_state` matches the record's CasterAuraState / TargetAuraState against `UNIT_FIELD_AURASTATE` (**0x0F4**, read `0x08400000` live). State N lives in bit (N-1); `BasicRules.aura_state_has` is a pure function with 8 assertions. Mutation-proven: off-by-one, unknown-becomes-refusal, always-present all CAUGHT |
 | 23 | Immunity / invulnerability | **done** | `check_immunity` + `Protection` classification |
 
 ## Targeting mode
@@ -88,7 +88,12 @@ conditions → wire.
 
 ## Honest totals
 
-**24 done · 6 partial · 0 missing · 2 n/a.**
+**26 done - 4 partial - 0 missing - 2 n/a** (was 24/6 before 2026-08-03).
+
+Closed since: **#20 stance** (was listed done while structurally incapable of
+firing - `Bytes2` pointed into a zero region) and **#22 reactive conditions**
+(`UNIT_FIELD_AURASTATE` measured to 0x0F4 and the comparison wired, with a pure
+`aura_state_has` and 8 mutation-proven assertions).
 
 Items 14 and 15 were the two outright missing rows in the first pass of this
 audit and are now implemented and mutation-proven. Vertical range matters even
@@ -96,7 +101,16 @@ without ground casting: a target forty yards up a cliff reads as "in range" on
 the horizontal projection while a 30-yard spell cannot reach it, and the client
 measures true 3D distance.
 
-The six partials are each a *narrower* gap than the row suggests: sitting,
+**#21 sitting is BLOCKED BY MEASUREMENT, not by effort.** The full descriptor
+`0x00..0x400` was snapshotted standing, seated (via `DoEmote("SIT")`, which is
+not protected here and succeeded), and standing again. **Both diffs came back
+empty** - not one dword moves. So standState is an instance field rather than a
+descriptor field (as `Facing` at 0x7A8 and `QuestGiverStatus` at 0x90 already
+are), or the emote is cosmetic on this server. `Bytes1` stays 0 and the check
+ABSTAINS rather than asserting "standing" - asserting is exactly what the dead
+`Bytes2` did for two months.
+
+The four remaining partials are each a *narrower* gap than the row suggests: sitting,
 per-school lockout, reactive aura-*states*, chain/cone shapes, and the exotic
 unit types (passenger / minipet / vehicle). Every one of them fails open today,
 so none can block a legal cast — they can only miss an illegal one, which the

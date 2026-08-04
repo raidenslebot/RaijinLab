@@ -1112,6 +1112,12 @@ uintptr_t CameraPlayerPtrEx() { return CameraPlayerPtr(); }
 // — never resolve from the VM.
 static volatile float g_liveFacingCache = 1e9f;
 static volatile ULONGLONG g_liveFacingCacheT = 0;
+// The player object pointer the hook resolved. RESOLVING it needs game calls
+// (unsafe from the Lua VM - the 0x512B07 rule), but READING a float at a known
+// offset from an already-resolved pointer is pure guarded memory and is safe
+// from any context. Caching the pointer instead of only the value is what lets
+// FacingLiveLocal answer with a LIVE read rather than a stale snapshot.
+static volatile uintptr_t g_liveFacingPtr = 0;
 
 // NATIVE-ONLY (frame hook / main thread, no Lua on stack). Resolves the player
 // via the client's exact path and refreshes the cache every tick. This is the
@@ -1216,6 +1222,7 @@ void RefreshLiveFacingCache() {
     }
     g_liveFacingCache = f;
     g_liveFacingCacheT = nowF;
+    if (obj) g_liveFacingPtr = obj;   // for the live re-read in FacingLiveLocal
     if (doDiag) {
         // 2026-08-02 (FACING VERIFY): cross-check against the client's own
         // GetPlayerFacing-equivalent — the camera object's [obj+0x7AC] read.
@@ -1244,8 +1251,26 @@ float FacingLiveLocal() {
     // blocked engaged players / wired spells the client refused). The pure
     // read contract: only a real non-zero value is a facing; everything else
     // is 1e9 = undetermined.
+    // LIVE RE-READ, NOT A SNAPSHOT (2026-08-03).
+    //
+    // Returning the hook's cached VALUE made facing stale by up to the refresh
+    // interval: measured live at 0.488 rad (28 degrees) off the client while
+    // turning, though exact to 0.0001 standing still. Twenty-eight degrees is
+    // easily the difference between "in the arc" and a "Target needs to be in
+    // front of you" refusal, so the gate was judging where the player WAS.
+    //
+    // Resolving the player object needs game calls and must stay on the hook
+    // (0x512B07), but reading a float at a fixed offset from a pointer the hook
+    // already resolved is pure VirtualQuery-guarded memory - safe from the Lua
+    // VM. So: the hook owns resolution, this owns freshness.
+    uintptr_t p = g_liveFacingPtr;
+    if (p && (now - g_liveFacingCacheT) < 250ull) {
+        float v = Mem::Read<float>(p + 0x7A8);
+        if (!(v != v) && v >= -0.01f && v <= 6.30f)
+            return v;               // 0.0 = due north, a real reading
+    }
     if ((now - g_liveFacingCacheT) < 250ull && g_liveFacingCache < 1e8f)
-        return g_liveFacingCache;   // 0.0 = due north, a real reading
+        return g_liveFacingCache;   // pointer gone: last good hook value
     return 1e9f; // undetermined — never resolve from the VM (0x512B07 rule)
 }
 
@@ -2111,7 +2136,22 @@ static int AuraWalk(uintptr_t ptr, Fn fn) {
         uintptr_t e = table + (uintptr_t)i * aura_off::EntrySize;
         uint32_t sid = Mem::Read<uint32_t>(e + aura_off::E_SpellId);
         if (!sid) continue;                    // empty slot mid-table is normal
-        if (sid > 2000000u) return -1;         // garbage: not a spell id
+        // ASCENSION SPELL IDS REACH ~14 MILLION (2026-08-03, live-proven).
+        //
+        // This bound was 2,000,000 and it is what broke aura search. The
+        // player's "PvE Mode" aura is id 9931032, sitting correctly in slot 3
+        // (0xC50 + 3*0x18 + 8 = 0xCA0) - the layout was right all along. The
+        // guard rejected it as "garbage", returned -1 (unknown), and every
+        // caller fell back to the combat-log note store, whose staleness is
+        // exactly the "aura search is insanely inconsistent" report: it claimed
+        // four mobs carried Frost Fever while a probed mob provably had none.
+        //
+        // The client's own spell table maxes at [0x00AD49D0+0xC] = 0x00D54940
+        // = 13,977,920, so 2M was low by a factor of seven on a server whose
+        // ids are mostly CUSTOM. Bound against the real table max with headroom
+        // rather than a guessed constant; a value beyond the table cannot be a
+        // spell, and anything inside it must be allowed through.
+        if (sid > 20000000u) return -1;        // beyond any real spell id
         uint8_t stacks = Mem::Read<uint8_t>(e + aura_off::E_Stacks);
         uint8_t flags  = Mem::Read<uint8_t>(e + aura_off::E_Flags);
         int32_t durMs  = Mem::Read<int32_t>(e + aura_off::E_Duration);

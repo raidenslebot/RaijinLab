@@ -1335,6 +1335,17 @@ static int Handle(lua_State* L, const char* name) {
         return PushString(L, s.c_str());
     }
     // Spell display name via the in-record string pointer. "SpellNameLive"
+    // Change what the proc roll EVALUATES. Returns "rc|old" so the caller can
+    // confirm the previous value rather than trusting the write blind.
+    if (!std::strcmp(name, "SetProcChance")) {
+        int sid = (int)RL::Lua::optnumber(L, 2, 0);
+        int pct = (int)RL::Lua::optnumber(L, 3, -1);
+        int old = -1;
+        int rc = SpellDB::SetProcChance(sid, pct, &old);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%d|%d", rc, old);
+        return PushString(L, buf);
+    }
     if (!std::strcmp(name, "SpellNameLive")) {
         int spellId = (int)optnumber(L, 2, 0);
         auto s = SpellDB::SpellName(spellId);

@@ -45,4 +45,12 @@ std::string CastReq(int spellId);
 // The spell's display name via the in-record string pointer (+0x220).
 std::string SpellName(int spellId);
 
+// Set a spell's procChance in the LIVE record (record offset 0x08C, derived
+// from the cracked layout and confirmed by 11 spells reading 101 = "always").
+// Returns 1 written+verified, 0 write did not stick, negative = refused:
+//   -2 pct out of range   -3 records compressed (decoded buffer is a copy)
+//   -4 no spell table     -5 id out of range     -6 no record for this id
+//   -7 current value is not a plausible proc chance (>101)
+int SetProcChance(int spellId, int pct, int* outOld = nullptr);
+
 } // namespace RL::Game::SpellDB

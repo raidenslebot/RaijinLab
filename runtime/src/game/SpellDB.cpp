@@ -179,6 +179,12 @@ namespace rec {
     constexpr size_t RecoveryMs      = 0x074;
     constexpr size_t CatRecoveryMs   = 0x078;
     constexpr size_t InterruptFlags  = 0x07C;
+    // PROC FIELDS - derived from the cracked mapping (offset = dbc column * 4)
+    // and confirmed live: every one of 11 probed spells read 101 at 0x08C,
+    // which is Spell.dbc's "always proc" convention for procChance.
+    constexpr size_t ProcFlags       = 0x088;
+    constexpr size_t ProcChance      = 0x08C;
+    constexpr size_t ProcCharges     = 0x090;
     constexpr size_t DurationIdx     = 0x0A0;
     constexpr size_t PowerType       = 0x0A4;  // 0 mana 1 rage 3 energy 5 rune 6 RP
     constexpr size_t ManaCost        = 0x0A8;  // rage/RP stored x10
@@ -241,7 +247,8 @@ std::string CastReq(int spellId) {
         "|power=%u|cost=%u|costlvl=%u|ri=%u|rmin=%.2f|rmax=%.2f|speed=%.1f"
         "|equipclass=%d|equipmask=0x%X|eff0=%u|ta0=%u|ta1=%u"
         "|gcdcat=%u|gcd=%u|family=%u|dmgclass=%u|prevent=%u"
-        "|school=0x%X|rune=%u|mech=%u|dispel=%u|duridx=%u",
+        "|school=0x%X|rune=%u|mech=%u|dispel=%u|duridx=%u"
+        "|procflags=0x%X|procchance=%u|proccharges=%u",
         spellId,
         W(recb, rec::Attr0), W(recb, rec::Attr1), W(recb, rec::Attr2),
         W(recb, rec::StancesLo), W(recb, rec::StancesNotLo),
@@ -260,11 +267,49 @@ std::string CastReq(int spellId) {
         W(recb, rec::FamilyName), W(recb, rec::DmgClass),
         W(recb, rec::PreventionType),
         W(recb, rec::SchoolMask), W(recb, rec::RuneCostId),
-        W(recb, rec::Mechanic), W(recb, rec::Dispel), W(recb, rec::DurationIdx));
+        W(recb, rec::Mechanic), W(recb, rec::Dispel), W(recb, rec::DurationIdx),
+        W(recb, rec::ProcFlags), W(recb, rec::ProcChance), W(recb, rec::ProcCharges));
     std::string out(buf);
     s_cache[h].sid = spellId;
     s_cache[h].pack = out;
     return out;
+}
+
+// SET A SPELL'S PROC CHANCE IN THE LIVE RECORD.
+//
+// The roll's INPUT, not its visual. Force-casting the proc's bolt only replayed
+// the animation (live: lightning + sound, no damage) because the roll is
+// evaluated elsewhere; procChance is what that evaluation reads.
+//
+// Only valid when records are UNCOMPRESSED (comp==0, which this client reports
+// for every spell probed): then the table slot IS the live record and a write
+// at slot+0x08C changes what the client evaluates. When compressed, the decoded
+// buffer is a temporary copy and writing it would do nothing - so refuse rather
+// than silently no-op, which is the failure mode this project keeps punishing.
+//
+// VERIFY-BEFORE-WRITE: the current value must look like a proc chance (0..101).
+// Two write plans this session were built on addresses that measurement
+// disproved in seconds; this one checks first and returns the old value so the
+// caller can confirm it wrote what it meant to.
+int SetProcChance(int spellId, int pct, int* outOld) {
+    if (outOld) *outOld = -1;
+    if (pct < 0 || pct > 101) return -2;              // out of range
+    if (Mem::Read<uint8_t>(kSpellCompress)) return -3; // compressed: refuse
+    uint32_t minS = Mem::Read<uint32_t>(kSpellTableGlob + 0x10);
+    uint32_t maxS = Mem::Read<uint32_t>(kSpellTableGlob + 0xC);
+    uint32_t tbl  = Mem::Read<uint32_t>(kSpellTableGlob + 0x20);
+    if (!tbl || tbl < 0x10000u) return -4;
+    if ((uint32_t)spellId < minS || (uint32_t)spellId > maxS) return -5;
+    uint32_t slot = Mem::Read<uint32_t>(tbl + ((uint32_t)spellId - minS) * 4);
+    if (!slot || slot < 0x10000u) return -6;          // no record
+    uint32_t cur = Mem::Read<uint32_t>(slot + rec::ProcChance);
+    if (cur > 101u) return -7;                        // not a proc chance: refuse
+    if (outOld) *outOld = (int)cur;
+    Mem::Write<uint32_t>(slot + rec::ProcChance, (uint32_t)pct);
+    uint32_t back = Mem::Read<uint32_t>(slot + rec::ProcChance);
+    RL::Log::Warn("SetProcChance sid=%d %u -> %d (readback %u)",
+                  spellId, cur, pct, back);
+    return (back == (uint32_t)pct) ? 1 : 0;           // 0 = write did not stick
 }
 
 std::string SpellName(int spellId) {

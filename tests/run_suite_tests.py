@@ -656,6 +656,20 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
 
+-- A KNOW-STYLE "no" must veto too. The plain-boolean case above hits
+-- `verdict == false`; this hits `K.is_no(verdict)`, a DIFFERENT branch that
+-- stayed unasserted even after Know was wired in - walkable() returns Know
+-- objects in production, so this is the branch that actually runs.
+local Kn = RaijinLab.Know
+if Kn and Kn.no then
+  at_code, walk_verdict = 1, Kn.no("collision")
+  so("a Know 'no' verdict vetoes", Suite.search_oracle(6, 6) == false)
+  at_code, walk_verdict = 1, Kn.unknown("no_tile")
+  so("a Know 'unknown' verdict does not veto", Suite.search_oracle(7, 7) ~= false)
+  at_code, walk_verdict = 1, Kn.yes(true, "open")
+  so("a Know 'yes' verdict does not veto", Suite.search_oracle(8, 8) ~= false)
+end
+
 -- A throwing NG.at must not take the oracle down or invent a refusal.
 RaijinLab.NavGrid.at = function() error("no tile loaded") end
 walk_verdict = true

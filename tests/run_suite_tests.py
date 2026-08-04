@@ -619,6 +619,75 @@ so("a throwing at() does not veto", Suite.search_oracle(5, 5) ~= false)
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_cast_facing_arc() -> list:
+    """The cast-facing arc, and the point-blank exemption.
+
+    THIS SESSION'S FIX, UNDEFENDED UNTIL NOW. World.CAST_FACE_HALF_ARC is a
+    HALF-angle. It was 1.5707963 (pi/2), which is a 180-DEGREE CONE - the whole
+    forward hemisphere - so the gate passed on targets the client would refuse
+    and the rotation spammed abilities it could not cast. It is 0.7854 (45 deg
+    half, 90 deg cone).
+
+    The discriminating case is a heading error of 1.0 rad: correctly REFUSED at
+    45 deg, wrongly ACCEPTED under the old pi/2. A test that only checked 0.0 and
+    3.0 would pass under both values and prove nothing.
+
+    Also pins the point-blank exemption: at zero distance the heading is
+    geometrically degenerate (atan2 of a near-zero vector is garbage), which
+    made the Lua path report "not facing" on a mob the player was standing on -
+    live as "wait facing:Blood Strike x161" at edge=0yd.
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    lua.execute("RaijinLab = {}")
+    src = (ADDON / "core/World.lua").read_text(encoding="utf-8")
+    lua.execute("World = (function()" + chr(10) + src + chr(10) + "end)()")
+    lua.execute(
+        r"""
+fa_fails = {}
+local function fa(name, cond) if not cond then fa_fails[#fa_fails+1] = name end end
+
+local A = World.CAST_FACE_HALF_ARC
+fa("arc constant exists", type(A) == "number")
+fa("arc is a 45 degree HALF angle", A > 0.78 and A < 0.79)
+fa("arc is NOT the old pi/2 half angle", math.abs(A - 1.5707963) > 0.1)
+
+-- No runtime bridge: force the pure Lua fallback path.
+RaijinLab.HasRuntime = function() return false end
+
+local err
+World.heading_error_to_guid = function() return err end
+
+err = 0.0
+fa("dead ahead is facing", World.is_facing_guid("g") == true)
+err = 0.5
+fa("half a radian off is facing", World.is_facing_guid("g") == true)
+
+-- THE DISCRIMINATING CASE: outside 45 deg, inside the old pi/2.
+err = 1.0
+fa("1.0 rad off is NOT facing", World.is_facing_guid("g") ~= true)
+err = 3.0
+fa("behind is not facing", World.is_facing_guid("g") ~= true)
+
+-- an explicit wider arc must still be honoured
+err = 1.0
+fa("an explicit wide arc is honoured", World.is_facing_guid("g", 1.5) == true)
+
+-- unknown heading must not be answered as a confident yes/no by accident
+err = nil
+local v = World.is_facing_guid("g")
+fa("nil heading does not crash", v ~= nil or v == nil)
+
+fa("a nil guid is never facing", World.is_facing_guid(nil) == false)
+"""
+    )
+    t = lua.eval("fa_fails")
+    n = int(lua.eval("#fa_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

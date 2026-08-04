@@ -60,9 +60,18 @@ struct DescriptorTable {
     uintptr_t Level = 0xD8;
     uintptr_t FactionTemplate = 0xDC;
     uintptr_t Flags = 0xEC;
+    uintptr_t Flags2 = 0xF0;
+    // UNIT_FIELD_AURASTATE, index 61. Read 0x08400000 live (bits set), which is
+    // what closes the "reactive condition" basic check - CasterAuraState /
+    // TargetAuraState in a spell record are matched against THIS field.
+    uintptr_t AuraState = 0xF4;
     uintptr_t DynamicFlags = 0x13C;
-    uintptr_t DisplayId = 0x108;
-    uintptr_t NativeDisplayId = 0x10C;
+    // MEASURED 2026-08-03: DisplayId and NativeDisplayId are EQUAL while
+    // unshifted+unmounted, so the equal adjacent pair identifies them. The dump
+    // read 10C=0x39 110=0x39 - and 0x108 held 0x3FC00000, i.e. the FLOAT 1.5
+    // (combat reach). Both were off by one field.
+    uintptr_t DisplayId = 0x10C;
+    uintptr_t NativeDisplayId = 0x110;
     uintptr_t MountDisplayId = 0x114;
     // VERIFIED LIVE 2026-08-03: 0x5C reads 0x00000A05 = race 5, class 10,
     // exactly matching UnitRace/UnitClass. That is index 0x17, immediately
@@ -84,7 +93,17 @@ struct DescriptorTable {
     //
     // TO FIX: shapeshift, then scan the descriptor for a dword whose byte 3
     // equals the form id. Bytes0 = 0x5C = index 0x17 is the verified anchor.
-    uintptr_t Bytes2 = 0;
+    // MEASURED 2026-08-03: 0x1E8 read 0x00000801 - a genuinely PACKED value
+    // (byte0 sheath=1 melee, byte1=0x08 pvp flags, byte3=0 no form), sitting
+    // right after BASE_MANA 0x1E0=199 and BASE_HEALTH 0x1E4=130. The old 0xCC
+    // was in the dead zero region and made the shapeshift gate answer
+    // "unshifted" for every caster in every form.
+    uintptr_t Bytes2 = 0x1E8;
+    // UNIT_FIELD_BYTES_1 byte0 = standState (sitting). Predicted 0x128; it read
+    // 0, which is CONSISTENT with standing but does not prove the offset - a
+    // wrong offset reads 0 too. Left disabled rather than assumed: sit, then
+    // scan for the dword whose byte0 becomes non-zero.
+    uintptr_t Bytes1 = 0;
     // PLAYER_VISIBLE_ITEM_1_ENTRYID, stride 8 (entry + enchantment pair).
     // RE'd live 2026-08-03 by scanning the player descriptor against
     // GetInventoryItemID ground truth; confirmed on four untransmogged slots:

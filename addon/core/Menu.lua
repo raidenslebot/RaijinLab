@@ -590,26 +590,9 @@ function Menu:BuildCombat(parent)
     eng:SetPoint("TOPLEFT", 14, -102)
     self._combat.engage = eng
 
-    -- 2026-08-03 (PROC FORCE menu toggle): driving Stormbringer-class procs.
-    -- A real UI menu checkbox: turning it on arms ProcForce (fires the proc
-    -- spell 273057 at the target on the configured ICD via the native cast
-    -- queue); turning it off disarms immediately. Persisted so the checkbox
-    -- shows the actual runtime state after a reload. This is the escape hatch
-    -- the user demanded in-game (a runaway must never force a client close).
-    local pf = UI.checkbox(card, nextName("RLProcForce"), "Stormbringer/Buff proc driver (experimental)",
-        RaijinLabDB.combat.proc_force, function(v)
-            RaijinLabDB.combat.proc_force = v and true or false
-            if RaijinLabDB.combat.proc_force then
-                local icd = tonumber(RaijinLabDB.combat.proc_icd) or 300
-                if RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                    RaijinLab:RuntimeCall("ProcForceAdd", 273057, icd)
-                end
-            elseif RaijinLab.RuntimeCall and RaijinLab:HasRuntime() then
-                RaijinLab:RuntimeCall("ProcForceClear")
-            end
-        end)
-    pf:SetPoint("TOPLEFT", 14, -132)
-    self._combat.procForce = pf
+    -- PROC FORCE toggle REMOVED 2026-08-03: it fired a client-side visual
+    -- with no damage (see Executor). The proc roll is server-authoritative,
+    -- so the checkbox promised something no client-side code can deliver.
 
     -- Disengage HP slider
     local dis = UI.slider(card, nextName("RLDisHP"), "Disengage below HP %",

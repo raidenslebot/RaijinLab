@@ -3531,9 +3531,16 @@ function Executor._tick_body()
     -- spell via the CLI/pipe. ZERO packets emitted - proc is client-authoritative.
     if RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
         pcall(RaijinLab.RuntimeCall, RaijinLab, "ProcFreezeTick")
-        -- 2026-08-03 (ProcForce): fire the configured proc spell at the current
-        -- target on an ICD via the native cast queue. No-op unless ProcForceAdd.
-        pcall(RaijinLab.RuntimeCall, RaijinLab, "ProcForceTick")
+        -- 2026-08-03 REMOVED (ProcForce). Stormbringer (273056) is a PASSIVE
+        -- (attr bit 0x40) with procflags=0x10110 procchance=35, and the roll
+        -- happens SERVER-side. Casting its effect spell 273057 client-side
+        -- produced a lightning VISUAL WITH NO DAMAGE - it looked like a proc,
+        -- which is worse than doing nothing. Writing procChance on the client's
+        -- record also changed nothing; the server reads its own copy.
+        --
+        -- 0x10110 = DONE_SPELL_MELEE|RANGED|MAGIC_NEG: it procs off ABILITIES
+        -- CAST, not auto-attack. So the only real lever is casts per minute,
+        -- i.e. not stalling the rotation. Every wasted GCD is a lost 35% roll.
     end
     local Engine = RaijinLab.RotationEngine
     local Conditions = RaijinLab.Conditions

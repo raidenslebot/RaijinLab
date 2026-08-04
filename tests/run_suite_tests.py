@@ -677,6 +677,47 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
 
+-- KNOWN TARGET LOOKUP: NO DISTANCE CAP. "Anywhere from anywhere."
+--
+-- A cap here refused any known target beyond SEARCH_MAX_LEG (1000yd) and
+-- returned nil - which the caller reads as "location unknown" and PARKS. So a
+-- place we KNEW was thrown away for being far and the bot did nothing. The cap
+-- was inherited from the belief field, where a long leg means a wild guess; a
+-- database coordinate is not a guess, and distance is not a reason to disbelieve
+-- it. Long range is a TRAVEL problem, and goto_point already solves it.
+so("Suite.known_target exists", type(Suite.known_target) == "function")
+if Suite.known_target then
+  local loc
+  RaijinLab.QuestDB = { locate = function() return loc end }
+
+  loc = { x = 120, y = 240 }
+  local kx, ky = Suite.known_target("Boar", 100, 200, {})
+  so("a known nearby target is returned", kx == 120 and ky == 240)
+
+  -- THE BUG: 5000yd away is still KNOWN, and must still be returned.
+  loc = { x = 5100, y = 200 }
+  kx, ky = Suite.known_target("Boar", 100, 200, {})
+  so("a FAR known target is not discarded", kx == 5100 and ky == 200)
+
+  -- ignorance, not a location
+  loc = nil
+  so("no answer returns nil", Suite.known_target("Boar", 100, 200, {}) == nil)
+  loc = { x = nil, y = 5 }
+  so("a partial answer returns nil", Suite.known_target("Boar", 100, 200, {}) == nil)
+
+  -- a throwing database must not take the search down
+  RaijinLab.QuestDB = { locate = function() error("db corrupt") end }
+  local okc, r1 = pcall(Suite.known_target, "Boar", 100, 200, {})
+  so("a throwing database does not crash the lookup", okc == true and r1 == nil)
+
+  -- no database at all
+  RaijinLab.QuestDB = nil
+  so("no database returns nil", Suite.known_target("Boar", 100, 200, {}) == nil)
+  -- and missing inputs are refused before anything else
+  so("a nil label returns nil", Suite.known_target(nil, 100, 200, {}) == nil)
+  so("a nil position returns nil", Suite.known_target("Boar", nil, 200, {}) == nil)
+end
+
 -- ARRIVING AT A LEG MUST NOT END THE SEARCH.
 -- goto_point's "arrived" leaking to the caller ended the hunt at the FIRST
 -- waypoint: the bot walked to one ring point and declared the search over.

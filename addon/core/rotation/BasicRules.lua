@@ -271,9 +271,20 @@ local function check_equipment(ctx, sid)
     -- EquippedSlotEntry 16 = main hand OCCUPANCY (a display entry, not an item
     -- id - the live main hand read 121696 for a transmogged 4562). Non-zero is
     -- exactly the question this gate asks: is a weapon there at all.
-    local mh = ctx and ctx.mainhand_equipped
-    if mh == nil then mh = rt("EquippedSlotEntry", 16) end
+    -- THE TWO ZEROES ARE NOT THE SAME ZERO.
+    -- An explicit ctx value comes from a caller that KNOWS the slot state, so 0
+    -- there is positive evidence of an empty slot and must block. A 0 from the
+    -- runtime read is ambiguous - OM::Field also answers 0 when the player
+    -- object is unresolvable - so that one stays unknown and passes. Collapsing
+    -- both into "unknown" is what made this gate untestable.
+    local mh, mh_explicit = nil, false
+    if ctx and ctx.mainhand_equipped ~= nil then
+        mh, mh_explicit = ctx.mainhand_equipped, true
+    else
+        mh = rt("EquippedSlotEntry", 16)
+    end
     if type(mh) ~= "number" then return true end   -- unknown -> pass
+    if mh == 0 and not mh_explicit then return true end
     -- ZERO IS NOT PROOF OF AN EMPTY SLOT (2026-08-03, live regression I caused).
     -- OM::Field answers 0 when the player object cannot be resolved - which is
     -- every frame before the object manager is warm. On rotation start that
@@ -281,8 +292,13 @@ local function check_equipment(ctx, sid)
     -- "wait no_weapon" with a weapon equipped. A false block is strictly worse
     -- than a missed one here (the client refuses a genuinely weaponless swing
     -- harmlessly, once), so only a read taken while the player object IS
-    -- resolvable can indict the slot. Without a way to distinguish "empty" from
-    -- "unreadable", 0 stays UNKNOWN and passes.
+    -- resolvable can indict the slot, which is what mh_explicit above encodes.
+    --
+    -- THIS FUNCTION USED TO END IN A BARE `return true`: every path fell through
+    -- to pass, so the weapon requirement could not refuse ANYTHING. It read as
+    -- implemented and was a no-op - the same shape as check_target_flags bailing
+    -- on a nil guid. Only an explicit zero indicts the slot.
+    if mh == 0 then return false, "no_weapon" end
     return true
 end
 
@@ -307,6 +323,50 @@ local function check_stance(ctx, sid)
     end
     return true
 end
+
+-- REACTIVE CONDITIONS (basic check #22). A spell record carries CasterAuraState
+-- and TargetAuraState; the unit carries UNIT_FIELD_AURASTATE (0x0F4). State N is
+-- required to be present when bit (N-1) is set on the unit. This is what gates
+-- the reactive family - the abilities that only light up after a dodge/parry, or
+-- below a health threshold - so without it the rotation offers them constantly
+-- and eats a red refusal every time.
+--
+-- Unknown never invents a refusal: an unreadable field, a missing offset or a
+-- missing target all PASS. Only a positive read that lacks the required bit
+-- blocks, because a false block costs the ability outright.
+-- Pure bit test, extracted so it can be mutation-tested without the runtime.
+-- state N lives in bit (N-1). Returns nil for an unreadable mask or a state id
+-- of 0/negative, so "cannot tell" stays distinct from "absent".
+function BasicRules.aura_state_has(mask, state)
+    if type(mask) ~= "number" then return nil end
+    if type(state) ~= "number" or state < 1 then return nil end
+    local bit = 2 ^ (state - 1)
+    return math.floor(mask / bit) % 2 == 1
+end
+
+local function check_aura_state(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local function has_state(guid, state)
+        return BasicRules.aura_state_has(rt("UnitAuraState", guid), state)
+    end
+    local cs = tonumber(req.casterstate) or 0
+    if cs > 0 then
+        local h = has_state(0, cs)
+        if h == false then return false, "no_caster_state" end
+    end
+    local ts = tonumber(req.targetstate) or 0
+    if ts > 0 then
+        local tg = ctx and ctx.target_guid
+        if tg then
+            local h = has_state(tg, ts)
+            if h == false then return false, "no_target_state" end
+        end
+    end
+    return true
+end
+BasicRules.check_aura_state = check_aura_state
 
 -- Required / forbidden auras on caster and target (casterAuraSpell family).
 -- Exact now that HasUnitAura reads the unit's own aura array directly.
@@ -659,6 +719,9 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 
     ok, why = check_aura_requirements(ctx, sid)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="aura_req", why=why}; return false, why end
+
+    ok, why = check_aura_state(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="aura_state", why=why}; return false, why end
 
     ok, why = check_silence(ctx, sid)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="silence", why=why}; return false, why end

@@ -665,4 +665,25 @@ do
 end
 
 
-return 0
+-- REACTIVE CONDITIONS (basic check #22): UNIT_FIELD_AURASTATE bit mapping.
+-- State N is carried in bit (N-1). The live player read 0x08400000, i.e.
+-- 0x08000000 = bit 27 and 0x00400000 = bit 22, so states 28 and 23.
+local BR = RaijinLab.BasicRules or BasicRules
+check("aurastate 0x08400000 has state 23", BR.aura_state_has(0x08400000, 23) == true)
+check("aurastate 0x08400000 has state 28", BR.aura_state_has(0x08400000, 28) == true)
+check("aurastate 0x08400000 lacks state 27", BR.aura_state_has(0x08400000, 27) == false)
+check("aurastate 0x08400000 lacks state 24", BR.aura_state_has(0x08400000, 24) == false)
+check("aurastate 0x08400000 lacks state 1", BR.aura_state_has(0x08400000, 1) == false)
+-- state 1 is bit 0: an off-by-one here would silently shift EVERY reactive gate
+check("aurastate bit0 is state 1", BR.aura_state_has(1, 1) == true)
+check("aurastate bit0 is not state 2", BR.aura_state_has(1, 2) == false)
+-- unknown must stay unknown, never a refusal
+check("aurastate nil mask is unknown", BR.aura_state_has(nil, 5) == nil)
+check("aurastate state 0 is unknown", BR.aura_state_has(0xFF, 0) == nil)
+
+-- THE SUITE'S FAILURE COUNT MUST BE MEASURED, NOT ASSERTED.
+-- This was `return 0` - a literal - so every check() in this block printed
+-- FAIL and the harness still scored the block as zero failures. A forced-false
+-- canary printed "FAIL FORCED FAIL CANARY" and the suite exited 0.
+-- `fails` is the global table check() appends to (see block_a.lua).
+return #fails

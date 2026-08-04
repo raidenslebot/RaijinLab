@@ -1062,6 +1062,18 @@ static int Handle(lua_State* L, const char* name) {
     // silenced / pacified / stunned basic checks had no data source at all: the
     // gate existed and could never fire. Stubs that answer nil are the same
     // defect class as ObjectQuestGiverStatus returning 0.
+    // UNIT_FIELD_AURASTATE (0x0F4, measured 2026-08-03 - read 0x08400000 live).
+    // This is the field a spell record's CasterAuraState / TargetAuraState are
+    // matched against: state N is present when bit (N-1) is set. Without it the
+    // "reactive condition" basic check could not exist - reactive abilities
+    // (the Overpower / Revenge / Execute family) gate on exactly this.
+    if (!std::strcmp(name, "UnitAuraState")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        if (!g) return PushNil(L);
+        if (!Offsets::D().AuraState) return PushNil(L);
+        return PushNumber(L, (double)OM::Field(g, (uint32_t)Offsets::D().AuraState));
+    }
     if (!std::strcmp(name, "UnitFlags")) {
         uint64_t g = GuidArg(L, 2);
         if (!g) g = OM::LocalGuid();

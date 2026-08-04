@@ -63,9 +63,9 @@ conditions → wire.
 
 | # | Check | Status | Where |
 |---|---|---|---|
-| 20 | Stance / form | **done** | `check_stance` (shapeshift exclusion mask + runtime `ShapeshiftForm`) |
-| 21 | Mounted / sitting / dead / ghost | **partial** | mounted **done** (`check_mounted`, ATTR0 0x10000000); dead/ghost **done**; **sitting missing** |
-| 22 | Reactive condition | **partial** | required/forbidden caster auras **done**; CasterAuraState / TargetAuraState (the reactive *state* fields) **not** consumed |
+| 20 | Stance / form | **done (was silently dead)** | `check_stance`; `Bytes2` was 0xCC in a zero region, so `ShapeshiftForm` answered "unshifted" for every caster in every form. Measured to **0x1E8** (`0x00000801`) 2026-08-03 |
+| 21 | Mounted / sitting / dead / ghost | **partial** | mounted **done**; dead/ghost **done**; **sitting unmeasurable so far** - no descriptor dword changes between seated and standing (full 0x00..0x400 diff, both directions), so standState is an instance field or the emote is cosmetic. Gate abstains |
+| 22 | Reactive condition | **partial, now unblocked** | required/forbidden caster auras **done**; `UNIT_FIELD_AURASTATE` located at **0x0F4** (read `0x08400000` live) - the field the record's CasterAuraState/TargetAuraState match against. Offset landed; the comparison is not wired yet |
 | 23 | Immunity / invulnerability | **done** | `check_immunity` + `Protection` classification |
 
 ## Targeting mode

@@ -99,10 +99,20 @@ struct DescriptorTable {
     // was in the dead zero region and made the shapeshift gate answer
     // "unshifted" for every caster in every form.
     uintptr_t Bytes2 = 0x1E8;
-    // UNIT_FIELD_BYTES_1 byte0 = standState (sitting). Predicted 0x128; it read
-    // 0, which is CONSISTENT with standing but does not prove the offset - a
-    // wrong offset reads 0 too. Left disabled rather than assumed: sit, then
-    // scan for the dword whose byte0 becomes non-zero.
+    // UNIT_FIELD_BYTES_1 byte0 = standState (sitting). MEASURED AND NOT FOUND.
+    //
+    // Snapshotted the WHOLE descriptor 0x00..0x400, ran DoEmote("SIT") (which
+    // is not protected here - it returned ok), snapshotted again, then stood
+    // and diffed a third time. Both diffs came back EMPTY: not one dword in the
+    // descriptor moves between seated and standing.
+    //
+    // So either the emote is cosmetic-only on this server, or standState is an
+    // INSTANCE field rather than a descriptor field - which is entirely normal
+    // on this client: Facing (0x7A8) and QuestGiverStatus (0x90) are both
+    // instance fields too. The descriptor is not the whole object.
+    //
+    // Stays 0 = unknown. The sitting basic check therefore abstains rather than
+    // claiming "not sitting", which is the only honest answer available.
     uintptr_t Bytes1 = 0;
     // PLAYER_VISIBLE_ITEM_1_ENTRYID, stride 8 (entry + enchantment pair).
     // RE'd live 2026-08-03 by scanning the player descriptor against

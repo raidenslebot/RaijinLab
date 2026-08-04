@@ -1731,6 +1731,15 @@ static void ApplyInputDiff() {
 }
 
 bool RequestInteract(uint64_t guid) {
+    // NO GUID = INTERACT THE CURRENT TARGET, STILL STAGED (2026-08-03).
+    //
+    // Round 74 staged the guid path and left InteractTarget() calling
+    // InteractUnitDirect straight from the bridge dispatch. The RecentCalls
+    // correlator then named it outright: an ADDON_ACTION_FORBIDDEN fired with
+    // InteractTarget sitting at the top of the call window. Resolve the target
+    // here and stage it like everything else - there is no reason the no-guid
+    // path should take a different, tainting route.
+    if (!guid) guid = ReadClientTargetGuid();
     if (!guid) return false;
     g_deferredInteract = guid;
     RL::Log::Info("DeferredInteract staged g=0x%llX (native hook runs it)",

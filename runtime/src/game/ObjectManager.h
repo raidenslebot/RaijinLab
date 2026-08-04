@@ -70,6 +70,22 @@ bool HasUnitAura(uint64_t guid, int spellId, int* outStacks = nullptr);
 int UnitAuraDirect(uint64_t guid, int spellId, int* outStacks = nullptr);
 std::string AuraProbe(uint64_t guid);
 
+// ---- ProcFreeze: client-memory proc-ICD / proc-buff persistence (2026-08-03)
+// Stormbringer-class procs (273056) carry their ICD as a hidden buff AURA on the
+// player (NOT a cast cooldown — live-proven cd=0/category=0). These mutate that
+// aura's expiry in client memory. ZERO packets: a proc is client-authoritative,
+// so the server sees byte-identical data. Aura expiry is the timeGetTime()-domain
+// ms clock (GetTickCount shares it to within scheduler jitter).
+//
+// mode: 1 = freeze (expiry held forward forever — never expires);
+//       0 = cycle (expiry = now + cycleMs every frame — ICD becomes cycleMs).
+int ProcFreezeAddSpell(uint32_t spellId, int mode, uint32_t cycleMs);
+int ProcFreezeRemoveSpell(uint32_t spellId);
+void ProcFreezeClearAll();
+// Run one pass on the local player; returns auras mutated this call.
+int ProcFreezeTick();
+std::string ProcFreezeState();
+
 // Runtime-first multi-dot discovery (no mouseover / UnitExists / UnitCanAttack):
 // living attackable units in range matching aura missing (wantMissing) or present.
 // "n|0xGUID:entry:center:edge:face:hp:mhp|..." sorted face then dist.

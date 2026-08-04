@@ -3525,6 +3525,13 @@ function Executor._tick_body()
     if not RaijinLabDB or not RaijinLabDB.rotation_enabled then
         return nil, "disabled"
     end
+    -- 2026-08-03 (ProcFreeze): drive the proc-ICD / proc-buff persistence pass
+    -- each tick, on the main thread. This is a cheap pure-memory runtime scan
+    -- (aura expiry writes); it is a no-op unless ProcFreezeAdd registered a
+    -- spell via the CLI/pipe. ZERO packets emitted — proc is client-authoritative.
+    if RaijinLab.RuntimeCall and RaijinLab.HasRuntime and RaijinLab:HasRuntime() then
+        pcall(RaijinLab.RuntimeCall, RaijinLab, "ProcFreezeTick")
+    end
     local Engine = RaijinLab.RotationEngine
     local Conditions = RaijinLab.Conditions
     local World = RaijinLab.World

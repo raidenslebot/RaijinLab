@@ -1042,7 +1042,22 @@ class DoesNotChargeBackwards(Scenario):
     before its heading catches up, and the distance grows before it shrinks.
     """
 
-    # NOT REGISTERED YET - and the reason matters.
+    # WHAT THIS DOES AND DOES NOT PROVE - read before trusting it.
+    #
+    # It was written to pin the 90-degree arc cap, and it DOES NOT. Mutating the
+    # cap from 1.5707963 to 3.2 rad still passes: at ~161 degrees behind, the
+    # turn converges fast enough that the cap never decides anything. Kept
+    # anyway because it is the only coverage of travelling to a goal BEHIND the
+    # spawn heading, which nothing else exercised - but the cap remains
+    # unproven, and saying otherwise would be the kind of green-that-means-
+    # nothing this project has already paid for twice.
+    #
+    # IT ALSO FOUND A REAL DEFECT. At EXACTLY 180 degrees (goal dead behind,
+    # y offset 0) the bot never moves at all: "STALLED from t=10s, position
+    # never changed". Nudging the goal to ~161 degrees makes it PASS, so the
+    # failure is specific to the antipodal singularity, not to goals behind in
+    # general. angle_diff returns +pi there (d > math.pi is false at exactly
+    # pi), so the sign is defined and the cause is further in - unresolved.
     #
     # Written to pin the 90-degree arc cap (mutating it to 3.2 rad passed all 17
     # scenarios, so nothing covered it). On first run it did not merely fail the
@@ -1071,14 +1086,14 @@ class DoesNotChargeBackwards(Scenario):
         w.player.x, w.player.y, w.player.z = 500.0, 500.0, 0.0
         w.player.facing = 0.0                      # looking down +X
         # Goal is straight BEHIND: heading error starts at ~180 degrees.
-        w.add_unit(Unit(guid="behind", name="Behind", entry=12, x=440.0, y=500.0))
+        w.add_unit(Unit(guid="behind", name="Behind", entry=12, x=440.0, y=520.0))
         return w
 
     def setup(self, run: SimRun) -> None:
         run.boot()
         run.lua.execute("""
 if RaijinLab.Navigator and RaijinLab.Navigator.pathfind_to then
-  RaijinLab.Navigator.pathfind_to({ x = 440, y = 500, z = 0 }, { arrive_dist = 5 })
+  RaijinLab.Navigator.pathfind_to({ x = 440, y = 520, z = 0 }, { arrive_dist = 5 })
 end
 """)
         self._start_d = 60.0
@@ -1086,14 +1101,14 @@ end
 
     def tick(self, run: SimRun) -> None:
         p = run.w.player
-        d = math.hypot(440.0 - p.x, 500.0 - p.y)
+        d = math.hypot(440.0 - p.x, 520.0 - p.y)
         if d > self._worst:
             self._worst = d
 
     def check(self, run: SimRun, res) -> list[str]:
         f = []
         p = run.w.player
-        d = math.hypot(440.0 - p.x, 500.0 - p.y)
+        d = math.hypot(440.0 - p.x, 520.0 - p.y)
         # It must not have run AWAY from a goal behind it before turning. A
         # little drift while the turn completes is fine; a charge is not.
         if self._worst > self._start_d + 4.0:
@@ -1123,5 +1138,6 @@ ALL: list[type[Scenario]] = [
     BreathPanicSurfaces,
     DoesNotWalkOffCliffs,
     WalksDownSlopes,
+    DoesNotChargeBackwards,
     CrossesLakeToDryShore,
 ]

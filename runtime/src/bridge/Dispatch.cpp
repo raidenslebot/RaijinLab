@@ -1348,6 +1348,37 @@ static int Handle(lua_State* L, const char* name) {
         auto s = OM::AuraProbe(g);
         return PushString(L, s.c_str());
     }
+    // ProcFreeze (2026-08-03): client-memory proc-ICD / proc-buff persistence
+    // for Stormbringer-class procs. Pure memory writes to the aura expiry; ZERO
+    // packets (a proc is client-authoritative). Operated via the CLI/pipe when
+    // the game is idle, or via an addon RuntimeCall each frame when in combat.
+    //   ProcFreezeAdd <sid> <mode(1=freeze,0=cycle)> <cycleMs>
+    //   ProcFreezeRemove <sid>
+    //   ProcFreezeClear
+    //   ProcFreezeState
+    //   ProcFreezeTick          (run one pass; returns auras mutated)
+    if (!std::strcmp(name, "ProcFreezeAdd")) {
+        uint32_t sid = (uint32_t)optnumber(L, 2, 0);
+        int mode = (int)optnumber(L, 3, 0);
+        uint32_t cycle = (uint32_t)optnumber(L, 4, 300);
+        return PushNumber(L, (double)OM::ProcFreezeAddSpell(sid, mode, cycle));
+    }
+    if (!std::strcmp(name, "ProcFreezeRemove")) {
+        uint32_t sid = (uint32_t)optnumber(L, 2, 0);
+        return PushNumber(L, (double)OM::ProcFreezeRemoveSpell(sid));
+    }
+    if (!std::strcmp(name, "ProcFreezeClear")) {
+        OM::ProcFreezeClearAll();
+        return PushBool(L, true);
+    }
+    if (!std::strcmp(name, "ProcFreezeState")) {
+        auto s = OM::ProcFreezeState();
+        return PushString(L, s.c_str());
+    }
+    if (!std::strcmp(name, "ProcFreezeTick")) {
+        int mutated = OM::ProcFreezeTick();
+        return PushNumber(L, (double)mutated);
+    }
     // Unit aura list from runtime aura table: "n|spellId:stacks:remMs|..."
     if (!std::strcmp(name, "UnitAuras") || !std::strcmp(name, "GetUnitAuras")) {
         uint64_t g = GuidArg(L, 2);
@@ -1724,17 +1755,14 @@ static int Handle(lua_State* L, const char* name) {
         // this dispatch raises ADDON_ACTION_FORBIDDEN - live-proven, while
         // Target/ClearTarget in the same trial were clean. Hand it to the
         // native frame hook instead, exactly like movement and auto-attack.
-        if (g) return PushBool(L, Actions::RequestInteract(g));
-        Actions::SetCurrentLuaState(L);
-        bool ok = Actions::InteractTarget();
-        Actions::SetCurrentLuaState(nullptr);
-        return PushBool(L, ok);
+        // Both paths stage now. The no-guid one used to call InteractTarget()
+        // straight from this dispatch, and the RecentCalls correlator caught it
+        // red-handed: ADDON_ACTION_FORBIDDEN with InteractTarget at the top of
+        // the call window. RequestInteract resolves the current target itself.
+        return PushBool(L, Actions::RequestInteract(g));
     }
     if (!std::strcmp(name, "InteractTarget")) {
-        Actions::SetCurrentLuaState(L);
-        bool ok = Actions::InteractTarget();
-        Actions::SetCurrentLuaState(nullptr);
-        return PushBool(L, ok);
+        return PushBool(L, Actions::RequestInteract(0));
     }
     if (!std::strcmp(name, "Jump"))
         return PushBool(L, Actions::Jump());

@@ -3970,4 +3970,139 @@ bool GetKeyState(int vkey) {
     return (::GetAsyncKeyState(vkey) & 0x8000) != 0;
 }
 
+// ---- ProcFreeze (2026-08-03) ----------------------------------------------
+// Client-memory control of proc-ICD / proc-buff persistence for
+// Stormbringer-class Enhancement procs (273056). The proc's "cooldown" is an
+// INTERNAL COOLDOWN carried by a hidden buff AURA on the player — NOT a cast
+// cooldown (live-proven: cd=0/category=0/gcd=0, GetSpellCooldown=0). So we
+// mutate that aura's expiry (+0x14) in client memory. ZERO packets: a proc is
+// client-authoritative, so forcing the roll / shortening the ICD sends
+// byte-identical packets — the server cannot distinguish it.
+//
+// This registers into a small fixed table keyed by spell id (the buff's spell
+// id). mode 1=frozen (expiry held forward so it never expires); mode 0=cycle
+// (expiry = now+cycleMs each frame => ICD becomes cycleMs).
+namespace {
+// Fixed open-address registration table (thread-safety: only touched from the
+// main thread / IPC pump).
+struct PfEntry { uint32_t spellId = 0; int mode = 0; uint32_t cycleMs = 0; };
+PfEntry g_pf[32];
+
+// Write-capable variant of AuraWalk: for each registered spell present on the
+// player, rewrite the aura entry's expiry(+0x14) to `now + offsetMs` (offset 0
+// keeps as-is; used for freeze we push far, cycle pushes cycleMs). Returns the
+// number of entries actually rewritten (so callers can tell "did something").
+// We walk the SAME layout as AuraWalk but expose the entry pointer so ProcFreeze
+// can Mem::Write to +0x14. Reuses the validation rules: implausible counts
+// return -1 (unknown), so we never write into a wrong layout.
+template <typename Fn> // Fn(uintptr_t entryPtr, int sid, int durMs, int expMs) -> bool continue
+static int AuraWalkWrite(uintptr_t ptr, Fn fn) {
+    if (!ptr || !AcceptObjPtr(ptr)) return -1;
+    uint32_t cnt = Mem::Read<uint32_t>(ptr + aura_off::CountStatic);
+    uintptr_t table;
+    if (cnt == 0xFFFFFFFFu) {
+        cnt = Mem::Read<uint32_t>(ptr + aura_off::CountDyn);
+        table = Mem::Read<uintptr_t>(ptr + aura_off::TableDyn);
+        if (!table || table < 0x10000u) return -1;
+    } else {
+        table = ptr + aura_off::TableStatic;
+    }
+    if (cnt > aura_off::MaxCount) return -1;
+    int seen = 0;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        uintptr_t e = table + (uintptr_t)i * aura_off::EntrySize;
+        uint32_t sid = Mem::Read<uint32_t>(e + aura_off::E_SpellId);
+        if (!sid) continue;
+        if (sid > 20000000u) return -1;
+        int32_t durMs = Mem::Read<int32_t>(e + aura_off::E_Duration);
+        int32_t expMs = Mem::Read<int32_t>(e + aura_off::E_Expiry);
+        ++seen;
+        if (!fn(e, (int)sid, durMs, expMs)) break;
+    }
+    return seen;
+}
+} // namespace
+
+int ProcFreezeAddSpell(uint32_t spellId, int mode, uint32_t cycleMs) {
+    if (spellId == 0) return 0;
+    int slot = -1;
+    for (int i = 0; i < 32; ++i) {
+        if (g_pf[i].spellId == spellId) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < 32; ++i) {
+            if (g_pf[i].spellId == 0) { slot = i; break; }
+        }
+    }
+    if (slot < 0) return 0; // table full
+    g_pf[slot].spellId = spellId;
+    g_pf[slot].mode = (mode == 1) ? 1 : 0;
+    g_pf[slot].cycleMs = cycleMs ? cycleMs : 300u;
+    RL::Log::Info("ProcFreeze: +spell %u mode=%d cycle=%u", spellId, (int)g_pf[slot].mode, g_pf[slot].cycleMs);
+    return 1;
+}
+
+int ProcFreezeRemoveSpell(uint32_t spellId) {
+    for (int i = 0; i < 32; ++i) {
+        if (g_pf[i].spellId == spellId) {
+            g_pf[i].spellId = 0; g_pf[i].mode = 0; g_pf[i].cycleMs = 0;
+            RL::Log::Info("ProcFreeze: -spell %u", spellId);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void ProcFreezeClearAll() {
+    for (int i = 0; i < 32; ++i) { g_pf[i].spellId = 0; g_pf[i].mode = 0; g_pf[i].cycleMs = 0; }
+    RL::Log::Info("ProcFreeze: clear all");
+}
+
+int ProcFreezeTick() {
+    // Is any spell registered? Quick scan.
+    bool any = false;
+    for (int i = 0; i < 32; ++i) if (g_pf[i].spellId) { any = true; break; }
+    if (!any) return 0;
+
+    uint64_t local = LocalGuid();
+    if (!local) return 0;
+    uintptr_t p = SnapPtr(local);
+    if (!p) p = SafeObjectPtr(local);
+    if (!p || !AcceptObjPtr(p)) return 0;
+
+    uint32_t nowMs = (uint32_t)GetTickCount();   // timeGetTime-domain ms clock
+    int mutated = 0;
+    AuraWalkWrite(p, [&](uintptr_t entry, int sid, int durMs, int expMs) -> bool {
+        for (int i = 0; i < 32; ++i) {
+            const PfEntry& e = g_pf[i];
+            if (e.spellId == 0 || (uint32_t)sid != e.spellId) continue;
+            int32_t targetExp = (int32_t)(nowMs + (e.mode == 1 ? 60 * 60 * 1000u : e.cycleMs));
+            // Only write if it would actually move the expiry (avoid needless
+            // napping writes every frame when frozen value is already far out).
+            if (expMs >= targetExp) continue;
+            Mem::Write<uint32_t>(entry + aura_off::E_Expiry, (uint32_t)targetExp);
+            ++mutated;
+        }
+        return true;
+    });
+    return mutated;
+}
+
+std::string ProcFreezeState() {
+    char buf[96];
+    int n = 0;
+    std::string out;
+    for (int i = 0; i < 32; ++i) {
+        if (!g_pf[i].spellId) continue;
+        ++n;
+        snprintf(buf, sizeof(buf), "%s%d:%d:%d",
+                 n > 1 ? "|" : "", (int)g_pf[i].spellId, (int)g_pf[i].mode,
+                 (int)g_pf[i].cycleMs);
+        out += buf;
+    }
+    char head[24];
+    snprintf(head, sizeof(head), "%d", n);
+    return std::string(head) + (n ? "|" : "") + out;
+}
+
 } // namespace RL::Game::OM

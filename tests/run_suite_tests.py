@@ -493,6 +493,67 @@ ex("switching back resolves again", cn == "Alpha")
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_contract() -> list:
+    """Contract.evaluate: the n/a branch must RESET the hold timer.
+
+    Contract.lua had no test group. evaluate() takes an explicit clock, so the
+    whole thing is deterministic - there was never a reason it lacked coverage.
+
+    The sharp one is `spec._since = nil` inside the not-applicable branch. Drop
+    it and a contract that held, stopped applying, then applied again keeps its
+    ORIGINAL start time - so it reports a violation the instant it resumes, with
+    a held duration covering all the time it was not even being watched. That is
+    a false alarm on a diagnostic system, which is worse than no diagnostic: it
+    trains you to ignore the report.
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    lua.execute("RaijinLab = {}")
+    src = (ADDON / "core/Contract.lua").read_text(encoding="utf-8")
+    lua.execute("Contract = (function()" + chr(10) + src + chr(10) + "end)()")
+    lua.execute(
+        r"""
+ct_fails = {}
+local function ct(name, cond) if not cond then ct_fails[#ct_fails+1] = name end end
+
+local applies, ok = true, false
+local spec = Contract.invariant("t", {
+  within  = 10,
+  when    = function() return applies end,
+  require = function() return ok end,
+})
+
+-- starts holding at t=0, requirement unmet but inside the window
+ct("fresh breach is not yet a violation", Contract.evaluate(spec, 0) ~= "violated")
+ct("still inside the window at t=9",      Contract.evaluate(spec, 9) ~= "violated")
+
+-- past the window it MUST fire, and report how long it held
+local st, held = Contract.evaluate(spec, 30)
+ct("beyond the window it violates", st == "violated")
+ct("and reports the held duration",  type(held) == "number" and held >= 20)
+
+-- stops applying: n/a, and the timer must be forgotten
+applies = false
+ct("not applicable reads n/a", Contract.evaluate(spec, 31) == "n/a")
+
+-- resumes MUCH later. A fresh hold starts now, so this is NOT a violation.
+-- Without the reset the old _since survives and this fires immediately.
+applies = true
+ct("resuming after n/a starts a FRESH hold", Contract.evaluate(spec, 1000) ~= "violated")
+ct("and violates again only after the window", Contract.evaluate(spec, 1011) == "violated")
+
+-- a satisfied requirement never violates, however long it applies
+ok = true
+ct("satisfied requirement never violates", Contract.evaluate(spec, 5000) ~= "violated")
+"""
+    )
+    t = lua.eval("ct_fails")
+    n = int(lua.eval("#ct_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

@@ -2908,6 +2908,21 @@ sc("does not stop movement when it cannot eat", stopped2 == false)
 Rest._state = "resting"; Rest._t0 = __t
 __t = __t + 999
 sc("gives up waiting eventually", (Rest.tick({}) or ""):find("gave up") ~= nil)
+
+-- KNOW-GATED IGNORANCE PATHS. Unreachable until Know was wired in (0ec2d2b).
+-- A MISSING OR THROWING API MUST READ UNKNOWN, never a definite answer: a
+-- confident "no" from an absent API is indistinguishable from a real no, and
+-- every caller downstream treats it as fact.
+local Kn = RaijinLab and RaijinLab.Know
+local function st(k) return (type(k) == "table" and k.state) or tostring(k) end
+
+if Kn and Rest and Rest.should_rest_k then
+  local saved = UnitHealthMax
+  UnitHealthMax = nil
+  sc("no health api reads unknown, not a decision", st(Rest.should_rest_k()) == "unknown")
+  UnitHealthMax = saved
+end
+
 '''
 
 def test_rest() -> list:
@@ -3366,6 +3381,33 @@ function UnitName(u) return "OtherAlt" end
 nc("a different character does NOT inherit it", Trainer.last_level() == 0)
 function UnitName(u) return "Tester" end
 nc("and the original is unchanged", Trainer.last_level() == 40)
+
+-- KNOW-GATED IGNORANCE PATHS. Unreachable until Know was wired in (0ec2d2b).
+-- A MISSING OR THROWING API MUST READ UNKNOWN, never a definite answer: a
+-- confident "no" from an absent API is indistinguishable from a real no, and
+-- every caller downstream treats it as fact.
+local Kn = RaijinLab and RaijinLab.Know
+local function st(k) return (type(k) == "table" and k.state) or tostring(k) end
+
+if Kn and Trainer and Trainer.at_trainer_k then
+  -- BOTH probes must go: at_trainer_k checks ClassTrainerFrame FIRST, and the
+  -- harness frame mock satisfies it, so nil-ing only the services API left the
+  -- first branch answering and every assertion here failed.
+  local saved, saved_frame = GetNumTrainerServices, ClassTrainerFrame
+  GetNumTrainerServices, ClassTrainerFrame = nil, nil
+  nc("no trainer api reads unknown", st(Trainer.at_trainer_k()) == "unknown")
+  -- default direction: unknown must NOT claim we are standing at a trainer,
+  -- or the suite starts a training trip against thin air.
+  nc("unknown assumes NOT at a trainer", Trainer.at_trainer() == false)
+  GetNumTrainerServices = function() error("frame gone") end
+  nc("a throwing trainer api still reads unknown", st(Trainer.at_trainer_k()) == "unknown")
+  nc("and still assumes NOT at a trainer", Trainer.at_trainer() == false)
+  -- a real trainer window is still recognised
+  GetNumTrainerServices = function() return 5 end
+  nc("services present reads YES", st(Trainer.at_trainer_k()) == "yes")
+  GetNumTrainerServices, ClassTrainerFrame = saved, saved_frame
+end
+
 '''
 
 def test_death() -> list:

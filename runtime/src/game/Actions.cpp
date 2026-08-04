@@ -1655,6 +1655,13 @@ volatile int g_deferredHalt = 0;
 // Pending auto-attack engage target (0 = none). Staged by the Lua bridge
 // (RequestAttackEngage), executed by the native hook via AttackTarget().
 volatile uint64_t g_deferredAttack = 0;
+// Interact staged for the native hook. LIVE-PROVEN 2026-08-03: calling
+// RuntimeCall("Interact") emitted ADDON_ACTION_FORBIDDEN (addon=RaijinLab,
+// fn=b()) while Target / ClearTarget / Actions.Target were all clean - so the
+// dialog the user kept seeing comes from InteractUnitDirect invoking the
+// client's InteractUnit handler (0x527F00) from INSIDE a bridge dispatch.
+// Same rule as movement and auto-attack: the client judges the ORIGIN.
+volatile uint64_t g_deferredInteract = 0;
 // Guard: the addon engages 6603 once per target; the runtime idempotency
 // checks (AttackTargetGuid / IsAutoAttacking / s_engagedTarget) run in the
 // hook — never double-engage.
@@ -1716,6 +1723,14 @@ static void ApplyInputDiff() {
     g_inputApplied = want;
 }
 
+bool RequestInteract(uint64_t guid) {
+    if (!guid) return false;
+    g_deferredInteract = guid;
+    RL::Log::Info("DeferredInteract staged g=0x%llX (native hook runs it)",
+                  (unsigned long long)guid);
+    return true;
+}
+
 bool RequestHaltMovement() {
     // Stage only. The native hook executes StopMoving() + CommitMovement() +
     // MouselookStop() on the next main-thread frame — NEVER from this Lua-
@@ -1753,6 +1768,13 @@ void DrainDeferredActions() {
         MouselookStop();
         CommitMovement();
         RL::Log::Info("DeferredHalt executed (native)");
+    }
+    if (g_deferredInteract) {
+        uint64_t g = g_deferredInteract;
+        g_deferredInteract = 0;
+        // Native hook context: no Lua on the stack, so the handler call is not
+        // attributable to an addon and cannot raise ADDON_ACTION_FORBIDDEN.
+        InteractGuid(g);
     }
     if (g_deferredAttack) {
         uint64_t tgt = g_deferredAttack;

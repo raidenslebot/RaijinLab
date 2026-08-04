@@ -120,6 +120,9 @@ float PlayerFacing();             // live camera-independent facing (rad); 1e9 o
 // Halt: release every held movement key + stop + commit, natively. Used by the
 // suite disable path (was calling MoveForward(false)... from Lua -> taint).
 bool RequestHaltMovement();
+// Stage an interact for the native frame hook. Calling InteractGuid directly
+// from a bridge dispatch raises ADDON_ACTION_FORBIDDEN (live-proven).
+bool RequestInteract(uint64_t guid);
 // Per-input staged carrier: bit is InputBit (0 fwd, 1 back, 2 strafeL,
 // 3 strafeR, 4 turnL, 5 turnR, 6 pitchU, 7 pitchD). Stages intent only; the
 // native frame hook diffs and issues the real transitions, so no protected

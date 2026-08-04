@@ -1615,8 +1615,13 @@ static int Handle(lua_State* L, const char* name) {
         // the VM — a blocked action AND a documented nested re-entry crash.
         // The native direct-handler path (InteractUnitDirect) is the primary
         // and unaffected.
+        // STAGED (2026-08-03): running the InteractUnit handler from inside
+        // this dispatch raises ADDON_ACTION_FORBIDDEN - live-proven, while
+        // Target/ClearTarget in the same trial were clean. Hand it to the
+        // native frame hook instead, exactly like movement and auto-attack.
+        if (g) return PushBool(L, Actions::RequestInteract(g));
         Actions::SetCurrentLuaState(L);
-        bool ok = g ? Actions::InteractGuid(g) : Actions::InteractTarget();
+        bool ok = Actions::InteractTarget();
         Actions::SetCurrentLuaState(nullptr);
         return PushBool(L, ok);
     }

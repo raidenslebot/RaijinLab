@@ -57,7 +57,7 @@ conditions → wire.
 | 16 | Resource sufficiency | **done** | `check_resources` → `World.resource_ok` (runtime RuneState / UnitPower) |
 | 17 | Cooldown / charge | **done** | `check_gcd_cd`; the GCD is excluded from per-spell cooldowns via the record's RecoveryTime/CategoryRecoveryTime |
 | 18 | GCD / server lock | **done** | `check_gcd_cd`, with data-driven off-GCD from StartRecoveryCategory |
-| 19 | Silence / school lockout | **partial - blocked on RE** | silence **done** (`check_silence`, PreventionType + UNIT_FLAG_SILENCED). Per-school lockout lives in the client's own lockout table, not the descriptor - it needs a live RE pass to locate, which needs the client running |
+| 19 | Silence / school lockout | **done** | silence via `check_silence` (PreventionType + UNIT_FLAG_SILENCED). **School lockout needs no lockout table**: the client's own cooldown call already reports it, and the GCD is tracked separately - so any reported duration BEYOND what the GCD can account for is a lockout. Floored by the record's StartRecoveryTime so cold GCD tracking cannot misread a plain GCD. 3 mutations caught |
 
 ## Caster state
 

@@ -169,19 +169,45 @@ local function spell_ready_remaining(sid, name)
     -- this spell's REAL cooldowns. Both zero => the spell has no cooldown, so
     -- any duration the client reports for it can only be the GCD. No epsilon,
     -- no "<= 1.5s" heuristic that would misread a genuine 1s cooldown.
+    --
+    -- ...EXCEPT A SCHOOL LOCKOUT (2026-08-04, basic check #19). "Can only be the
+    -- GCD" was WRONG, and the gap is mine. An interrupt locks a whole SCHOOL,
+    -- and the client reports that lockout through the same cooldown call - so a
+    -- spell with no cooldown of its own reports a duration for a second reason.
+    -- Skipping the read entirely for those spells meant a school-locked Renew
+    -- looked ready and ate a guaranteed refusal, which is exactly the red error
+    -- this engine is supposed to make impossible.
+    --
+    -- The discriminator needs no lockout table: the GCD is ALREADY tracked in
+    -- _gcd_until, so anything the client reports BEYOND the GCD's own remaining
+    -- cannot be the GCD. Sample it, and keep only the excess.
     local Wq = RaijinLab and RaijinLab.World
     local req = Wq and Wq.spell_req and Wq.spell_req(sid)
     local has_own_cd = true
     if req then
         has_own_cd = ((tonumber(req.cd) or 0) > 0) or ((tonumber(req.catcd) or 0) > 0)
     end
-    if GetSpellCooldown and has_own_cd then
+    -- HOW MUCH OF A REPORTED DURATION THE GCD CAN ACCOUNT FOR.
+    --
+    -- Taking this from _gcd_until ALONE is unsafe and the suite caught it: when
+    -- GCD tracking is cold (rotation start, first cast, a missed event)
+    -- _gcd_until is 0, every plain GCD then reads as "beyond the GCD", and the
+    -- lockup this whole fix exists to remove comes straight back. So the record
+    -- supplies a floor: StartRecoveryTime is this spell's own GCD length, and
+    -- 1.5s is the client default when the record does not say.
+    local gcd_rem = (until_t > t) and (until_t - t) or 0
+    local rec_gcd = (tonumber(req and req.gcd) or 1500) / 1000
+    if rec_gcd > gcd_rem then gcd_rem = rec_gcd end
+    if GetSpellCooldown then
         local function sample(key)
             if not key then return end
             local s, d = GetSpellCooldown(key)
             s, d = tonumber(s) or 0, tonumber(d) or 0
             if d > 0 then
                 local rem = (s + d) - t
+                -- Without its own cooldown, only the part BEYOND the GCD is
+                -- real - and that part is a school lockout.
+                if not has_own_cd and rem <= gcd_rem + 0.05 then return end
                 if rem > best then best = rem end
             end
         end
@@ -193,9 +219,13 @@ local function spell_ready_remaining(sid, name)
     -- Gated the same way: a spell the record says has NO cooldown cannot be on
     -- one, and the runtime read of the client's cooldown table carries the same
     -- GCD entry the Lua API does.
-    if sid and sid > 0 and has_own_cd then
+    if sid and sid > 0 then
         local rt = runtime_cooldown_remaining(sid)
-        if rt > best then best = rt end
+        -- Same rule: the client's own cooldown call carries the GCD too, so for
+        -- a no-own-cooldown spell only the excess over the GCD is a real block.
+        if rt > 0 and (has_own_cd or rt > gcd_rem + 0.05) and rt > best then
+            best = rt
+        end
     end
     return best
 end

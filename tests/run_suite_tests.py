@@ -548,8 +548,21 @@ RaijinLab.HasRuntime = function() return true end
 RaijinLab.RuntimeCall = function(_, cmd) if cmd == "SpellCooldownMs" then return 9000 end end
 E._in_event = nil
 
-req_by_sid[200] = { cd = 0, catcd = 0 }
-ex("runtime cooldown is gated too", E.spell_ready_remaining(200, "NoCd") == 0)
+-- SCHOOL LOCKOUT (basic check #19). The client's own cooldown call reports a
+-- lockout through the same channel as the GCD, so "no own cooldown => it can
+-- only be the GCD" was WRONG and let a school-locked spell look ready. The
+-- discriminator needs no lockout table: anything beyond what the GCD can
+-- account for is a real block. 9s is not a 1.5s GCD.
+req_by_sid[200] = { cd = 0, catcd = 0, gcd = 1500 }
+ex("a long runtime duration on a no-cooldown spell IS a lockout",
+   E.spell_ready_remaining(200, "NoCd") > 5)
+
+-- and the GCD itself still must not register, which is the lockup fix
+RaijinLab.RuntimeCall = function(_, cmd) if cmd == "SpellCooldownMs" then return 1400 end end
+req_by_sid[202] = { cd = 0, catcd = 0, gcd = 1500 }
+ex("a GCD-sized runtime duration is still ignored",
+   E.spell_ready_remaining(202, "NoCd2") == 0)
+RaijinLab.RuntimeCall = function(_, cmd) if cmd == "SpellCooldownMs" then return 9000 end end
 req_by_sid[201] = { cd = 3000, catcd = 0 }
 ex("runtime cooldown is used when real", E.spell_ready_remaining(201, "RealCd") > 0)
 

@@ -2711,13 +2711,15 @@ function Navigator._start_ticker()
                 end
                 pcall(function()
                     local a = RaijinLab and RaijinLab.Actions
-                    if a and a.MoveForward then a.MoveForward(false) end
-                    if a and a.StrafeLeft then a.StrafeLeft(false) end
-                    if a and a.StrafeRight then a.StrafeRight(false) end
-                    if a and a.TurnLeft then a.TurnLeft(false) end
-                    if a and a.TurnRight then a.TurnRight(false) end
-                    if a and a.PitchUp then a.PitchUp(false) end
-                    if a and a.PitchDown then a.PitchDown(false) end
+                    -- FULL RELEASE = STAGE A NATIVE HALT (2026-08-03). This
+                    -- released all seven inputs by calling the PROTECTED
+                    -- movement APIs one at a time, which is what pops "blocked
+                    -- from an action only available to the Blizzard UI" (see
+                    -- Master.halt_movement). HaltMovement is drained by the
+                    -- runtime frame hook with no Lua on the stack and releases
+                    -- every held key, stops and commits - the same intent,
+                    -- without touching a protected API from addon context.
+                    if a and a.HaltMovement then pcall(a.HaltMovement) end
                     if a and a.StopMoving then a.StopMoving() end
                 end)
                 Navigator._moving = false

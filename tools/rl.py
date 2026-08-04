@@ -446,6 +446,52 @@ def gate_execsecure(paths=None) -> list[str]:
                            % (f.relative_to(ROOT).as_posix(), i + 1))
     return bad
 
+
+# Protected client actions. Calling ANY of these from addon Lua - even through
+# Actions.* into the bridge - is treated by the client as addon taint and pops
+# "RaijinLab has been blocked from an action only available to the Blizzard UI",
+# after which protected calls answer nil to every addon sharing that execution
+# path (which is what buried GatherMate2 and XPerl in errors).
+PROTECTED_ACTIONS = (
+    "MoveForward", "MoveBackward", "StrafeLeft", "StrafeRight",
+    "TurnLeft", "TurnRight", "PitchUp", "PitchDown",
+    "Jump", "StopMoving", "CommitMovement", "MouselookStart", "MouselookStop",
+    "SitStandOrDescendStart", "DescendStop", "AscendStop",
+)
+
+
+def gate_protected_actions(paths=None) -> list[str]:
+    """Every protected action must be STAGED and drained by the native hook.
+
+    USER DIRECTIVE (2026-08-03): "literally all protected actions must properly
+    run native through runtime hooks. all modules in the suite."
+
+    The pattern that works is already proven: A.HaltMovement stages an intent
+    which the runtime's frame hook drains on the main thread with no Lua on the
+    stack. Anything called directly from Lua taints, whether or not it reaches
+    the same C function in the end - the client judges the ORIGIN, not the
+    destination. That is why force_release tainted every suite-OFF while
+    Master.halt_movement, one level up, did not.
+
+    This gate exists because the scope was otherwise guesswork: it enumerates
+    every remaining site so the native carrier can be finished exhaustively
+    rather than one bug report at a time.
+    """
+    bad = []
+    pat = re.compile("(?<![\\w.])a[\\.](" + "|".join(PROTECTED_ACTIONS) + ")[\\s]*[(]")
+    for f in sorted((ROOT / "addon").rglob("*.lua")):
+        if "RaijinQuest" in f.as_posix():
+            continue
+        rel = f.relative_to(ROOT).as_posix()
+        for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").split(chr(10))):
+            code = line.split("--")[0]
+            m = pat.search(code)
+            if m:
+                bad.append("%s:%d: calls the protected action %s() from addon "
+                           "Lua - it must be staged and drained by the native "
+                           "frame hook" % (rel, i + 1, m.group(1)))
+    return bad
+
 def gate_addresses(paths=None) -> list[str]:
     """Every hardcoded VA the runtime CALLS, checked against the real client.
 
@@ -635,7 +681,7 @@ def cmd_verify(a) -> int:
     for name, errs in (("ascii", gate_ascii()), ("lua-syntax", gate_lua()),
                        ("local-order", gate_localorder()), ("no-ctm", gate_ctm()),
                        ("keep-objects", gate_optional_filter()),
-                       ("magic-index", gate_magicindex()), ("execsecure", gate_execsecure()), ("spellinfo", gate_spellinfo()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
+                       ("magic-index", gate_magicindex()), ("execsecure", gate_execsecure()), ("protected", gate_protected_actions()), ("spellinfo", gate_spellinfo()), ("bridge", gate_bridge()), ("version-sync", gate_version()),
                        ("addresses", gate_addresses()),
                        ("multireturn", gate_multireturn()),
                        ("lua5.1", gate_lua51()),

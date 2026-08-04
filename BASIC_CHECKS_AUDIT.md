@@ -28,7 +28,7 @@ conditions → wire.
 | 2 | Ability intent vs target relationship | **done** | `check_intent` via `World.spell_target_class` (implicit-target ids) |
 | 3 | Direct-cast vs existing-target | **done** | `Engine.slot_target_policy` (`require` / `optional` / `forbid` / `corpse`) |
 | 4 | Heal/buff automatic friendly allowance | **done** | `check_target_relationship` — only an *enemy-targeted* spell refuses a friendly selection |
-| 5 | Dead / corpse / special unit type | **partial** | `target_is_dead` handled; corpse policy exists; passenger / minipet / vehicle **not** modelled |
+| 5 | Dead / corpse / special unit type | **partial - blocked on measurement** | `target_is_dead` and corpse policy done. passenger / minipet / vehicle need `UNIT_FIELD_FLAGS_2`; `Flags2 = 0xF0` was derived by ARITHMETIC from the verified `Flags = 0xEC` and has never been read live. Gating on an unverified offset is exactly what left #20 silently dead for months, so it stays unwired |
 | 6 | Unit flags interaction | **done** | `check_target_flags` — NON_ATTACKABLE / IMMUNE_TO_PC / NOT_SELECTABLE |
 
 ## Ability intent / effect type
@@ -57,7 +57,7 @@ conditions → wire.
 | 16 | Resource sufficiency | **done** | `check_resources` → `World.resource_ok` (runtime RuneState / UnitPower) |
 | 17 | Cooldown / charge | **done** | `check_gcd_cd`; the GCD is excluded from per-spell cooldowns via the record's RecoveryTime/CategoryRecoveryTime |
 | 18 | GCD / server lock | **done** | `check_gcd_cd`, with data-driven off-GCD from StartRecoveryCategory |
-| 19 | Silence / school lockout | **partial** | silence **done** (`check_silence`, PreventionType + UNIT_FLAG_SILENCED); **per-school lockout missing** |
+| 19 | Silence / school lockout | **partial - blocked on RE** | silence **done** (`check_silence`, PreventionType + UNIT_FLAG_SILENCED). Per-school lockout lives in the client's own lockout table, not the descriptor - it needs a live RE pass to locate, which needs the client running |
 
 ## Caster state
 
@@ -109,6 +109,14 @@ descriptor field (as `Facing` at 0x7A8 and `QuestGiverStatus` at 0x90 already
 are), or the emote is cosmetic on this server. `Bytes1` stays 0 and the check
 ABSTAINS rather than asserting "standing" - asserting is exactly what the dead
 `Bytes2` did for two months.
+
+**All four remaining partials now reduce to ONE blocker: the client is not
+running.** #21 needs a live descriptor diff while seated; #5 needs `Flags2`
+confirmed by a live read before anything may gate on it; #19 needs a live RE
+pass to find the school-lockout table; and #10's chain half needs the
+implicit-target ids confirmed against real spell records. Every one of them is a
+MEASUREMENT, not a design problem - and each is a few minutes' work with a live
+client, which is why none of them are being guessed at instead.
 
 The four remaining partials are each a *narrower* gap than the row suggests: sitting,
 per-school lockout, reactive aura-*states*, chain/cone shapes, and the exotic

@@ -5024,6 +5024,7 @@ local function good(name, a, b, c, d, e, f)
     -- +0x7AC, which live RE proved is not the orientation field, so this
     -- returned 1e9 (undetermined) forever and the facing gate could not fire.
     if name == "PlayerFacing" then return 1.8380 end
+    if name == "ShapeshiftForm" then return 3 end
     -- Arc convention: the mock target sits at bearing 0 from a player facing
     -- 0, i.e. dead ahead, so a correct runtime must answer "facing".
     if name == "ObjectIsFacing" then return true end
@@ -5045,6 +5046,8 @@ end
 
 -- the client aura API the aura_walk check compares against
 function GetPlayerFacing() return 1.8380 end
+-- A shifted form so the check actually runs; agreeing on 0 proves nothing.
+function GetShapeshiftForm() return 3 end
 
 function UnitBuff(unit, i)
     if i == 1 then return "MockBuff", "", "", 2, nil, 60, 0, "player", nil, nil, 1459 end
@@ -5118,6 +5121,9 @@ m = rows_by_name(SelfTest.evaluate(with({ PlayerFacing = 1e9 }), opts))
 dc("facing undetermined -> FAIL", m.facing_field_is_live.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ PlayerFacing = -0.8296 }), opts))
 dc("facing disagreeing with the client -> FAIL", m.facing_field_is_live.ok == false)
+-- A wrong Bytes2 offset shows up as a form that disagrees with the client.
+m = rows_by_name(SelfTest.evaluate(with({ ShapeshiftForm = 0 }), opts))
+dc("shapeshift offset disagreeing -> FAIL", m.shapeshift_offset_is_real.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "0|src=n" }), opts))
 dc("aura walk not validating -> FAIL", m.aura_walk_vs_client.ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ UnitAuras = "1|1459:2:60000|src=d" }), opts))

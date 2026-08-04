@@ -516,6 +516,33 @@ SelfTest.CHECKS = {
         end,
     },
     {
+        name = "shapeshift_offset_is_real",
+        why = "UNIT_FIELD_BYTES_2 was set to 0xCC (index 0x33), which does NOT "
+           .. "fit the 3.3.5a field order that every other verified descriptor "
+           .. "offset obeys (index*4). The shapeshift gate reads byte 3 of it "
+           .. "and has never been checked against a live form",
+        run = function(call)
+            if not GetShapeshiftForm then return nil, "no client form API" end
+            local truth = GetShapeshiftForm()
+            if type(truth) ~= "number" then return nil, "client gave no form" end
+            local rt = call("ShapeshiftForm")
+            if rt == nil then return false, "ShapeshiftForm not wired" end
+            if type(rt) ~= "number" then return false, "non-numeric " .. type(rt) end
+            if rt ~= truth then
+                return false, string.format(
+                    "runtime form=%d but client says %d - Bytes2 (0x%X) is the "
+                    .. "wrong offset; derive it from the update-field index like "
+                    .. "every other descriptor field", rt, truth, 0xCC)
+            end
+            -- Agreeing on 0 while unshifted is weak evidence: a wrong offset
+            -- reading zero would agree too. Say so rather than claim proof.
+            if truth == 0 then
+                return nil, "both read 0 (unshifted) - shapeshift to prove the offset"
+            end
+            return true, string.format("form %d matches the client", rt)
+        end,
+    },
+    {
         name = "castreq_ground_truth",
         why = "SpellCastReq drives every data-driven basic check; its layout "
            .. "was cracked against stock spells - verify two anchors in vivo",

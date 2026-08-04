@@ -61,7 +61,7 @@ function RaijinLab:RunCommand(msg)
         RaijinLab:SetSystemVar("RaijinLab.multijump_toggle", tostring(RaijinLab.multijump_toggle))
     elseif cmd == "proc" then
         -- 2026-08-03 (ProcForce toggle): drive Stormbringer-class proc spells.
-        -- MUST be instantly stoppable in-game — this is the escape hatch the
+        -- MUST be instantly stoppable in-game - this is the escape hatch the
         -- user demanded after a runaway forced closing the game.
         --   /raijin proc on [icdMs]      enable (default 300ms, spell 273057)
         --   /raijin proc off             disable NOW

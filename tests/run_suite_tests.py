@@ -677,6 +677,51 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
 
+-- KNOWN QUEST NPC: the same "no cap on knowledge" rule, plus a Z fallback.
+-- A turn-in npc on another continent is a TRAVEL problem, not an unknown one.
+-- The z fallback matters because the database often has no height: without it
+-- a valid npc position carries a nil z and every downstream distance check
+-- throws or silently refuses.
+so("Suite.known_quest_npc exists", type(Suite.known_quest_npc) == "function")
+if Suite.known_quest_npc then
+  RaijinLab.ObjectPosition = function() return 100, 200, 55 end
+  local answer
+  RaijinLab.QuestDB = { quest_npc = function() return answer end }
+
+  answer = { x = 300, y = 400, z = 12, dist = 250 }
+  local r = Suite.known_quest_npc({ questId = 7 }, "end")
+  so("a known quest npc is returned", r ~= nil and r.x == 300 and r.y == 400)
+  so("its own z is kept", r ~= nil and r.z == 12)
+
+  -- no z in the database: fall back to the PLAYER's z rather than nil
+  answer = { x = 300, y = 400, dist = 250 }
+  r = Suite.known_quest_npc({ questId = 7 }, "end")
+  so("a missing z falls back to the player z", r ~= nil and r.z == 55)
+
+  -- another continent is still KNOWN
+  answer = { x = 90000, y = 90000, z = 3, dist = 120000 }
+  r = Suite.known_quest_npc({ questId = 7 }, "end")
+  so("a far quest npc is not discarded", r ~= nil and r.x == 90000)
+
+  -- ignorance paths
+  answer = nil
+  so("no answer returns nil", Suite.known_quest_npc({ questId = 7 }, "end") == nil)
+  answer = { x = 1 }
+  so("a partial answer returns nil", Suite.known_quest_npc({ questId = 7 }, "end") == nil)
+  so("a quest with no id returns nil", Suite.known_quest_npc({}, "end") == nil)
+  so("a nil quest returns nil", Suite.known_quest_npc(nil, "end") == nil)
+
+  answer = { x = 300, y = 400, z = 1 }
+  RaijinLab.ObjectPosition = function() return nil end
+  so("no player position returns nil", Suite.known_quest_npc({ questId = 7 }, "end") == nil)
+
+  RaijinLab.ObjectPosition = function() return 100, 200, 55 end
+  RaijinLab.QuestDB = { quest_npc = function() error("db corrupt") end }
+  local okc, r2 = pcall(Suite.known_quest_npc, { questId = 7 }, "end")
+  so("a throwing database does not crash the npc lookup", okc == true and r2 == nil)
+  RaijinLab.QuestDB, RaijinLab.ObjectPosition = nil, nil
+end
+
 -- KNOWN TARGET LOOKUP: NO DISTANCE CAP. "Anywhere from anywhere."
 --
 -- A cap here refused any known target beyond SEARCH_MAX_LEG (1000yd) and

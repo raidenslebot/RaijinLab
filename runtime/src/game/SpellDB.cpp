@@ -185,6 +185,20 @@ namespace rec {
     constexpr size_t ProcFlags       = 0x088;
     constexpr size_t ProcChance      = 0x08C;
     constexpr size_t ProcCharges     = 0x090;
+    // EffectChainTarget[0..2] - Spell.dbc columns 104/105/106, so word*4.
+    //
+    // MEASURED OFFLINE against the real Spell.dbc (209,082 records) rather than
+    // recalled: Chain Lightning (421, 10605) and Chain Heal (1064, 25442) all
+    // carry 3; Fireball, Smite, Arcane Blast and Lesser Healing Wave all carry
+    // 0; Multi-Shot (2643) carries 3 with a second effect at 5. 4,617 of
+    // 209,082 spells (2.21%) are non-zero, a plausible rate for chaining.
+    //
+    // THIS IS THE CHAIN SIGNAL, and it is NOT an implicit-target id - which is
+    // what the audit assumed and why the chain half of basic check #10 sat
+    // unmodelled: it was being looked for in the wrong field entirely.
+    constexpr size_t ChainTarget0    = 104 * 4;
+    constexpr size_t ChainTarget1    = 105 * 4;
+    constexpr size_t ChainTarget2    = 106 * 4;
     constexpr size_t DurationIdx     = 0x0A0;
     constexpr size_t PowerType       = 0x0A4;  // 0 mana 1 rage 3 energy 5 rune 6 RP
     constexpr size_t ManaCost        = 0x0A8;  // rage/RP stored x10
@@ -265,7 +279,7 @@ std::string CastReq(int spellId) {
         "|equipclass=%d|equipmask=0x%X|eff0=%u|ta0=%u|ta1=%u"
         "|gcdcat=%u|gcd=%u|family=%u|dmgclass=%u|prevent=%u"
         "|school=0x%X|rune=%u|mech=%u|dispel=%u|duridx=%u"
-        "|procflags=0x%X|procchance=%u|proccharges=%u",
+        "|procflags=0x%X|procchance=%u|proccharges=%u|chain=%u",
         spellId,
         W(recb, rec::Attr0), W(recb, rec::Attr1), W(recb, rec::Attr2),
         W(recb, rec::StancesLo), W(recb, rec::StancesNotLo),
@@ -285,7 +299,10 @@ std::string CastReq(int spellId) {
         W(recb, rec::PreventionType),
         W(recb, rec::SchoolMask), W(recb, rec::RuneCostId),
         W(recb, rec::Mechanic), W(recb, rec::Dispel), W(recb, rec::DurationIdx),
-        W(recb, rec::ProcFlags), W(recb, rec::ProcChance), W(recb, rec::ProcCharges));
+        W(recb, rec::ProcFlags), W(recb, rec::ProcChance), W(recb, rec::ProcCharges),
+        // chain = the widest EffectChainTarget across the three effects.
+        (std::max)((std::max)(W(recb, rec::ChainTarget0), W(recb, rec::ChainTarget1)),
+                   W(recb, rec::ChainTarget2)));
     std::string out(buf);
     s_cache[h].sid = spellId;
     s_cache[h].pack = out;

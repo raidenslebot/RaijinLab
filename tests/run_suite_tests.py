@@ -6344,6 +6344,12 @@ RaijinLab.RuntimeCall = function(self, name, a)
   -- 17: no implicit-target data at all -> shape UNKNOWN, never "not a cone"
   if a == 17 then return "sid=17|found=1|facing=0|gcdcat=133|gcd=1500"
     .. "|targets=0x0|ta0=0|ta1=0|cd=0|catcd=0|school=0x1|power=0" end
+  -- 18: a CHAIN spell (Chain Lightning shape: EffectChainTarget 3)
+  if a == 18 then return "sid=18|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=6|ta1=0|cd=0|catcd=0|school=0x1|power=0|chain=3" end
+  -- 19: same shape, explicitly zero chain
+  if a == 19 then return "sid=19|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=6|ta1=0|cd=0|catcd=0|school=0x1|power=0|chain=0" end
   return nil
 end
 """)
@@ -6372,6 +6378,19 @@ end
     chk("no implicit-target data is UNKNOWN, not 'not a cone'",
         lua.eval(W + "spell_is_cone(17)") is None)
     chk("no record at all is unknown", lua.eval(W + "spell_is_cone(99)") is None)
+
+    # CHAIN SHAPE (basic check #10, chain half). EffectChainTarget, NOT an
+    # implicit-target id - which is why it went unmodelled: it was being looked
+    # for in the wrong field. sid 13 carries no `chain` key at all, standing in
+    # for a runtime older than the field: that must read UNKNOWN, never "not a
+    # chain", or an unpatched DLL silently reclassifies every chain spell.
+    chk("a chain spell is detected", lua.eval(W + "spell_is_chain(18)") is True)
+    chk("its target count is exposed", lua.eval(W + "spell_chain_targets(18)") == 3)
+    chk("an explicit zero is NOT a chain", lua.eval(W + "spell_is_chain(19)") is False)
+    chk("a missing chain field is UNKNOWN, not false",
+        lua.eval(W + "spell_is_chain(13)") is None)
+    chk("no record at all is unknown for chain",
+        lua.eval(W + "spell_is_chain(99)") is None)
 
     # FACING IS A MASK. The live sweep found values 7 and 15; a boolean test
     # (`facing == 1`) would call both of those "no facing required" and wire

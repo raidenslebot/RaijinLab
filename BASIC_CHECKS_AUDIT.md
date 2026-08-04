@@ -38,7 +38,7 @@ conditions → wire.
 | 7 | Harmful vs helpful vs neutral | **done** | `check_intent` |
 | 8 | Self-only / friendly-only / hostile-only | **done** | `World.spell_target_class` |
 | 9 | Melee-range-only vs outside-melee | **done** | `runtime_spell_melee` (decoded range entry) |
-| 10 | Single vs multi-target / AoE shape | **partial** | `spell_is_self_area` (dest-location + implicit targets); **cone modelled** (`spell_is_cone`, ids 54/104, forces facing even with FacingCasterFlags clear - 4 mutations caught); **chain still not modelled** - its 3.3.5a implicit-target ids are not confirmed here and a wrong id would gate a spell on a shape it does not have |
+| 10 | Single vs multi-target / AoE shape | **partial** | `spell_is_self_area` (dest-location + implicit targets); **cone modelled** (`spell_is_cone`, ids 54/104, forces facing even with FacingCasterFlags clear - 4 mutations caught); **chain modelled** (`spell_is_chain` / `spell_chain_targets`, from **EffectChainTarget** - Spell.dbc cols 104-106, NOT an implicit-target id, which is why it went unfound). Measured offline against the real 209,082-record Spell.dbc: Chain Lightning/Chain Heal carry 3, Fireball/Smite/Arcane Blast carry 0. Requires re-injection to answer |
 
 ## Range, positioning, LOS, facing
 
@@ -113,8 +113,7 @@ ABSTAINS rather than asserting "standing" - asserting is exactly what the dead
 **All four remaining partials now reduce to ONE blocker: the client is not
 running.** #21 needs a live descriptor diff while seated; #5 needs `Flags2`
 confirmed by a live read before anything may gate on it; #19 needs a live RE
-pass to find the school-lockout table; and #10's chain half needs the
-implicit-target ids confirmed against real spell records. Every one of them is a
+pass to find the school-lockout table; (#10 is now fully modelled - the chain half was measured offline from Spell.dbc.) Every one of them is a
 MEASUREMENT, not a design problem - and each is a few minutes' work with a live
 client, which is why none of them are being guessed at instead.
 

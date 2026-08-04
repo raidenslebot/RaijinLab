@@ -3141,6 +3141,33 @@ end
 -- an unmapped id is UNKNOWN, never guessed. Chain targets are deliberately
 -- absent - I am not confident of their 3.3.5a ids, and a wrong id here would
 -- gate a spell on a shape it does not have.
+-- CHAIN SHAPE, from EffectChainTarget - NOT from an implicit-target id.
+--
+-- The chain half of basic check #10 sat unmodelled because it was being looked
+-- for in the wrong field. MEASURED OFFLINE against the real Spell.dbc: Chain
+-- Lightning (421, 10605) and Chain Heal (1064, 25442) carry 3; Fireball, Smite,
+-- Arcane Blast and Lesser Healing Wave carry 0; Multi-Shot (2643) carries 3.
+-- 4,617 of 209,082 spells are non-zero.
+--
+-- What it is FOR: a chain spell reaches units the primary target cannot vouch
+-- for, so "only one enemy in range" is not a reason to skip it - and its jumps
+-- are the client's business, not ours. This answers the shape; it deliberately
+-- does not add a gate, because a chain spell with a legal primary target is
+-- legal, and inventing a refusal is the failure this project keeps paying for.
+function World.spell_chain_targets(sid)
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local c = tonumber(r.chain)
+    if c == nil then return nil end     -- runtime predates the field: UNKNOWN
+    return c
+end
+
+function World.spell_is_chain(sid)
+    local c = World.spell_chain_targets(sid)
+    if c == nil then return nil end
+    return c > 0
+end
+
 local CONE_T = { [54]=1, [104]=1 }   -- CONE_ENEMY_24, CONE_ENEMY_104
 function World.spell_is_cone(sid)
     local r = World.spell_req(sid)

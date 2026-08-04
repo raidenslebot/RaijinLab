@@ -434,6 +434,65 @@ end
     return [t[i] for i in range(1, n + 1)]
 
 
+def test_executor() -> list:
+    """Executor's active-rotation cache must INVALIDATE, not just cache.
+
+    test_empty_rotation_fallback proves the cache HOLDS across ticks (it runs at
+    ~70Hz, so re-deserializing every frame is not an option). Nothing proved it
+    LETS GO. The mutation that drops `Executor._resolved_from == selected` leaves
+    a cache that never notices a new selection - you switch rotation in the
+    editor and the bot keeps running the old one forever, with the UI showing
+    the new name. Silent, and indistinguishable from "the rotation is ignoring
+    my edits".
+    """
+    from lupa import LuaRuntime
+
+    lua = LuaRuntime(unpack_returned_tuples=False)
+    lua.execute("math.randomseed(42)")
+    NL = chr(10)
+    lua.execute("RaijinLab = {}")
+    src = (ADDON / "core/rotation/Engine.lua").read_text(encoding="utf-8")
+    lua.execute("__e = (function()" + NL + src + NL + "end)()")
+    lua.execute("RaijinLab.RotationEngine = __e")
+    src = (ADDON / "core/rotation/Executor.lua").read_text(encoding="utf-8")
+    lua.execute("__x = (function()" + NL + src + NL + "end)()")
+    lua.execute("E = __x")
+    lua.execute(
+        r"""
+ex_fails = {}
+local function ex(name, cond) if not cond then ex_fails[#ex_fails+1] = name end end
+local function slot(id) return { spell_id = id, name = "s" .. tostring(id) } end
+RaijinLabDB = {
+  active_rotation = "Alpha",
+  rotations = {
+    ["Alpha"] = { name = "Alpha", enabled = true, slots = { slot(1), slot(2) } },
+    ["Beta"]  = { name = "Beta",  enabled = true, slots = { slot(7), slot(8) } },
+  },
+}
+E._active_cache = nil; E._active_name = nil; E._resolved_from = nil; E._empty_notice = nil
+
+local a, an = E.get_active_rotation()
+ex("resolves the selected rotation", an == "Alpha")
+local a2, an2 = E.get_active_rotation()
+ex("repeat call is cached", a2 == a and an2 == an)
+
+-- THE GAP: switching the selection must drop the cache.
+RaijinLabDB.active_rotation = "Beta"
+local b, bn = E.get_active_rotation()
+ex("switching selection invalidates the cache", bn == "Beta")
+ex("and hands back the NEW rotation object", b ~= a)
+
+-- and switching back must work too (a one-shot invalidation is not enough)
+RaijinLabDB.active_rotation = "Alpha"
+local c, cn = E.get_active_rotation()
+ex("switching back resolves again", cn == "Alpha")
+"""
+    )
+    t = lua.eval("ex_fails")
+    n = int(lua.eval("#ex_fails"))
+    return [t[i] for i in range(1, n + 1)]
+
+
 def test_groundcache() -> list:
     """The shared ground cache must serve repeat cells from memory (one probe per
     cell), cache 'no ground' as well as hits, separate stacked geometry by

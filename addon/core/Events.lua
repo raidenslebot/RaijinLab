@@ -176,6 +176,18 @@ function RaijinLab:CoreOnEvent(event, ...)
         -- blocked-action was NEVER captured (live 15:40: popup shown, dev log
         -- silent). Lowercase both sides.
         local blame = tostring(addon or ""):lower()
+        -- PRINT IT, DO NOT ONLY LOG IT (2026-08-03).
+        --
+        -- This handler is registered on the always-alive core frame and still
+        -- produced no "BLOCKED ACTION" line in the dev log while the popup
+        -- fired reliably on every suite-OFF. A diagnostic that is silent when
+        -- the event it exists for happens is worth nothing, and the log path
+        -- has too many ways to swallow it (not armed yet, buffered, flushed
+        -- late, wrong file). Chat cannot swallow it. Print EVERY blocked
+        -- action - blamed on us or not - because the blame string is exactly
+        -- what could not be verified.
+        print("|cffff5555RaijinLab BLOCKED|r event=" .. tostring(event)
+            .. " fn=" .. tostring(fn) .. " addon=" .. tostring(addon))
         if blame:find("raijin", 1, true) then
             RaijinLab._last_blocked_action = tostring(fn or "?")
             if RaijinLab.DevLog and RaijinLab.DevLog.log then

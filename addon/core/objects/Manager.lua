@@ -286,6 +286,21 @@ local function RunObjectManager()
                     end
                 end
                 if struct then
+                    -- NORMALISE A REUSED STRUCT BEFORE WRITING INTO IT.
+                    --
+                    -- new_struct() builds Flags/DynamicFlags, but structs that
+                    -- come back through prev_by_guid can predate that shape, and
+                    -- indexing a nil field throws. This was invisible while
+                    -- OmSnapshot returned "0" - the parser never ran. The moment
+                    -- the snapshot carried real objects (185 of them) it threw 88
+                    -- times: "attempt to index field 'DynamicFlags'". A latent
+                    -- parser bug uncovered, not caused, by fixing the packer.
+                    struct.Flags = struct.Flags or { value = 0, list = {} }
+                    struct.DynamicFlags = struct.DynamicFlags or { value = 0, list = {} }
+                    struct.Type = struct.Type or {
+                        base_type = { name = "nil" },
+                        sub_type = { id = 0, name = "nil" },
+                    }
                     -- Snapshot fields (runtime authority - no per-object calls).
                     struct.Id = tonumber(id) or 0
                     struct.DynamicFlags.value = tonumber(df) or 0

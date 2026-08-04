@@ -151,9 +151,16 @@ SelfTest.CHECKS = {
         why = "name[7]=='a' picked 'S' for BOTH PitchUpStart and PitchUpStop, "
            .. "so pitch could only ever STOP - swim depth never worked",
         run = function(call)
-            local started = call("PitchUpStart")
-            local stopped = call("PitchUpStop")
-            call("PitchDownStop")   -- belt and braces: never leave a hold armed
+            -- STAGE, DO NOT DISPATCH (2026-08-03). These called the raw
+            -- PitchUpStart/Stop bridge commands, which are protected - so
+            -- running /raijin selftest RAISED the very forbidden action it
+            -- exists to help diagnose. The RecentCalls correlator caught it
+            -- red-handed: PitchUpStart / PitchUpStop / PitchDownStop sat at the
+            -- top of the window. Round 65 moved every steering input onto the
+            -- staged carrier; this check never followed. Bits 6/7 = pitch up/down.
+            local started = call("StageInput", 6, 1)
+            local stopped = call("StageInput", 6, 0)
+            call("StageInput", 7, 0)   -- never leave a hold armed
             if started == nil or stopped == nil then
                 return false, "pitch commands unhandled by the bridge"
             end
@@ -198,6 +205,19 @@ SelfTest.CHECKS = {
         run = function(call)
             local L = RaijinLab.om and RaijinLab.om.object_list
             if not L then return false, "om.object_list missing entirely" end
+            -- IDLE BY DESIGN IS NOT A FAILURE. ObjectManagerOnUpdate returns
+            -- early when master is suppressed and neither the tracker nor
+            -- quest-object tracking is on - a deliberate idle-power choice. This
+            -- check was reporting the classifier broken while it was correctly
+            -- switched off, which is how it stayed "failing" for rounds after
+            -- the real defect (OmSnapshot packing an empty list) was fixed.
+            local M = RaijinLab and RaijinLab.Master
+            if M and M.suppressed and M.suppressed()
+                and not RaijinLab.tracker_toggle
+                and not (RaijinLabDB and RaijinLabDB.track_quest_objects) then
+                return nil, "Lua OM idle by design (master off, no tracker) - "
+                    .. "enable the suite to exercise the classifier"
+            end
             local bridge_n = call("GetUnitCount")
             local raw = L.raw or {}
             local function n(t) return t and #t or -1 end

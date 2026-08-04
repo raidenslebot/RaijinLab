@@ -4999,6 +4999,9 @@ local function good(name, a, b, c, d, e, f)
     if name == "GetUnitCount" then return 7 end
     if name == "UnitCasting" then return nil end
     if name == "PitchUpStart" or name == "PitchUpStop" or name == "PitchDownStop" then return true end
+    -- pitch is STAGED now (round 93): the raw commands are protected and the
+    -- selftest was raising the forbidden action it exists to diagnose.
+    if name == "StageInput" then return true end
     if name == "MoveTo" then return false end
     if name == "ObjectIsFacing" then return true end
     if name == "ObjectQuestGiverStatus" then return 8 end
@@ -5139,8 +5142,11 @@ dc("dead unit-enum fast path detected", m["unit_enum_fastpath"].ok == false)
 m = rows_by_name(SelfTest.evaluate(with({ UnitCasting = 0 }), opts))
 dc("truthy-0 stub detected", m["stubs_answer_nil"].ok == false)
 
-m = rows_by_name(SelfTest.evaluate(with({ PitchUpStart = false }), opts))
-dc("pitch dispatching to STOP detected", m["pitch_dispatch"].ok == false)
+-- The check stages now (raw PitchUpStart is protected and was raising the
+-- forbidden action), so the mutation must break the STAGING, not the old
+-- command - otherwise it overrides a call the check no longer makes.
+m = rows_by_name(SelfTest.evaluate(with({ StageInput = false }), opts))
+dc("pitch staging failure detected", m["pitch_dispatch"].ok == false)
 
 m = rows_by_name(SelfTest.evaluate(with({ MoveTo = true }), opts))
 dc("click-to-move still live detected", m["ctm_refused"].ok == false)

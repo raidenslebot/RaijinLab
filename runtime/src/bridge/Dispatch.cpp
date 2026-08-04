@@ -1077,6 +1077,16 @@ static int Handle(lua_State* L, const char* name) {
                                   + (uintptr_t)(slot - 1) * Offsets::D().VisibleItemStride);
         return PushNumber(L, (double)OM::Field(g, off));
     }
+    // UNIT_FIELD_MOUNTDISPLAYID: non-zero means mounted. Used by the mounted
+    // basic check so the addon never calls the client's IsMounted (user
+    // directive: assume every non-runtime API is protected).
+    if (!std::strcmp(name, "UnitMounted")) {
+        uint64_t g = GuidArg(L, 2);
+        if (!g) g = OM::LocalGuid();
+        if (!g) return PushNil(L);
+        uint32_t m = (uint32_t)OM::Field(g, (uint32_t)Offsets::D().MountDisplayId);
+        return PushNumber(L, m != 0 ? 1 : 0);
+    }
     // UNIT_FIELD_BYTES_2 byte 3 = the active shapeshift form. Replaces the
     // addon's GetShapeshiftForm call (user directive: assume every non-runtime
     // API is protected). 0 = no form.

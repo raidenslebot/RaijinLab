@@ -611,6 +611,34 @@ do
     check("helpful on hostile blocks under optional policy too",
           (BasicRules.check(c2, 911)) == false)
   end
+  -- MOUNTED (checklist 28) and TARGET UNIT FLAGS (checklist 6).
+  RaijinLab.World.spell_req = function(sid)
+    if sid == 920 then return { attr = 0, cd = 0, catcd = 0 } end          -- not castable mounted
+    if sid == 921 then return { attr = 0x10000000, cd = 0, catcd = 0 } end -- castable mounted
+    if sid == 922 then return { attr = 0, cd = 0, catcd = 0 } end          -- harmful, for flags
+    return nil
+  end
+  RaijinLab.World.spell_target_class = function(sid)
+    if sid == 922 then return "enemy" end
+    return nil
+  end
+  check("mounted blocks a spell without the mounted attribute",
+        (BasicRules.check(base({ player_mounted = 1 }), 920)) == false)
+  check("mounted allows a spell WITH the mounted attribute",
+        (BasicRules.check(base({ player_mounted = 1 }), 921)) == true)
+  check("not mounted allows either",
+        (BasicRules.check(base({ player_mounted = 0 }), 920)) == true)
+  check("unknown mounted state -> pass",
+        (BasicRules.check(base(), 920)) == true)
+  -- UNIT_FLAG_NON_ATTACKABLE 0x2 / IMMUNE_TO_PC 0x100 / NOT_SELECTABLE 0x2000000
+  check("non-attackable target blocks a harmful cast",
+        (BasicRules.check(base({ target_unit_flags = 0x2 }), 922)) == false)
+  check("immune-to-PC target blocks a harmful cast",
+        (BasicRules.check(base({ target_unit_flags = 0x100 }), 922)) == false)
+  check("clean flags allow the cast",
+        (BasicRules.check(base({ target_unit_flags = 0 }), 922)) == true)
+  check("unknown flags -> pass (never invent a refusal)",
+        (BasicRules.check(base(), 922)) == true)
   RaijinLab.World.spell_target_class = nil
   RaijinLab.World.spell_req = nil
 end

@@ -83,6 +83,25 @@ SelfTest.CHECKS = {
             -- was blind to all of them, which is why it fell through to a
             -- belief-field beeline. Comparing the two numbers localises that
             -- exactly: bridge high + snapshot 0 is the disconnect.
+            -- THE LUA OM IS SUPPOSED TO IDLE WHEN NOTHING CONSUMES IT.
+            --
+            -- ObjectManagerOnUpdate returns early when master is suppressed and
+            -- neither the tracker nor quest-object tracking is on - a deliberate
+            -- idle-power optimisation. Reporting "questing is blind" then is a
+            -- FALSE ALARM: it accused the classifier of failing while the
+            -- classifier was correctly switched off, and it cost a full round of
+            -- hunting a live snapshot bug that turned out to be real but
+            -- SEPARATE (OmSnapshot packed g_all, which is empty inside the Lua
+            -- VM). Skip when the pipeline is intentionally idle.
+            local M = RaijinLab and RaijinLab.Master
+            local idle = M and M.suppressed and M.suppressed()
+                and not RaijinLab.tracker_toggle
+                and not (RaijinLabDB and RaijinLabDB.track_quest_objects)
+            if idle then
+                return nil, tostring(n) .. " units from the bridge; Lua OM idle "
+                    .. "by design (master off, no tracker) - enable the suite to "
+                    .. "exercise the classifier"
+            end
             local om = RaijinLab and RaijinLab.om and RaijinLab.om.object_list
             local npcs = om and om.npcs
             local cnt = npcs and #npcs or nil

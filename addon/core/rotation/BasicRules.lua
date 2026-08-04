@@ -336,6 +336,50 @@ local function check_aura_requirements(ctx, sid)
     return true
 end
 
+-- Mounted (checklist item 28: "mounted / sitting / dead / ghost allowance").
+-- SPELL_ATTR0_CASTABLE_WHILE_MOUNTED = 0x10000000. A spell without that bit is
+-- refused by the client while mounted, so wiring it is a guaranteed red error.
+local function check_mounted(ctx, sid)
+    local W = RaijinLab and RaijinLab.World
+    local req = W and W.spell_req and W.spell_req(sid)
+    if not req then return true end
+    local attr = tonumber(req.attr) or 0
+    -- bit 28 set => castable while mounted, nothing to check
+    if math.floor(attr / 0x10000000) % 2 == 1 then return true end
+    local m = ctx and ctx.player_mounted
+    if m == nil then m = rt("UnitMounted") end
+    if type(m) ~= "number" then return true end     -- unknown -> pass
+    if m ~= 0 then return false, "mounted" end
+    return true
+end
+
+-- Target unit flags (checklist item 6: "unit flags interaction").
+-- UNIT_FLAG_NON_ATTACKABLE 0x2, UNIT_FLAG_IMMUNE_TO_PC 0x100,
+-- UNIT_FLAG_IMMUNE_TO_NPC 0x200, UNIT_FLAG_NOT_SELECTABLE 0x2000000.
+-- A harmful cast at a unit carrying these is refused by the client every time.
+local function check_target_flags(ctx, sid, slot)
+    local W = RaijinLab and RaijinLab.World
+    local cls = W and W.spell_target_class and W.spell_target_class(sid)
+    if cls ~= "enemy" then return true end        -- only harmful casts gated
+    if slot_has_aura_search(slot) then return true end
+    -- The GUID is only needed to ASK the runtime. When the flags are already
+    -- in ctx they describe the current target and must be honoured even if the
+    -- guid cannot be resolved - bailing first made the gate dead whenever
+    -- UnitGUID was unavailable, which is exactly how it passed its own test
+    -- while never blocking anything.
+    local fl = ctx and ctx.target_unit_flags
+    if fl == nil then
+        local guid = cast_guid(ctx)
+        if not guid then return true end
+        fl = rt("UnitFlags", guid)
+    end
+    if type(fl) ~= "number" then return true end  -- unknown -> pass
+    if math.floor(fl / 0x2) % 2 == 1 then return false, "not_attackable" end
+    if math.floor(fl / 0x100) % 2 == 1 then return false, "immune_to_pc" end
+    if math.floor(fl / 0x2000000) % 2 == 1 then return false, "not_selectable" end
+    return true
+end
+
 -- Silence: a spell whose PreventionType is silence cannot be wired while the
 -- player is silenced (UNIT_FLAG_SILENCED). Positive evidence only.
 local function check_silence(ctx, sid)
@@ -561,6 +605,12 @@ function BasicRules.check(ctx, spell_id, slot, opts)
 
     ok, why = check_silence(ctx, sid)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="silence", why=why}; return false, why end
+
+    ok, why = check_mounted(ctx, sid)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="mounted", why=why}; return false, why end
+
+    ok, why = check_target_flags(ctx, sid, slot)
+    if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="unit_flags", why=why}; return false, why end
 
     ok, why = check_target_relationship(ctx, sid, slot, name)
     if not ok then BasicRules._last_gate = {sid=sid, name=name, gate="target_rel", why=why}; return false, why end

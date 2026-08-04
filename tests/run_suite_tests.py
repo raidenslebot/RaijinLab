@@ -6333,6 +6333,17 @@ RaijinLab.RuntimeCall = function(self, name, a)
   if a == 13 then return "sid=13|found=1|facing=2|gcdcat=133|gcd=1500"
     .. "|targets=0x0|ta0=6|cd=0|catcd=0|school=0x1|power=0" end
   if a == 14 then return "sid=14|found=0" end
+  -- 15: CONE with the facing flag CLEAR. Ascension clears that flag on some
+  -- spells, and a cone is in front of the caster by its own geometry, so this
+  -- must still require facing or every cast eats "must be in front of you".
+  if a == 15 then return "sid=15|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=54|ta1=0|cd=0|catcd=0|school=0x1|power=0" end
+  -- 16: the other cone id, in the SECOND effect slot
+  if a == 16 then return "sid=16|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=0|ta1=104|cd=0|catcd=0|school=0x1|power=0" end
+  -- 17: no implicit-target data at all -> shape UNKNOWN, never "not a cone"
+  if a == 17 then return "sid=17|found=1|facing=0|gcdcat=133|gcd=1500"
+    .. "|targets=0x0|ta0=0|ta1=0|cd=0|catcd=0|school=0x1|power=0" end
   return nil
 end
 """)
@@ -6344,6 +6355,23 @@ end
     chk("spell_req on found=0 is nil (never a fabricated table)",
         lua.eval(W + "spell_req(14)") is None)
     chk("spell_req on an unknown id is nil", lua.eval(W + "spell_req(99)") is None)
+
+    # CONE SHAPE (basic check #10). A cone is geometrically in FRONT of the
+    # caster, so the client refuses a target behind it whatever
+    # FacingCasterFlags says. sid 13 proves the flag alone does not cover this:
+    # its bit 0 is CLEAR, so a cone carrying the same flag would slip the gate.
+    chk("a cone is detected", lua.eval(W + "spell_is_cone(15)") is True)
+    chk("a cone needs facing with the flag CLEAR",
+        lua.eval(W + "spell_needs_facing(15)") is True)
+    chk("a cone in the second effect slot is detected",
+        lua.eval(W + "spell_is_cone(16)") is True)
+    chk("a single-target enemy spell is not a cone",
+        lua.eval(W + "spell_is_cone(13)") is False)
+    chk("and a clear flag still means no facing on a non-cone",
+        lua.eval(W + "spell_needs_facing(13)") is False)
+    chk("no implicit-target data is UNKNOWN, not 'not a cone'",
+        lua.eval(W + "spell_is_cone(17)") is None)
+    chk("no record at all is unknown", lua.eval(W + "spell_is_cone(99)") is None)
 
     # FACING IS A MASK. The live sweep found values 7 and 15; a boolean test
     # (`facing == 1`) would call both of those "no facing required" and wire

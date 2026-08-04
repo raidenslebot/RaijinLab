@@ -3133,12 +3133,35 @@ function World.spell_target_class(sid)
     return nil                        -- unmapped: unknown, never guessed
 end
 
+-- CONE SHAPE, from EffectImplicitTargetA. A cone is geometrically in FRONT of
+-- the caster - the client refuses "Target needs to be in front of you" whatever
+-- FacingCasterFlags says, because the shape itself excludes anything behind.
+--
+-- Only ids this project is CERTAIN of are listed. The file's own rule applies:
+-- an unmapped id is UNKNOWN, never guessed. Chain targets are deliberately
+-- absent - I am not confident of their 3.3.5a ids, and a wrong id here would
+-- gate a spell on a shape it does not have.
+local CONE_T = { [54]=1, [104]=1 }   -- CONE_ENEMY_24, CONE_ENEMY_104
+function World.spell_is_cone(sid)
+    local r = World.spell_req(sid)
+    if not r then return nil end
+    local a0 = tonumber(r.ta0) or 0
+    local a1 = tonumber(r.ta1) or 0
+    if a0 == 0 and a1 == 0 then return nil end
+    return (CONE_T[a0] or CONE_T[a1]) and true or false
+end
+
 function World.spell_needs_facing(sid)
     -- The client enforces the front arc exactly when FacingCasterFlags bit 1
     -- is set. This is per-spell truth: Ascension relaxed it on some standard
     -- spells (live: Corruption carries 0) and custom spells carry their own.
     local r = World.spell_req(sid)
     if not r then return nil end
+    -- A CONE NEEDS FACING EVEN WITH THE FLAG CLEAR. The flag is the client's
+    -- explicit arc check; the cone is the effect's own geometry. Ascension
+    -- clears the flag on some spells, and a cone with a cleared flag would slip
+    -- past this gate and eat a guaranteed refusal every cast.
+    if World.spell_is_cone(sid) == true then return true end
     local f = tonumber(r.facing) or 0
     return f % 2 == 1
 end

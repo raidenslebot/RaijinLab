@@ -38,7 +38,7 @@ conditions → wire.
 | 7 | Harmful vs helpful vs neutral | **done** | `check_intent` |
 | 8 | Self-only / friendly-only / hostile-only | **done** | `World.spell_target_class` |
 | 9 | Melee-range-only vs outside-melee | **done** | `runtime_spell_melee` (decoded range entry) |
-| 10 | Single vs multi-target / AoE shape | **partial** | `spell_is_self_area` (dest-location + implicit targets); chain/cone shapes **not** modelled |
+| 10 | Single vs multi-target / AoE shape | **partial** | `spell_is_self_area` (dest-location + implicit targets); **cone modelled** (`spell_is_cone`, ids 54/104, forces facing even with FacingCasterFlags clear - 4 mutations caught); **chain still not modelled** - its 3.3.5a implicit-target ids are not confirmed here and a wrong id would gate a spell on a shape it does not have |
 
 ## Range, positioning, LOS, facing
 

@@ -686,6 +686,7 @@ check("aurastate bit0 is not state 2", BR.aura_state_has(1, 2) == false)
 check("aurastate nil mask is unknown", BR.aura_state_has(nil, 5) == nil)
 check("aurastate state 0 is unknown", BR.aura_state_has(0xFF, 0) == nil)
 
+
 -- THE SUITE'S FAILURE COUNT MUST BE MEASURED, NOT ASSERTED.
 -- This was `return 0` - a literal - so every check() in this block printed
 -- FAIL and the harness still scored the block as zero failures. A forced-false

@@ -452,33 +452,37 @@ def gate_execsecure(paths=None) -> list[str]:
 # "RaijinLab has been blocked from an action only available to the Blizzard UI",
 # after which protected calls answer nil to every addon sharing that execution
 # path (which is what buried GatherMate2 and XPerl in errors).
-PROTECTED_ACTIONS = (
-    "MoveForward", "MoveBackward", "StrafeLeft", "StrafeRight",
-    "TurnLeft", "TurnRight", "PitchUp", "PitchDown",
-    "Jump", "StopMoving", "CommitMovement", "MouselookStart", "MouselookStop",
-    "SitStandOrDescendStart", "DescendStop", "AscendStop",
+PROTECTED_COMMANDS = (
+    "MoveForwardStart", "MoveForwardStop", "MoveBackwardStart", "MoveBackwardStop",
+    "StrafeLeftStart", "StrafeLeftStop", "StrafeRightStart", "StrafeRightStop",
+    "TurnLeftStart", "TurnLeftStop", "TurnRightStart", "TurnRightStop",
+    "PitchUpStart", "PitchUpStop", "PitchDownStart", "PitchDownStop",
+    "StopMoving", "CommitMovement", "MouselookStart", "MouselookStop",
 )
 
 
 def gate_protected_actions(paths=None) -> list[str]:
-    """Every protected action must be STAGED and drained by the native hook.
+    """A protected client API may only be reached through the staged carrier.
 
     USER DIRECTIVE (2026-08-03): "literally all protected actions must properly
     run native through runtime hooks. all modules in the suite."
 
-    The pattern that works is already proven: A.HaltMovement stages an intent
-    which the runtime's frame hook drains on the main thread with no Lua on the
-    stack. Anything called directly from Lua taints, whether or not it reaches
-    the same C function in the end - the client judges the ORIGIN, not the
-    destination. That is why force_release tainted every suite-OFF while
-    Master.halt_movement, one level up, did not.
+    The client judges the ORIGIN of a protected call, not its destination, so
+    dispatching MoveForwardStart across the bridge taints exactly as much as
+    calling it in Lua - which is why force_release popped the blocked-action
+    dialog on every suite-OFF while Master.halt_movement, which stages, did not.
 
-    This gate exists because the scope was otherwise guesswork: it enumerates
-    every remaining site so the native carrier can be finished exhaustively
-    rather than one bug report at a time.
+    The sanctioned path is StageInput / HaltMovement: intent is recorded and the
+    native frame hook applies it on the main thread with no Lua on the stack.
+    Actions.lua's steering wrappers now stage, so every caller is safe through
+    them; what this gate forbids is bypassing them to dispatch the raw command.
+
+    Actions.lua itself is exempt - it IS the carrier - but only for StageInput
+    and HaltMovement, which are not in the forbidden list.
     """
     bad = []
-    pat = re.compile("(?<![\\w.])a[\\.](" + "|".join(PROTECTED_ACTIONS) + ")[\\s]*[(]")
+    pat = re.compile("rt[' + bs + bs + 's]*[(][' + bs + bs + 's]*[" + chr(34) + "'](("
+                     + "|".join(PROTECTED_COMMANDS) + "))[" + chr(34) + "']")
     for f in sorted((ROOT / "addon").rglob("*.lua")):
         if "RaijinQuest" in f.as_posix():
             continue
@@ -487,9 +491,10 @@ def gate_protected_actions(paths=None) -> list[str]:
             code = line.split("--")[0]
             m = pat.search(code)
             if m:
-                bad.append("%s:%d: calls the protected action %s() from addon "
-                           "Lua - it must be staged and drained by the native "
-                           "frame hook" % (rel, i + 1, m.group(1)))
+                bad.append("%s:%d: dispatches the protected command %s across "
+                           "the bridge - stage it (StageInput / HaltMovement) so "
+                           "the native frame hook applies it"
+                           % (rel, i + 1, m.group(1)))
     return bad
 
 def gate_addresses(paths=None) -> list[str]:

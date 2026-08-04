@@ -1643,6 +1643,62 @@ volatile uint64_t g_deferredAttack = 0;
 // hook — never double-engage.
 }
 
+// ---- PER-INPUT STAGED CARRIER (2026-08-03) --------------------------------
+//
+// USER DIRECTIVE: "literally all protected actions must properly run native
+// through runtime hooks. all modules in the suite."
+//
+// RequestHaltMovement below proved the pattern but only covers a FULL stop.
+// Steering needs each axis staged individually - set_strafe releases one
+// direction and immediately sets another, so a halt is the wrong instrument
+// and patching only the release half would be theatre (the SET is equally
+// protected). The client judges the ORIGIN of a protected call, not its
+// destination, so routing through the bridge taints exactly as much as calling
+// it directly; the only safe context is this hook.
+//
+// One bit per input, plus a "desired" bit. The hook diffs desired against
+// applied and issues only real transitions, so a rotation tick that re-asserts
+// the same heading costs nothing and cannot spam the client.
+enum InputBit {
+    kIN_Forward = 0, kIN_Backward, kIN_StrafeL, kIN_StrafeR,
+    kIN_TurnL, kIN_TurnR, kIN_PitchU, kIN_PitchD, kIN_COUNT
+};
+static volatile uint32_t g_inputWanted = 0;   // bitmask, written from Lua side
+static volatile uint32_t g_inputApplied = 0;  // bitmask, owned by the hook
+
+bool RequestInput(int bit, bool down) {
+    if (bit < 0 || bit >= kIN_COUNT) return false;
+    uint32_t mask = 1u << bit;
+    if (down) g_inputWanted |= mask;
+    else      g_inputWanted &= ~mask;
+    return true;
+}
+
+// Applied by the hook only. Each entry is (start fn, stop fn) for one axis.
+static void ApplyInputDiff() {
+    uint32_t want = g_inputWanted;
+    uint32_t have = g_inputApplied;
+    uint32_t diff = want ^ have;
+    if (!diff) return;
+    for (int b = 0; b < kIN_COUNT; ++b) {
+        uint32_t m = 1u << b;
+        if (!(diff & m)) continue;
+        bool down = (want & m) != 0;
+        switch (b) {
+            case kIN_Forward:  MoveForward(down);  break;
+            case kIN_Backward: MoveBackward(down); break;
+            case kIN_StrafeL:  StrafeLeft(down);   break;
+            case kIN_StrafeR:  StrafeRight(down);  break;
+            case kIN_TurnL:    TurnLeft(down);     break;
+            case kIN_TurnR:    TurnRight(down);    break;
+            case kIN_PitchU:   PitchUp(down);      break;
+            case kIN_PitchD:   PitchDown(down);    break;
+            default: break;
+        }
+    }
+    g_inputApplied = want;
+}
+
 bool RequestHaltMovement() {
     // Stage only. The native hook executes StopMoving() + CommitMovement() +
     // MouselookStop() on the next main-thread frame — NEVER from this Lua-
@@ -1667,8 +1723,15 @@ void DrainDeferredActions() {
     // Native hook context (main thread, no Lua on the stack). All protected
     // APIs here run from THIS context — the client cannot flag them as addon
     // taint.
+    // Steering inputs first: a halt staged in the same frame must win, and it
+    // does because it clears the carrier's intent below.
+    ApplyInputDiff();
     if (g_deferredHalt) {
         g_deferredHalt = 0;
+        // A halt is authoritative: drop every staged intent so the carrier
+        // cannot re-press a key on the next frame after a stop.
+        g_inputWanted = 0;
+        g_inputApplied = 0;
         StopMoving();
         MouselookStop();
         CommitMovement();

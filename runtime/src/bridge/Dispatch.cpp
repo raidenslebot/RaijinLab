@@ -1057,6 +1057,14 @@ static int Handle(lua_State* L, const char* name) {
     // which is the whole reason the queue-and-drain pattern exists for casts.
     // Unimplemented for now, but it must ANSWER so the addon can refuse
     // honestly instead of falling back to the taint path.
+    // Staged steering input (2026-08-03). The addon NEVER calls a protected
+    // movement API; it stages intent here and the frame hook applies it.
+    // Args: (bit, down). See Actions.h InputBit.
+    if (!std::strcmp(name, "StageInput")) {
+        int bit = (int)RL::Lua::optnumber(L, 2, -1);
+        bool down = RL::Lua::optnumber(L, 3, 0) != 0;
+        return RL::Lua::PushBool(L, RL::Game::Actions::RequestInput(bit, down));
+    }
     if (!std::strcmp(name, "RunMacroText")) {
         return RL::Lua::PushBool(L, false);
     }

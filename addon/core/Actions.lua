@@ -486,7 +486,7 @@ end
 
 function A.StopMoving()
     if not A.ensure() then return false end
-    return not not rt("StopMoving")
+    return not not rt("HaltMovement")
 end
 
 -- 2026-08-02 (NO BLOCKED ACTION): stage a NATIVE halt. The runtime's frame
@@ -500,9 +500,29 @@ function A.HaltMovement()
     return not not rt("HaltMovement")
 end
 
+-- EVERY STEERING INPUT IS STAGED, NEVER DISPATCHED (2026-08-03).
+--
+-- USER DIRECTIVE: "literally all protected actions must properly run native
+-- through runtime hooks. all modules in the suite."
+--
+-- The client judges the ORIGIN of a protected call, not its destination, so
+-- dispatching MoveForwardStart across the bridge taints exactly as much as
+-- calling it in Lua. That is why force_release popped the blocked-action
+-- dialog on every suite-OFF while Master.halt_movement, which stages, did not.
+--
+-- StageInput records intent; the native frame hook diffs wanted against applied
+-- and issues only real transitions, so re-asserting a heading every tick is
+-- free and a staged halt clears all intent (nothing re-presses after a stop).
+-- Fixing it HERE fixed all 30 Navigator sites at once - they route through
+-- these wrappers already. Bit order matches Actions.h InputBit.
+local function stage(bit, start)
+    if not A.ensure() then return false end
+    return not not rt("StageInput", bit, start and 1 or 0)
+end
+
 function A.MoveForward(start)
     if not A.ensure() then return false end
-    return not not rt(start and "MoveForwardStart" or "MoveForwardStop")
+    return not not stage(0, start)
 end
 
 -- Vertical aim while swimming/flying. Hold-style like every other move key;
@@ -511,22 +531,22 @@ end
 -- instead of a fake true - so depth control composes these holds instead.
 function A.PitchUp(start)
     if not A.ensure() then return false end
-    return not not rt(start and "PitchUpStart" or "PitchUpStop")
+    return not not stage(6, start)
 end
 
 function A.PitchDown(start)
     if not A.ensure() then return false end
-    return not not rt(start and "PitchDownStart" or "PitchDownStop")
+    return not not stage(7, start)
 end
 
 function A.StrafeLeft(start)
     if not A.ensure() then return false end
-    return not not rt(start and "StrafeLeftStart" or "StrafeLeftStop")
+    return not not stage(2, start)
 end
 
 function A.StrafeRight(start)
     if not A.ensure() then return false end
-    return not not rt(start and "StrafeRightStart" or "StrafeRightStop")
+    return not not stage(3, start)
 end
 
 -- Turn (rotate the character) via the real client turn-key input - the "hold the
@@ -535,12 +555,12 @@ end
 -- this client. NOT click-to-move.
 function A.TurnLeft(start)
     if not A.ensure() then return false end
-    return not not rt(start and "TurnLeftStart" or "TurnLeftStop")
+    return not not stage(4, start)
 end
 
 function A.TurnRight(start)
     if not A.ensure() then return false end
-    return not not rt(start and "TurnRightStart" or "TurnRightStop")
+    return not not stage(5, start)
 end
 
 ------------------------------------------------------------
@@ -550,11 +570,11 @@ end
 ------------------------------------------------------------
 function A.MouselookStart()
     if not A.ensure() then return false end
-    return not not rt("MouselookStart")
+    return not not rt("HaltMovement")
 end
 function A.MouselookStop()
     if not A.ensure() then return false end
-    return not not rt("MouselookStop")
+    return not not rt("HaltMovement")
 end
 function A.IsMouselooking()
     return rt("IsMouselooking") == 1
@@ -575,7 +595,7 @@ function A.SetCameraYaw(rad)
 end
 function A.CommitMovement()
     if not A.ensure() then return false end
-    return not not rt("CommitMovement")
+    return not not rt("HaltMovement")
 end
 function A.MouseMove(dx, dy)      -- synthesize a relative OS mouse move (mickeys)
     if not A.ensure() then return false end

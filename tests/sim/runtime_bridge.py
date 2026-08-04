@@ -188,6 +188,36 @@ class RuntimeBridge:
         if cmd == "ArmUnlock":
             return 1
 
+        # STAGED INPUT CARRIER (2026-08-03). The addon no longer dispatches
+        # MoveForwardStart etc. across the bridge - the client judges the call
+        # ORIGIN, so that taints. It stages intent via StageInput and the
+        # runtime's native frame hook applies it. The simulator must model the
+        # carrier or every scenario silently stops moving: without this, 9 of
+        # 17 scenarios failed with the addon perfectly correct.
+        #
+        # Bit order matches Actions.h InputBit and Actions.lua's table.
+        if cmd == "StageInput":
+            try:
+                bit = int(float(args[0])); down = int(float(args[1])) != 0
+            except (TypeError, ValueError, IndexError):
+                return 0
+            # Route each bit through the SAME command path the real runtime
+            # hook drives, so broken-primitive modelling below still applies.
+            names = {
+                0: ("MoveForwardStart", "MoveForwardStop"),
+                1: ("MoveBackwardStart", "MoveBackwardStop"),
+                2: ("StrafeLeftStart", "StrafeLeftStop"),
+                3: ("StrafeRightStart", "StrafeRightStop"),
+                4: ("TurnLeftStart", "TurnLeftStop"),
+                5: ("TurnRightStart", "TurnRightStop"),
+                6: ("PitchUpStart", "PitchUpStop"),
+                7: ("PitchDownStart", "PitchDownStop"),
+            }
+            pair = names.get(bit)
+            if not pair:
+                return 0
+            return self.dispatch(pair[0] if down else pair[1])
+
         # ---- movement: HELD state, applied by the world's physics ----
         if cmd == "MoveForwardStart":
             p.fwd = True; return 1

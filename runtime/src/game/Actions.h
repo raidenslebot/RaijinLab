@@ -120,6 +120,11 @@ float PlayerFacing();             // live camera-independent facing (rad); 1e9 o
 // Halt: release every held movement key + stop + commit, natively. Used by the
 // suite disable path (was calling MoveForward(false)... from Lua -> taint).
 bool RequestHaltMovement();
+// Per-input staged carrier: bit is InputBit (0 fwd, 1 back, 2 strafeL,
+// 3 strafeR, 4 turnL, 5 turnR, 6 pitchU, 7 pitchD). Stages intent only; the
+// native frame hook diffs and issues the real transitions, so no protected
+// movement API is ever called from a Lua-dispatched context.
+bool RequestInput(int bit, bool down);
 // Engage auto-attack (Spell_C(6603)) from the NATIVE hook — never from the Lua
 // bridge (the client treats bridge-origin 6603 as protected "StartAttack" and
 // pops the blocked-action dialog; the log shows "Attack engage nrc=0" every

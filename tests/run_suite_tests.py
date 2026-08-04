@@ -656,6 +656,40 @@ so("a proven unwalkable cell is vetoed", Suite.search_oracle(3, 3) == false)
 at_code, walk_verdict = 1, nil
 so("unknown walkability is not a veto", Suite.search_oracle(4, 4) ~= false)
 
+-- SEARCH FIELD CACHING. The belief field is the bot's memory of ground it has
+-- already swept. search_field MUST return the SAME field for the same key: build
+-- a new one per call and every observation is thrown away each tick, so the
+-- sweep re-searches ground it just covered and never converges. That is the
+-- listed 'search never records what it saw' defect, seen from the storage side.
+local made = 0
+local seeded = {}
+RaijinLab.SearchField = {
+  new = function(o)
+    made = made + 1
+    local f = { origin = o, n = made }
+    function f:seed(x, y, opt) seeded[#seeded+1] = { x = x, y = y, kind = opt and opt.kind } end
+    return f
+  end,
+}
+Suite._fields = nil
+local f1 = Suite.search_field("k1", 10, 20, 30, "Boar", "objective")
+so("a field is created", f1 ~= nil and made == 1)
+so("it is seeded at the start position", seeded[1] and seeded[1].x == 10 and seeded[1].y == 20)
+so("an objective seeds as a spawn", seeded[1] and seeded[1].kind == "spawn")
+
+local f2 = Suite.search_field("k1", 99, 99, 99, "Boar", "objective")
+so("the SAME key returns the SAME field", f2 == f1)
+so("and does not rebuild it", made == 1)
+
+local f3 = Suite.search_field("k2", 10, 20, 30, "Wolf", "npc")
+so("a different key gets its own field", f3 ~= f1 and made == 2)
+so("a non-objective does not seed as a spawn", seeded[2] and seeded[2].kind == nil)
+
+-- no SearchField service at all: must return nil, not crash
+RaijinLab.SearchField = nil
+Suite._fields = nil
+so("no search-field service returns nil", Suite.search_field("k3", 1, 2, 3, "x", "npc") == nil)
+
 -- A KNOW-STYLE "no" must veto too. The plain-boolean case above hits
 -- `verdict == false`; this hits `K.is_no(verdict)`, a DIFFERENT branch that
 -- stayed unasserted even after Know was wired in - walkable() returns Know

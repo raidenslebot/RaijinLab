@@ -52,5 +52,7 @@ std::string SpellName(int spellId);
 //   -4 no spell table     -5 id out of range     -6 no record for this id
 //   -7 current value is not a plausible proc chance (>101)
 int SetProcChance(int spellId, int pct, int* outOld = nullptr);
+// Drop a spell's cached CastReq pack (the cache predates writable records).
+void InvalidateCastReq(int spellId);
 
 } // namespace RL::Game::SpellDB

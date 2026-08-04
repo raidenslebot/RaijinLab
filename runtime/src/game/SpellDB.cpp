@@ -210,13 +210,30 @@ static uint32_t W(const uint8_t* r, size_t off) {
     return Mem::Read<uint32_t>((uintptr_t)(r + off));
 }
 
+// Per-sid cache: the rotation asks for the same handful of spells 20-30x a
+// second, so a tiny open-address table keeps the steady state at one probe and
+// zero decodes. It USED to be justified by "records are immutable for the
+// session" - which stopped being true the moment SetProcChance made them
+// writable, and a successful write then read back the STALE pack and looked
+// like a failure (live: SetProcChance returned 1|35 while CastReq still said
+// 35). File scope so the writer can invalidate.
+static constexpr size_t kCastReqCacheN = 512;
+struct CastReqSlot { int sid = 0; std::string pack; };
+static CastReqSlot s_cache[kCastReqCacheN];
+static constexpr size_t kCacheN = kCastReqCacheN;
+
+void InvalidateCastReq(int spellId) {
+    size_t h = ((uint32_t)spellId * 2654435761u) % kCastReqCacheN;
+    if (s_cache[h].sid == spellId) { s_cache[h].sid = 0; s_cache[h].pack.clear(); }
+}
+
 std::string CastReq(int spellId) {
     // Per-sid cache: records are immutable for the session, and the rotation
     // asks for the same handful of spells 20-30x a second. A tiny open-address
     // table keeps the steady-state cost at one probe, zero decodes.
     static constexpr size_t kCacheN = 512;
     struct Slot { int sid = 0; std::string pack; };
-    static Slot s_cache[kCacheN];
+
     size_t h = ((uint32_t)spellId * 2654435761u) % kCacheN;
     if (s_cache[h].sid == spellId && !s_cache[h].pack.empty())
         return s_cache[h].pack;
@@ -307,6 +324,7 @@ int SetProcChance(int spellId, int pct, int* outOld) {
     if (outOld) *outOld = (int)cur;
     Mem::Write<uint32_t>(slot + rec::ProcChance, (uint32_t)pct);
     uint32_t back = Mem::Read<uint32_t>(slot + rec::ProcChance);
+    InvalidateCastReq(spellId);   // the cached pack still holds the old chance
     RL::Log::Warn("SetProcChance sid=%d %u -> %d (readback %u)",
                   spellId, cur, pct, back);
     return (back == (uint32_t)pct) ? 1 : 0;           // 0 = write did not stick

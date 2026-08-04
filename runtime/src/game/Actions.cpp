@@ -1275,7 +1275,24 @@ static int IsFacingGuidEx(uint64_t guid, float halfArcRad) {
         return -1;
     // 2026-08-02 (18:16 FACING CONVENTION FIX): atan2 is 0=+X/east CCW; the
     // client's facing (0x7AC) is 0=+Y/north CW. facing_wow = π/2 - atan2(dy,dx).
-    float ang = 1.5707963f - std::atan2(pb.y - pa.y, pb.x - pa.x);
+    // ORIENTATION 0 IS +X - NO ROTATION (2026-08-03).
+    //
+    // This was `1.5707963f - atan2(...)`, added 2026-08-02 on the premise that
+    // "the client's facing (0x7AC) is 0=+Y/north". 0x7AC is the field later
+    // PROVEN to be garbage (it read -0.8296 while GetPlayerFacing returned
+    // 1.8380; the real orientation lives at +0x7A8). So the rotation was a
+    // downstream correction invented to compensate for a broken upstream read -
+    // the same shape as the 0.0-is-a-failure sentinel and the 2,000,000 aura-id
+    // cap, both of which were validators papering over a bad reader.
+    //
+    // With the read fixed the offset is an uncompensated 90-degree error, which
+    // is exactly "You are facing the wrong way!" while the facing NUMBER is
+    // perfect. WoW orientation 0 faces +X and the bearing to a point is
+    // atan2(dy, dx) compared directly - a player at the origin facing 0 with a
+    // target at (10,0) is looking straight at it: atan2(0,10)=0, diff 0. The
+    // offset version yields 1.57 and calls that "not facing", which breaks the
+    // trivially correct case.
+    float ang = std::atan2(pb.y - pa.y, pb.x - pa.x);
     float diff = NormPi(ang - face);
     return (std::fabs(diff) <= halfArcRad) ? 1 : 0;
 }

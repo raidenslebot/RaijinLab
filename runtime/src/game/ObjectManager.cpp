@@ -1643,7 +1643,8 @@ static float AngleDiffRad(float from, float to) {
 static bool IsFacingPos(float face, float ax, float ay, float bx, float by, float arc) {
     if (arc <= 0.f) arc = kDefaultCastFaceArc;
     if (!LooksLikeFacingEarly(face)) return false;
-    float ang = 1.5707963f - std::atan2(by - ay, bx - ax);
+    // Orientation 0 is +X; bearing compares directly (see Actions.cpp).
+    float ang = std::atan2(by - ay, bx - ax);
     return std::fabs(AngleDiffRad(face, ang)) <= arc;
 }
 
@@ -2369,7 +2370,8 @@ std::string AuraSearchPacked(float maxRange, int spellId, bool wantMissing, size
                     // the client's own arc check (targets the player faces get
                     // marked not-facing and vice versa -> "in front of you"
                     // refusals on non-faced wires).
-                    float ang = 1.5707963f - std::atan2(dy, dx);
+                    // Orientation 0 is +X; no rotation (see Actions.cpp).
+                    float ang = std::atan2(dy, dx);
                     float diff = ang - playerFace;
                     const float pi = 3.14159265f;
                     const float two = 6.2831853f;
@@ -3811,7 +3813,8 @@ int IsFacing(uint64_t a, uint64_t b, float arcRadians) {
 bool IsBehind(uint64_t a, uint64_t b) {
     Vec3 pa = Position(a), pb = Position(b);
     // Same WoW-convention conversion as IsFacingPos (0 = +Y/north, CW).
-    float ang = 1.5707963f - std::atan2(pa.y - pb.y, pa.x - pb.x);
+    // Orientation 0 is +X; no rotation (see Actions.cpp).
+    float ang = std::atan2(pa.y - pb.y, pa.x - pb.x);
     float face = Facing(b);
     float diff = std::fmod(ang - face + 3.14159265f, 6.2831853f);
     if (diff < 0.f) diff += 6.2831853f;

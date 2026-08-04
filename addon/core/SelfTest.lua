@@ -453,6 +453,44 @@ SelfTest.CHECKS = {
         end,
     },
     {
+        name = "facing_arc_convention",
+        why = "the bearing to a target was computed as pi/2 - atan2(dy,dx), a "
+           .. "90-degree rotation added to compensate for the broken 0x7AC read. "
+           .. "With the read fixed that offset IS the 'You are facing the wrong "
+           .. "way!' spam, so the convention must be checked against the client's "
+           .. "own facing rather than asserted",
+        run = function(call, opts)
+            local tgt = opts and opts.target_guid
+            if not tgt then return nil, "needs a target" end
+            if not (GetPlayerFacing and RaijinLab and RaijinLab.ObjectPosition) then
+                return nil, "no client facing / position API"
+            end
+            local px, py = RaijinLab:ObjectPosition("player")
+            local tx, ty = RaijinLab:ObjectPosition(tgt)
+            if not (px and tx) then return nil, "no positions" end
+            local face = GetPlayerFacing()
+            -- Orientation 0 is +X, so the bearing compares directly.
+            local bearing = math.atan2(ty - py, tx - px)
+            local d = bearing - face
+            while d > math.pi do d = d - 2 * math.pi end
+            while d < -math.pi do d = d + 2 * math.pi end
+            d = math.abs(d)
+            local geo_facing = (d <= 1.5707963)          -- within the 90deg half-arc
+            local rt = call("ObjectIsFacing", "player", tgt, 1.5707963)
+            local rt_facing = (rt == true or rt == 1)
+            if rt == nil then return false, "ObjectIsFacing returned nil" end
+            if geo_facing ~= rt_facing then
+                return false, string.format(
+                    "runtime says facing=%s but geometry says %s "
+                    .. "(bearing %.3f vs facing %.3f, off %.3f rad) - the arc "
+                    .. "convention is wrong", tostring(rt_facing),
+                    tostring(geo_facing), bearing, face, d)
+            end
+            return true, string.format("agree (facing=%s, off %.3f rad)",
+                tostring(rt_facing), d)
+        end,
+    },
+    {
         name = "castreq_ground_truth",
         why = "SpellCastReq drives every data-driven basic check; its layout "
            .. "was cracked against stock spells - verify two anchors in vivo",

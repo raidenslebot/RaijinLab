@@ -480,13 +480,25 @@ end
         if st is None or (st.cached or 0) < 1:
             f.append("no navgrid tile was loaded through the runtime bridge")
             return f
-        # the grid must actually answer where the player stands
-        code = L.eval("RaijinLab.NavGrid.at(%f, %f, 'Azeroth')"
-                      % (run.w.player.x, run.w.player.y))
+        # ASK INSIDE THE TILE, NOT WHEREVER THE BOT ENDED UP (2026-08-03).
+        #
+        # This queried run.w.player.x/y - the player's position at the END of
+        # the run. build() deliberately spawns them at the tile centre, so that
+        # worked only while the bot stood still. The moment the staged input
+        # carrier restored real movement, it walked off the tile and the
+        # scenario reported "the grid returned nothing at the player's own
+        # position" - a true statement about a place the test was never meant
+        # to ask about, and nothing to do with the subject under test.
+        #
+        # The invariant is "a loaded tile answers inside itself", so ask at the
+        # tile centre, which is the one point the fixture actually guarantees.
+        x0, y0, n, res = self._tile
+        tx = x0 + (n * res) * 0.5
+        ty = y0 + (n * res) * 0.5
+        code = L.eval("RaijinLab.NavGrid.at(%f, %f, 'Azeroth')" % (tx, ty))
         if code is None:
             f.append("the grid returned nothing at the player's own position")
-        h = L.eval("RaijinLab.NavGrid.height(%f, %f, 'Azeroth')"
-                   % (run.w.player.x, run.w.player.y))
+        h = L.eval("RaijinLab.NavGrid.height(%f, %f, 'Azeroth')" % (tx, ty))
         if not isinstance(h, (int, float)):
             f.append("no ground height from a loaded tile")
         # and the planner must be consulting it rather than ignoring it
@@ -498,7 +510,7 @@ end
                 local w = NG.walkable(%f, %f, "Azeroth")
                 if K.is_yes(w) or K.is_no(w) then n = n + 1 end
             end
-            return n > 0 end)()""" % (run.w.player.x, run.w.player.y))
+            return n > 0 end)()""" % (tx, ty))
         if not ok:
             f.append("walkable() gave no definite answer inside a loaded tile")
         return f

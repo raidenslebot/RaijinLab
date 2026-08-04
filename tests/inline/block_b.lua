@@ -499,12 +499,17 @@ do
 end
 
 print("")
+-- NO EARLY RETURN HERE. This used to be `if #fails > 0 then ... return #fails
+-- end` followed by an unconditional "ALL SUITE TESTS PASSED" banner - with 182
+-- lines of BasicRules checklist-gate tests BELOW it. So the first failure
+-- anywhere above short-circuited the block, printed a success banner, and
+-- silently skipped every gate test: coverage vanished exactly when something
+-- was already broken, which is when it matters most.
+-- Progress only; the real count is returned at the end of the file.
 if #fails > 0 then
-  print("FAILED " .. #fails)
+  print("so far: " .. #fails .. " failing")
   for _, f in ipairs(fails) do print("  - " .. f) end
-  return #fails
 end
-print("ALL SUITE TESTS PASSED")
 -- ---- BasicRules: the checklist gates -------------------------------
 -- These had NO coverage at all before 2026-08-03, which is how four of the
 -- Basic_Rotation_Checks entries stayed unimplemented and one shipped inverted.

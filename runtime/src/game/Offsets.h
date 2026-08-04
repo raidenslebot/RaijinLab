@@ -64,13 +64,27 @@ struct DescriptorTable {
     uintptr_t DisplayId = 0x108;
     uintptr_t NativeDisplayId = 0x10C;
     uintptr_t MountDisplayId = 0x114;
-    uintptr_t Bytes0 = 0xC0; // race/class/gender packing - verify
+    // VERIFIED LIVE 2026-08-03: 0x5C reads 0x00000A05 = race 5, class 10,
+    // exactly matching UnitRace/UnitClass. That is index 0x17, immediately
+    // before HEALTH at index 0x18 (0x60) - the standard 3.3.5a layout.
+    // It was 0xC0 (index 0x30) and read ZERO, along with everything from
+    // 0xC0..0xD4. The comment said "verify" and nobody had; the shapeshift
+    // gate built on Bytes2=0xCC therefore sat in that dead region and could
+    // never fire.
+    uintptr_t Bytes0 = 0x5C;
     // UNIT_FIELD_BYTES_2 packs [0]=sheath, [1]=pvp/flags, [2]=petFlags,
-    // [3]=SHAPESHIFT FORM. Bytes0 is 0xC0 (verified), and BYTES_2 sits three
-    // update-fields later in the 3.3.5a unit block: 0xC0 + 3*4 = 0xCC.
-    // Used by the shapeshift basic check so the addon never calls the client's
-    // GetShapeshiftForm (user directive: assume non-runtime is protected).
-    uintptr_t Bytes2 = 0xCC;
+    // [3]=SHAPESHIFT FORM.
+    //
+    // 0 = UNKNOWN, NOT "no form". The old value 0xCC was derived from the wrong
+    // Bytes0 (0xC0) and lands in a region that reads zero for every field, so
+    // the shapeshift gate silently answered "unshifted" forever. Rather than
+    // guess again from a recalled index - the mistake that produced eight wrong
+    // offsets this session - this stays 0 and ShapeshiftForm returns nil
+    // (undetermined), which the gate treats as unknown and passes.
+    //
+    // TO FIX: shapeshift, then scan the descriptor for a dword whose byte 3
+    // equals the form id. Bytes0 = 0x5C = index 0x17 is the verified anchor.
+    uintptr_t Bytes2 = 0;
     // PLAYER_VISIBLE_ITEM_1_ENTRYID, stride 8 (entry + enchantment pair).
     // RE'd live 2026-08-03 by scanning the player descriptor against
     // GetInventoryItemID ground truth; confirmed on four untransmogged slots:

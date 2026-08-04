@@ -1125,6 +1125,10 @@ static int Handle(lua_State* L, const char* name) {
         uint64_t g = GuidArg(L, 2);
         if (!g) g = OM::LocalGuid();
         if (!g) return PushNil(L);
+        // Bytes2 is 0 until the real offset is measured (see Offsets.h). An
+        // unverified field must answer UNKNOWN, not a confident 0 - a fake
+        // "unshifted" is exactly the class of lie this project keeps paying for.
+        if (!Offsets::D().Bytes2) return PushNil(L);
         uint32_t b2 = (uint32_t)OM::Field(g, (uint32_t)Offsets::D().Bytes2);
         return PushNumber(L, (double)((b2 >> 24) & 0xFF));
     }

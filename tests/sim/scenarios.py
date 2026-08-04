@@ -1052,7 +1052,9 @@ class DoesNotChargeBackwards(Scenario):
     # unproven, and saying otherwise would be the kind of green-that-means-
     # nothing this project has already paid for twice.
     #
-    # IT ALSO FOUND A REAL DEFECT, AND THE CAUSE IS NOT TURNING.
+    # IT FOUND A REAL DEFECT AND THAT DEFECT IS NOW FIXED (round 86).
+    # The fixture sits at EXACTLY 180 degrees on purpose - that is the case
+    # that used to fail, so this scenario is now its regression test.
     #
     # At EXACTLY 180 degrees (goal dead behind, y offset 0) the bot never moves.
     # The trace shows why: nav state reads "arrived" from t=15 onward while the
@@ -1061,11 +1063,12 @@ class DoesNotChargeBackwards(Scenario):
     # angle_diff is fine (it returns +pi; `d > math.pi` is false at exactly pi),
     # which is why chasing the turn path found nothing.
     #
-    # Nudging the goal to ~161 degrees passes, so this is specific to the
-    # antipodal case. Suspect a degenerate path: a route to a point directly
-    # behind collapses to a single node at/behind the player, node 1 is
-    # immediately within arrive_dist, and the path completes. UNRESOLVED -
-    # reproduce by setting the goal y back to 500.0 and reading nav.state.
+    # CAUSE: pure-pursuit's `remain` is the distance left along the PATH after
+    # projecting the player onto it. With the goal directly behind, that
+    # projection lands past the end of the only segment and remain collapses to
+    # ~0, so arrival fired 60 yards out. Fixed by cross-checking remain against
+    # the straight-line distance to the real goal - the projection is the right
+    # thing to steer by and the wrong thing to finish on.
     #
     # Written to pin the 90-degree arc cap (mutating it to 3.2 rad passed all 17
     # scenarios, so nothing covered it). On first run it did not merely fail the
@@ -1094,14 +1097,14 @@ class DoesNotChargeBackwards(Scenario):
         w.player.x, w.player.y, w.player.z = 500.0, 500.0, 0.0
         w.player.facing = 0.0                      # looking down +X
         # Goal is straight BEHIND: heading error starts at ~180 degrees.
-        w.add_unit(Unit(guid="behind", name="Behind", entry=12, x=440.0, y=520.0))
+        w.add_unit(Unit(guid="behind", name="Behind", entry=12, x=440.0, y=500.0))
         return w
 
     def setup(self, run: SimRun) -> None:
         run.boot()
         run.lua.execute("""
 if RaijinLab.Navigator and RaijinLab.Navigator.pathfind_to then
-  RaijinLab.Navigator.pathfind_to({ x = 440, y = 520, z = 0 }, { arrive_dist = 5 })
+  RaijinLab.Navigator.pathfind_to({ x = 440, y = 500, z = 0 }, { arrive_dist = 5 })
 end
 """)
         self._start_d = 60.0
@@ -1109,14 +1112,14 @@ end
 
     def tick(self, run: SimRun) -> None:
         p = run.w.player
-        d = math.hypot(440.0 - p.x, 520.0 - p.y)
+        d = math.hypot(440.0 - p.x, 500.0 - p.y)
         if d > self._worst:
             self._worst = d
 
     def check(self, run: SimRun, res) -> list[str]:
         f = []
         p = run.w.player
-        d = math.hypot(440.0 - p.x, 520.0 - p.y)
+        d = math.hypot(440.0 - p.x, 500.0 - p.y)
         # It must not have run AWAY from a goal behind it before turning. A
         # little drift while the turn completes is fine; a charge is not.
         if self._worst > self._start_d + 4.0:

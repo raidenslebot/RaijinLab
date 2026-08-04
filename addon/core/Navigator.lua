@@ -2180,6 +2180,26 @@ function Navigator.step()
     a.cross = cross
     local dist = remain
     local arrive = a.opts.arrive_dist or c.arrive_dist
+    -- ARRIVAL IS ABOUT THE GOAL, NOT THE PROJECTION (2026-08-03).
+    --
+    -- `remain` comes from pure-pursuit: the distance left along the PATH after
+    -- projecting the player onto it. When the goal is directly BEHIND, that
+    -- projection puts the player past the end of the only segment and remain
+    -- collapses to ~0 - so the bot declared "arrived" while sixty yards away
+    -- and then stood still forever, because there was nothing left to steer
+    -- toward. Traced at exactly 180 degrees: nav=arrived, pos unchanged from
+    -- t=15 to t=30, goal 60yd out. It reads like a turning failure and is not
+    -- one; the turn code was correct the whole time.
+    --
+    -- The projection is the right thing to STEER by and the wrong thing to
+    -- finish on. Cross-check against the straight-line distance to the real
+    -- goal: no geometry can make a 60-yard gap into an arrival.
+    local gx, gy = a.goal and a.goal.x, a.goal and a.goal.y
+    if gx and gy and px and py then
+        local ddx, ddy = gx - px, gy - py
+        local straight = math.sqrt(ddx * ddx + ddy * ddy)
+        if straight > remain then remain = straight end
+    end
     if remain <= arrive then return abort("arrived") end
     -- If the look-ahead aim is behind a solid wall, aim at the next path node
     -- instead of cutting the chord through geometry.

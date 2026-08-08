@@ -59,34 +59,6 @@ function RaijinLab:RunCommand(msg)
         RaijinLab.multijump_toggle = not RaijinLab.multijump_toggle
         SendSystemMessage("Multi-Jump: " .. tostring(RaijinLab.multijump_toggle));
         RaijinLab:SetSystemVar("RaijinLab.multijump_toggle", tostring(RaijinLab.multijump_toggle))
-    elseif cmd == "proc" then
-        -- 2026-08-03 (ProcForce toggle): drive Stormbringer-class proc spells.
-        -- MUST be instantly stoppable in-game - this is the escape hatch the
-        -- user demanded after a runaway forced closing the game.
-        --   /raijin proc on [icdMs]      enable (default 300ms, spell 273057)
-        --   /raijin proc off             disable NOW
-        --   /raijin proc                 show state
-        local rt = RaijinLab.RuntimeCall and RaijinLab:HasRuntime() and RaijinLab
-        if not rt then
-            SendSystemMessage("|cff7ec8e3RaijinLab|r proc: runtime not loaded")
-            return true
-        end
-        local isOn = (args == "on" or args == "1" or args == "enable")
-        local isOff = (args == "off" or args == "0" or args == "disable" or args == "stop")
-        if isOn then
-            local icd = tonumber(args:match("(%d+)")) or 300
-            local ok = RaijinLab:RuntimeCall("ProcForceAdd", 273057, icd)
-            SendSystemMessage("|cff7ec8e3RaijinLab|r proc |cff10ff10ON|r " ..
-                "(273057 every " .. icd .. "ms)" .. (ok == 1 and "" or " (failed)"))
-        elseif isOff then
-            RaijinLab:RuntimeCall("ProcForceClear")
-            SendSystemMessage("|cff7ec8e3RaijinLab|r proc |cffff5555OFF|r")
-        else
-            local st = tostring(RaijinLab:RuntimeCall("ProcForceState") or "")
-            SendSystemMessage("|cff7ec8e3RaijinLab|r proc state: " .. st ..
-                "  (use: /raijin proc on  |  /raijin proc off)")
-        end
-        return true
     elseif cmd == "aa" then
         RaijinLab.anti_afk = not RaijinLab.anti_afk
         SendSystemMessage("Anti-Afk: " .. tostring(RaijinLab.anti_afk));

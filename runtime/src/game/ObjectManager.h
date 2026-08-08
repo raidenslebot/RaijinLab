@@ -86,23 +86,6 @@ void ProcFreezeClearAll();
 int ProcFreezeTick();
 std::string ProcFreezeState();
 
-// ---- ProcForce (2026-08-03): drive a passive proc by firing its proc spell.
-// For Stormbringer 273056: the proc FIRES spell 273057 (Nature bolt) at the
-// target when a direct damaging cast rolls. This module queues a native cast
-// of procSpell at the current target on a configurable ICD (default 0.3s),
-// producing the SAME normal spell-cast packets a real proc produces (the
-// server cannot distinguish). Wire-safe, deterministic. Enabled via CLI/pipe
-// when the player fights.
-// Returns true on success (registered/configured or tick fired a cast).
-int ProcForceAdd(uint32_t procSpell, uint32_t icdMs);
-int ProcForceRemove();
-void ProcForceClear();
-// Called each frame (frame hook / tick): if enabled and ICD elapsed and a
-// target exists, QueueCast(procSpell, targetGuid). Returns 1 if a cast was
-// queued this tick, 0 otherwise.
-int ProcForceTick();
-std::string ProcForceState();
-
 // Runtime-first multi-dot discovery (no mouseover / UnitExists / UnitCanAttack):
 // living attackable units in range matching aura missing (wantMissing) or present.
 // "n|0xGUID:entry:center:edge:face:hp:mhp|..." sorted face then dist.

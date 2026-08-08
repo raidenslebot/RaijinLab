@@ -1406,30 +1406,6 @@ static int Handle(lua_State* L, const char* name) {
         int mutated = OM::ProcFreezeTick();
         return PushNumber(L, (double)mutated);
     }
-    // ProcForce (2026-08-03): drive a passive proc by firing its proc spell at
-    // the current target on an ICD via the native cast queue. Wire-safe
-    // (byte-identical to a real proc spell cast). Operated via CLI/pipe.
-    //   ProcForceAdd <procSpell> <icdMs>
-    //   ProcForceRemove / ProcForceClear
-    //   ProcForceTick   (run one pass; returns 1 if a cast was queued)
-    //   ProcForceState
-    if (!std::strcmp(name, "ProcForceAdd")) {
-        uint32_t spell = (uint32_t)optnumber(L, 2, 0);
-        uint32_t icd = (uint32_t)optnumber(L, 3, 300);
-        return PushNumber(L, (double)OM::ProcForceAdd(spell, icd));
-    }
-    if (!std::strcmp(name, "ProcForceRemove") || !std::strcmp(name, "ProcForceClear")) {
-        OM::ProcForceClear();
-        return PushBool(L, true);
-    }
-    if (!std::strcmp(name, "ProcForceState")) {
-        auto s = OM::ProcForceState();
-        return PushString(L, s.c_str());
-    }
-    if (!std::strcmp(name, "ProcForceTick")) {
-        int fired = OM::ProcForceTick();
-        return PushNumber(L, (double)fired);
-    }
     // Unit aura list from runtime aura table: "n|spellId:stacks:remMs|..."
     if (!std::strcmp(name, "UnitAuras") || !std::strcmp(name, "GetUnitAuras")) {
         uint64_t g = GuidArg(L, 2);

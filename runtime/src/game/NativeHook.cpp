@@ -130,11 +130,6 @@ void TickHookBody() {
         // to aura expiry fields; zero packets. Self-drives whenever the frame
         // hook is installed AND a registration is active; otherwise a no-op.
         RL::Game::OM::ProcFreezeTick();
-        // 2026-08-03 (ProcForce): drive a passive proc by firing its proc spell
-        // at the current target on an ICD via the native cast queue. Hands the
-        // queued cast to DrainCastQueue() directly below (same frame hook).
-        // No-op unless ProcForceAdd configured a procSpell.
-        RL::Game::OM::ProcForceTick();
         // 2026-08-02 (NATIVE LIVE-FACING CACHE): refresh the player's live
         // facing here, on the main thread with no Lua on the stack. The client
         // resolves facing via camera → GUID → ObjectPtr → [obj+0x7AC] (RE'd
